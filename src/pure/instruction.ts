@@ -10,9 +10,15 @@
 export interface ImpactHit {
 	line: number;
 	where: string;
-	/** `family` = 编号同族的边（UE3 ↔ UE3a），指令里要标出来 */
+	/** `family` = 编号同族的边（UE3 ↔ UE3a）· `contract` = 契约关联的边（§4 配置字段 ↔ §6 字段行） */
 	kind?: string;
 }
+
+/**
+ * 影响范围里要标出来的边类别 —— 用户得能判断"这条算不算数"（工单 14）。
+ * ★ 其余五类边的命中是"全文提到它的位置"，没有 kind（指令里也就不加标签），逐字保持原样。
+ */
+const KIND_LABEL: Record<string, string> = { family: "同族", contract: "契约" };
 
 export interface FixRequest {
 	/** 定稿绝对路径 */
@@ -36,7 +42,8 @@ export function buildFixInstruction(req: FixRequest): string {
 	if (req.impact && req.impact.length) {
 		L.push("连带影响（工作台按结构引用扫出，供参考；语义影响请按 D11 自行扫全）：");
 		for (const h of req.impact.slice(0, 12)) {
-			L.push("  · L" + h.line + (h.kind === "family" ? " [同族] " : " ") + h.where);
+			const label = h.kind ? KIND_LABEL[h.kind] : "";
+			L.push("  · L" + h.line + (label ? " [" + label + "] " : " ") + h.where);
 		}
 	}
 	return L.join("\n");

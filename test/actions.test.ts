@@ -72,6 +72,20 @@ test("真实定稿的影响范围能直接进指令（行号来自真实结构�
 	assert.ok(text.includes("  · L487 §11 交接清单"), "真实行号 487 应出现在指令里：\n" + text);
 });
 
+test("指令文本：真实定稿上 §4 R6 的契约关联边带 [契约] 标签（六类边的类别标记，工单 14）", () => {
+	const doc = parseFinalGdd(readText(FINAL_GDD));
+	const graph = buildRefGraph(doc);
+	const text = buildFixInstruction({
+		path: FINAL_GDD, ref: "§4 R6", before: "| 终结奖励 | … |", intent: "把终结奖励改成必得",
+		impact: impactOf(graph, "§4 R6", 133),
+	});
+	// 新边（⑥ 契约关联）标出类别，并指向 §6 的那一行
+	assert.ok(text.includes("  · L342 [契约] §6 难度表.clearDropId"), text);
+	assert.ok(text.includes("  · L314 [契约] §6 全局变量.alliBossChallengeReward"), text);
+	// 旧边（① 显式引用）照原样列，不加标签 —— 指令文本是产品契约，老行为一字不改
+	assert.ok(text.includes("  · L430 §8 范围门"), text);
+});
+
 test("actions：五个方法都只经过端口（记录器替身），不真的发出", async () => {
 	const port = createFsPort();
 	const p = await promptWorkSession(port, "sid-1", "干活");

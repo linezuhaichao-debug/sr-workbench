@@ -15,6 +15,10 @@
  *        （UE12/UE14 等只是被 §4 与散文反复提到）。
  *   3. V11 的判据 = 当前有效定稿**没有**逐字匹配的 `_审查.md`，或该审查报告比定稿旧。
  *
+ * ★ 工单 14：§4 引用 / §6 声明的**取数**在这里抽成 `extractFieldRefs` / `extractFieldDecls`
+ *   （V6 与 `./refgraph.ts` 的⑥契约关联边**共用同一口径**，避免两处正则各自漂移）；
+ *   「整表 + 括号里逐字段列举」那一形态另开 `extractRowFieldRefs`，**只给契约边用、不进 V6**。
+ *
  * 纯函数、零 IO：定稿正文、定稿候选（文件名/frontmatter/时间）、审查报告清单都由调用方读进来。
  */
 
@@ -158,31 +162,86 @@ const REF_RE = /`([^`]*?[!.]\s*)([A-Za-z][A-Za-z0-9_]*)`/g;
 /** §6 声明的字段：表里第 3 格（`| 中文字段 | 英文字段 | … |`）整格就是一个反引号字段名 */
 const DECL_RE = /^`([A-Za-z][A-Za-z0-9_]*)`$/;
 
-function refsIn4(line: string, no: number) {
-	const out: Array<{ line: number; ref: string; field: string }> = [];
-	REF_RE.lastIndex = 0;
-	let m = REF_RE.exec(line);
-	while (m) {
-		out.push({ line: no, ref: m[0].slice(1, -1), field: m[2] });
-		m = REF_RE.exec(line);
+// ── 取数（V6 与「⑥ 契约关联」边共用，别在别处再写一份）─────────────────────
+/** §4「配置字段」列里的 `表.字段` 引用 */
+interface FieldRef { line: number; ref: string; field: string }
+/** §6 字段表里的一行字段声明 */
+interface FieldDecl { line: number; field: string; text: string }
+/** 整表引用：`` `…!表名` 全行（字段 / 字段 …） `` */
+interface RowFieldRef { line: number; ref: string; fields: string[] }
+
+/** §4 的 `表.字段` 引用（逐字沿用 V6 的正则与边界，见上面 REF_RE 的注释） */
+function extractFieldRefs(lines: string[], chaps?: { nos: string[]; titles: string[] }): FieldRef[] {
+	const c = chaps || chaptersOf(lines);
+	const out: FieldRef[] = [];
+	for (let i = 0; i < lines.length; i++) {
+		if (c.nos[i] !== "4") continue;
+		REF_RE.lastIndex = 0;
+		let m = REF_RE.exec(lines[i]);
+		while (m) {
+			out.push({ line: i + 1, ref: m[0].slice(1, -1), field: m[2] });
+			m = REF_RE.exec(lines[i]);
+		}
+	}
+	return out;
+}
+
+/** §6 的字段声明行（第 3 格整格是 `` `英文字段` ``；§6.5 那类三列表不算） */
+function extractFieldDecls(lines: string[], chaps?: { nos: string[]; titles: string[] }): FieldDecl[] {
+	const c = chaps || chaptersOf(lines);
+	const out: FieldDecl[] = [];
+	for (let i = 0; i < lines.length; i++) {
+		if (c.nos[i] !== "6") continue;
+		const cells = lines[i].split("|").map((s) => s.trim());
+		if (cells.length < 6) continue;                       // §6.5 那类三列表，不是字段声明表
+		const m = DECL_RE.exec(cells[2] || "");
+		if (m) out.push({ line: i + 1, field: m[1], text: lines[i].trim() });
+	}
+	return out;
+}
+
+/**
+ * 「整表 + 括号里逐字段列举」形态：`` `A079-联盟悬赏.xlsx!BOSS表` 全行（bossName / weakness / … 等） ``。
+ *
+ * ★ 这一形态**不进 V6**：V6 判的是"引用的字段 §6 没声明"，整表引用没有逐字段的引用点。
+ *   它只服务⑥契约关联边，且列举出的字段名照旧要和 §6 的声明**逐字对上**才连边（见 refgraph.ts）。
+ * ★ 边界（宁可少判；已在 test/pure-refgraph.test.ts 锁住"认哪些 / 不认哪些"）：
+ *   · 反引号内容必须以**非 ASCII 的表名**收尾（`!BOSS表`）——`!BOSS表.rotateIndex` 归 REF_RE 那一类；
+ *   · 紧跟其后必须是 `全行（` —— `…!难度表` 第 21 行（clearDropId/killDropId 为空）` 那种行号引用不认；
+ *   · 列举项只收"整项就是一个标识符"的（可带尾随中文注释或「等」字），散文里的英文词不当字段名。
+ */
+const ROW_REF_RE = /`([^`]*)`\s*全行\s*[（(]([^）)]*)[）)]/g;
+const IDENT_RE = /^[A-Za-z][A-Za-z0-9_]*$/;
+
+function extractRowFieldRefs(lines: string[], chaps?: { nos: string[]; titles: string[] }): RowFieldRef[] {
+	const c = chaps || chaptersOf(lines);
+	const out: RowFieldRef[] = [];
+	for (let i = 0; i < lines.length; i++) {
+		if (c.nos[i] !== "4") continue;
+		ROW_REF_RE.lastIndex = 0;
+		let m = ROW_REF_RE.exec(lines[i]);
+		while (m) {
+			const ref = m[1].trim();
+			const tail = ref.split(/[!.]/).pop() || "";
+			// 表名而不是字段名：末尾不是 ASCII 标识符（`!BOSS表` ✓ / `!BOSS表.rotateIndex` ✗）
+			if (/[!.]/.test(ref) && tail && !IDENT_RE.test(tail)) {
+				const fields: string[] = [];
+				for (const raw of m[2].split(/[\/、,，]/)) {
+					// 允许尾随中文注释（`bossGid 等` / `bossName（文本表键）`）——剥掉再认
+					const name = raw.trim().replace(/[^\x00-\x7F]+$/, "").trim();
+					if (IDENT_RE.test(name) && fields.indexOf(name) < 0) fields.push(name);
+				}
+				if (fields.length) out.push({ line: i + 1, ref: ref, fields: fields });
+			}
+			m = ROW_REF_RE.exec(lines[i]);
+		}
 	}
 	return out;
 }
 
 function checkV6(lines: string[], chaps: { nos: string[]; titles: string[] }) {
-	const refs: Array<{ line: number; ref: string; field: string }> = [];
-	const declared: Array<{ line: number; field: string }> = [];
-	for (let i = 0; i < lines.length; i++) {
-		if (chaps.nos[i] === "4") {
-			for (const r of refsIn4(lines[i], i + 1)) refs.push(r);
-			continue;
-		}
-		if (chaps.nos[i] !== "6") continue;
-		const cells = lines[i].split("|").map((c) => c.trim());
-		if (cells.length < 6) continue;                       // §6.5 那类三列表，不是字段声明表
-		const m = DECL_RE.exec(cells[2] || "");
-		if (m) declared.push({ line: i + 1, field: m[1] });
-	}
+	const refs = extractFieldRefs(lines, chaps);
+	const declared = extractFieldDecls(lines, chaps);
 	const declSet = new Set(declared.map((d) => d.field));
 	const missing = refs.filter((r) => !declSet.has(r.field));
 	const unref = declared.filter((d) => !refs.some((r) => r.field === d.field));
@@ -411,7 +470,8 @@ function gddChecklist(input: ChecklistInput) {
 export {
 	VCHECK_SPECS, LEVEL_RANK,
 	linesOf, chaptersOf,
+	extractFieldRefs, extractFieldDecls, extractRowFieldRefs,
 	checkV3, checkV5, checkV6, checkV8, checkV11,
 	scanFinalChecks, gddChecklist
 };
-export type { CheckLevel };
+export type { CheckLevel, FieldRef, FieldDecl, RowFieldRef };
