@@ -4,7 +4,13 @@
  * ★ 工单 03（WorkspacePort 接缝）从 `src/client.js` **逐字搬来**，只做了整体去缩进与补 export；
  *   正文一字未改（行为不变的证据：临时 harness 对真实工作区数据做迁移前后 deepEqual）。
  * 从已有结构化源实时派生：决策记录 / 校准 jsonl / 交接 JSON。不新增文件。
+ *
+ * ★ 工单 17 补的那一步：**字段覆盖检查**（`./fieldclass.ts`）——
+ *   派生过程本身就把每条源记录的键过一遍归类表，**悬空即报错**（error，不是警告）。
+ *   检查跑在"派生时已经 parse 好的 doc"上，不再多读一次磁盘。
  */
+
+import { checkFieldCoverage } from "./fieldclass.ts";
 
 // ── 设计台账派生（设计 §7）──────────────────────────────────────
 //   从**已有的结构化源**派生可读台账 —— 不新增文件、零 skill 改动：
@@ -42,6 +48,8 @@ function buildLedger(inputs) {
 	const items = [];
 	const notes = [];
 	const d8 = (s) => String(s || "").slice(0, 10).replace(/-/g, "");
+	// 工单 17：派生路上顺手收集"每条源记录的已 parse doc" —— 字段覆盖检查要跑在它们上面
+	const covSources = [];
 
 	// ⓪ 交接 JSON（`analysis\sr-gdd-handoff_*.json`）—— **头脑风暴结论的主要载体**
 	//   ★ 2026-09-29 实测漏项：原实现只读 `decisions\`，整个 `analysis\` 没读，
@@ -52,6 +60,7 @@ function buildLedger(inputs) {
 		let j = h.doc || null;
 		if (!j && h.text) { try { j = JSON.parse(h.text); } catch (e) { continue; } }
 		if (!j) continue;
+		covSources.push({ where: "analysis/" + h.name, doc: j });
 		const date = d8(j.created_at);
 		const ts = String(j.created_at || "");
 		const src = h.name + " · 交接";
@@ -85,6 +94,7 @@ function buildLedger(inputs) {
 			try { j = JSON.parse(d.text); } catch (e) { notes.push("决策记录解析失败：" + d.name); continue; }
 		}
 		if (!j) continue;
+		covSources.push({ where: "decisions/" + d.name, doc: j });
 		const r = (j && j.decision_result) || {};
 		const date = d8(j.updated_at || j.created_at);
 		const ts = String(j.created_at || j.updated_at || "");
@@ -154,6 +164,8 @@ function buildLedger(inputs) {
 			}
 		}
 		for (const o of rows) {
+			// 覆盖检查看**每一行**（含没有 input 的行）——它管的是"键有没有被归类"，不是"进不进台账"
+			if (o) covSources.push({ where: "evidence/" + c.name, doc: o });
 			if (!o || !o.input) continue;
 			const rk = String(o.round);
 			if (seen.has(rk)) continue;
@@ -180,9 +192,15 @@ function buildLedger(inputs) {
 			days: Array.from(byDate.entries()).map((kv) => ({ date: kv[0], items: kv[1] }))
 		});
 	}
+	// ④ 工单 17：字段覆盖检查（悬空即报错）→ 结论挂在 `fieldCheck` 上，
+	//   同时把"哪个键没归类"写进 notes（面板接回 pure 层后，台账页签原有的 notes 行就能显示它）
+	const fieldCheck = checkFieldCoverage({ sources: covSources });
+	for (const u of fieldCheck.unknown) notes.push("未归类字段：" + u.key + "（" + u.where + "）");
+
 	return {
 		stages: stages, total: items.length, notes: notes,
-		stats: { fromDecision: items.length - fromJsonl, fromJsonl: fromJsonl }
+		stats: { fromDecision: items.length - fromJsonl, fromJsonl: fromJsonl },
+		fieldCheck: fieldCheck
 	};
 }
 
@@ -198,7 +216,7 @@ function buildLedger(inputs) {
 function ledgerOf(L) {
 	if (!L || !L.records) return null;
 	if (L.error) {
-		return { error: L.error, stages: [], total: 0, notes: [], stats: { fromDecision: 0, fromJsonl: 0 } };
+		return { error: L.error, stages: [], total: 0, notes: [], stats: { fromDecision: 0, fromJsonl: 0 }, fieldCheck: null };
 	}
 	const calByFile = new Map();
 	for (const c of (L.calibration || [])) {
