@@ -62,7 +62,6 @@ if (existing.length > 0) {
 	backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "srwb-build-"));
 	backup = path.join(backupDir, "client.js.prev");
 	for (const p of existing) fs.copyFileSync(p, path.join(backupDir, path.basename(p) + ".prev"));
-	fs.copyFileSync(ARTIFACT, backup);
 	log(`已备份构建前的 ${existing.map((p) => "lib/" + path.basename(p) + "(" + fs.statSync(p).size + "B)").join(" + ")} → ${backupDir}`);
 } else {
 	log("lib/ 下没有产物（首次构建）—— 没有可还原的备份，判据失败时回退到 git HEAD");

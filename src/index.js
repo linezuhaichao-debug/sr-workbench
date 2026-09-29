@@ -88,7 +88,7 @@ export function resolveResourceBase(diskRoot, name) {
 /**
  * 注册全部随包技能。逐条来自 `src/generated/skills.ts`（构建期生成、入库、由 `npm run check:skills` 防漂移）。
  * @param {any} ctx cordis 上下文（需要 `skills` 服务）
- * @param {{ skillsRoot?: unknown } | undefined} config 宿主行 config
+ * @param {{ skillsRoot?: unknown, projectRoot?: unknown } | undefined} config 宿主行 config
  */
 export function apply(ctx, config) {
 	const diskRoot = findDiskSkillsRoot(config);
