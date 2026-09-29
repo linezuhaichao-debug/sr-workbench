@@ -9,11 +9,15 @@
  *   因为坏产物已经躺进了 `lib/`。当时靠 `git checkout HEAD -- lib/client.js` 手工止血。
  *
  * 本脚本把止血动作自动化：
- *   ① 备份当前 `lib/client.js`（存到系统临时目录，**不放进 `lib/`** ——
+ *   ⓪ **技能快照漂移门**（工单 05）：`lib/index.js` 里内联着 12 个 sr 技能的正文，
+ *      那是 `src/generated/skills.ts`（入库产物）的副本；**先**比对它与磁盘 `.agents\skills` 是否一致，
+ *      不一致就立刻停（此步不写 lib/，所以最安全）。源目录不存在时跳过（分发场景）。
+ *   ① 备份当前 `lib/client.js` 与 `lib/index.js`（存到系统临时目录，**不放进 `lib/`** ——
  *      `test/seam.test.ts` 断言 `lib/` 里只有 client.js 与 index.js）
  *   ② `npm run build`
- *   ③ `npm run smoke`（加载 + apply + slot 注册形状，外加 check-no-react 判据）
- *   ④ 冒烟不过 ⇒ **立刻用备份还原 `lib/client.js`**，并以非 0 退出码结束（构建=失败，仓库保持可用态）
+ *   ③ 三道判据：`npm run smoke`（加载 + apply + slot 注册形状）、`npm run check:react`、
+ *      `npm run check:host-skills`（产物里真的注册了 12 条 sr 技能 —— 工单 05）
+ *   ④ 任何一道不过 ⇒ **立刻用备份还原 `lib/`**，并以非 0 退出码结束（构建=失败，仓库保持可用态）
  *
  * 跑法：
  *   npm run build:safe      # 只做构建这一关
@@ -28,7 +32,9 @@ import os from "node:os";
 import path from "node:path";
 
 const REPO = path.resolve(import.meta.dirname, "..");
-const ARTIFACT = path.join(REPO, "lib", "client.js");
+/** 两个**入库产物**都要护住：client.js 被真机直服，index.js 里内联着随包技能正文（工单 05）。 */
+const ARTIFACTS = ["client.js", "index.js"].map((n) => path.join(REPO, "lib", n));
+const ARTIFACT = ARTIFACTS[0];
 
 const log = (s) => console.log("[build:safe] " + s);
 const die = (s) => {
@@ -43,39 +49,51 @@ function run(script) {
 	return r.status === null ? 1 : r.status;
 }
 
-// ── ① 备份 ────────────────────────────────────────────────────────────────
+// ── ⓪ 技能快照漂移门（早于 build：这一步只读，发现漂移时 lib/ 一个字节都没动）──────
+if (run("check:skills") !== 0) {
+	die("技能随包快照已漂移（src/generated/skills.ts 与磁盘 .agents\\skills 不一致）—— 先 `npm run gen:skills` 并提交，再构建");
+}
+
+// ── ① 备份（client.js + index.js 都备；任何一个判据不过就把 lib/ 还原成构建前的样子）──
+let backupDir = null;
 let backup = null;
-if (fs.existsSync(ARTIFACT)) {
-	backup = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "srwb-build-")), "client.js.prev");
+const existing = ARTIFACTS.filter((p) => fs.existsSync(p));
+if (existing.length > 0) {
+	backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "srwb-build-"));
+	backup = path.join(backupDir, "client.js.prev");
+	for (const p of existing) fs.copyFileSync(p, path.join(backupDir, path.basename(p) + ".prev"));
 	fs.copyFileSync(ARTIFACT, backup);
-	const st = fs.statSync(ARTIFACT);
-	log(`已备份构建前的 lib/client.js（${st.size} 字节）→ ${backup}`);
+	log(`已备份构建前的 ${existing.map((p) => "lib/" + path.basename(p) + "(" + fs.statSync(p).size + "B)").join(" + ")} → ${backupDir}`);
 } else {
-	log("lib/client.js 不存在（首次构建）—— 没有可还原的备份，smoke 失败时回退到 git HEAD");
+	log("lib/ 下没有产物（首次构建）—— 没有可还原的备份，判据失败时回退到 git HEAD");
 }
 
 // ── ② 构建 ────────────────────────────────────────────────────────────────
 if (run("build") !== 0) die("npm run build 失败（lib/ 未被替换，安全）");
-if (!fs.existsSync(ARTIFACT)) die("npm run build 退出码 0，但 lib/client.js 没生成");
+for (const p of ARTIFACTS) if (!fs.existsSync(p)) die("npm run build 退出码 0，但 lib/" + path.basename(p) + " 没生成");
 
-// ── ③ 两道产物判据 ────────────────────────────────────────────────────────
+// ── ③ 三道产物判据 ────────────────────────────────────────────────────────
 const smokeOk = run("smoke") === 0;
 const reactOk = run("check:react") === 0;
+// ⓪ 的漂移门管"入库快照 vs 磁盘"，这里管"产物里到底有没有那份快照"（构建后才有意义）
+const hostOk = run("check:host-skills") === 0;
 
 // ── ④ 不过就还原 ──────────────────────────────────────────────────────────
-if (!smokeOk || !reactOk) {
-	const which = [!smokeOk ? "smoke" : null, !reactOk ? "check:react" : null].filter(Boolean).join(" + ");
+if (!smokeOk || !reactOk || !hostOk) {
+	const which = [!smokeOk ? "smoke" : null, !reactOk ? "check:react" : null, !hostOk ? "check:host-skills" : null].filter(Boolean).join(" + ");
 	console.error("");
-	console.error("[build:safe] ✗ 产物未过判据（" + which + "）—— 正在还原 lib/client.js，绝不让坏产物留在 lib/");
-	let restored = false;
-	if (backup) {
-		fs.copyFileSync(backup, ARTIFACT);
-		restored = true;
-		log("已用备份还原（" + fs.statSync(ARTIFACT).size + " 字节）");
+	console.error("[build:safe] ✗ 产物未过判据（" + which + "）—— 正在还原 lib/ 下的产物，绝不让坏产物留在 lib/");
+	let restored = true;
+	if (backupDir) {
+		for (const name of ["client.js", "index.js"]) {
+			const prev = path.join(backupDir, name + ".prev");
+			if (fs.existsSync(prev)) fs.copyFileSync(prev, path.join(REPO, "lib", name));
+		}
+		log("已用备份还原：" + ["client.js", "index.js"].map((n) => "lib/" + n + "(" + fs.statSync(path.join(REPO, "lib", n)).size + "B)").join(" + "));
 	} else {
-		const r = spawnSync("git", ["checkout", "HEAD", "--", "lib/client.js"], { cwd: REPO, stdio: "inherit", shell: true });
-		restored = r.status === 0 && fs.existsSync(ARTIFACT);
-		if (restored) log("已用 git HEAD 的 lib/client.js 还原");
+		const r = spawnSync("git", ["checkout", "HEAD", "--", "lib"], { cwd: REPO, stdio: "inherit", shell: true });
+		restored = r.status === 0;
+		if (restored) log("已用 git HEAD 的 lib/ 还原");
 	}
 	if (!restored) {
 		console.error("[build:safe] !! 还原失败：请立刻手工处理 lib/client.js（真机在服务它）");
@@ -88,7 +106,11 @@ const now = fs.statSync(ARTIFACT);
 if (backup) {
 	const same = Buffer.compare(fs.readFileSync(backup), fs.readFileSync(ARTIFACT)) === 0;
 	const before = fs.statSync(backup).size;
-	log(same ? `✓ 通过：产物与构建前逐字节相同（${now.size} 字节）` : `✓ 通过：产物 ${before} → ${now.size} 字节（内容有变化，记得 git add lib/）`);
+	log(same ? `✓ 通过：lib/client.js 与构建前逐字节相同（${now.size} 字节）` : `✓ 通过：lib/client.js ${before} → ${now.size} 字节（内容有变化，记得 git add lib/）`);
+	const indexNow = fs.statSync(path.join(REPO, "lib", "index.js"));
+	const indexPrev = path.join(backupDir, "index.js.prev");
+	const indexSame = fs.existsSync(indexPrev) && Buffer.compare(fs.readFileSync(indexPrev), fs.readFileSync(path.join(REPO, "lib", "index.js"))) === 0;
+	log(indexSame ? `✓ 通过：lib/index.js 与构建前逐字节相同（${indexNow.size} 字节）` : `✓ 通过：lib/index.js ${fs.existsSync(indexPrev) ? fs.statSync(indexPrev).size + " → " : ""}${indexNow.size} 字节（内容有变化，记得 git add lib/）`);
 } else {
 	log(`✓ 通过：产物 ${now.size} 字节`);
 }

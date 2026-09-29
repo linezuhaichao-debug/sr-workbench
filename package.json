@@ -36,8 +36,11 @@
     "build": "tsdown",
     "build:safe": "node tools/build-safe.mjs",
     "watch": "tsdown --watch",
+    "gen:skills": "node tools/gen-skills.mjs --out src/generated/skills.ts",
+    "check:skills": "node tools/gen-skills.mjs --check --out src/generated/skills.ts",
     "smoke": "node tools/smoke-client.mjs",
     "check:react": "node tools/check-no-react.mjs",
+    "check:host-skills": "node tools/check-host-skills.mjs",
     "test": "node --test \"test/**/*.test.ts\"",
     "lint": "eslint .",
     "verify": "npm test && npm run lint && npm run build:safe"

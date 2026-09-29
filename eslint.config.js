@@ -267,4 +267,12 @@ export default tseslint.config(
 		languageOptions: { globals: { ...globals.node } },
 		rules: { "no-undef": "error" },
 	},
+
+	// ── ⑨ 生成物 src/generated/**：构建期产出、入库、**不许手改**（改了就 `npm run gen:skills`）──
+	{
+		name: "sr-workbench/generated",
+		// 只留一条网：万一有人手改出一个自由变量，这里能抓到；格式/风格不管（它由生成器决定）。
+		files: ["src/generated/**/*.{ts,js}"],
+		rules: { "no-undef": "error" },
+	},
 );
