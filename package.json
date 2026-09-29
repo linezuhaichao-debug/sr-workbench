@@ -34,10 +34,17 @@
   ],
   "scripts": {
     "build": "tsdown",
+    "build:safe": "node tools/build-safe.mjs",
     "watch": "tsdown --watch",
-    "smoke": "node tools/smoke-client.mjs"
+    "smoke": "node tools/smoke-client.mjs",
+    "check:react": "node tools/check-no-react.mjs",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "lint": "eslint .",
+    "verify": "npm test && npm run lint && npm run build:safe"
   },
   "devDependencies": {
-    "tsdown": "^0.23.0"
+    "eslint": "^9.39.1",
+    "tsdown": "^0.23.0",
+    "typescript-eslint": "^8.71.0"
   }
 }

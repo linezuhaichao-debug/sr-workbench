@@ -68,10 +68,23 @@ const SHELL_FOOTER = `
  */
 const CHUNK_HEAD_DUPLICATE = /^Object\.defineProperty\(exports, Symbol\.toStringTag, \{ value: ['"]Module['"] \}\);\r?\n/;
 
+/**
+ * rolldown 会在 chunk 里插 `//#region <入口模块相对 outDir 的路径>`，而这个相对路径
+ * **取决于你用哪条路径进仓库**（本机两条都存在，见 README「过渡 junction」）：
+ *   - 真目录 `D:\TimeMachine\sr-workbench`                              → `//#region src/client.js`
+ *   - junction `outputs\_dsh-panel-test\dsh-client-ui-sr-workbench`     → `//#region ../../../sr-workbench/src/client.js`
+ * 实测：同一份源码、同一个入口，两种走法差 **22 字节** —— 而 `lib/client.js` 是**入库产物**
+ * （`.gitattributes` 的注释正是"必须按字节稳定"），谁在 junction 里构建一次就平白多一个 diff。
+ * 所以把入口的 region 注释归一成 `src/client.js`（真路径构建的形态，也是 HEAD 里那份的形态）。
+ * 其它 region（如 `\0rolldown/runtime.js`）不含路径，保持原样。
+ */
+const CLIENT_REGION = /\/\/#region [^\n]*?src\/client\.js/g;
+
 /** 把 CJS chunk 包进 ModuleLoader 外壳。 */
 function wrapChunk(code) {
 	let body = code;
 	if (CHUNK_HEAD_DUPLICATE.test(body)) body = body.replace(CHUNK_HEAD_DUPLICATE, "");
+	body = body.replace(CLIENT_REGION, "//#region src/client.js");
 	return SHELL_BANNER + body + SHELL_FOOTER;
 }
 
