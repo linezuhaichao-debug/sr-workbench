@@ -149,11 +149,22 @@ test("磁盘技能根解析顺序：config.skillsRoot 优先，都不存在时�
 		assert.equal(viaConfig.resourceBase.kind, "directory");
 		assert.equal(viaConfig.resourceBase.path, path.join(tmp, "sr-askme"));
 
-		// env 顶上（config 没给时）
+		// env 顶上（config 没给 skillsRoot 时）
 		process.env.SR_SKILLS_ROOT = tmp;
 		const viaEnv = registerAll({}).find((s) => s.name === "sr-askme");
 		assert.equal(viaEnv.resourceBase.kind, "directory");
 		assert.equal(viaEnv.resourceBase.path, path.join(tmp, "sr-askme"));
+
+		// 只给 projectRoot（本机 web profile 的 sr-workbench 行就是这样）⇒ 走 <projectRoot>/.agents/skills
+		process.env.SR_SKILLS_ROOT = path.join(tmp, "missing");
+		const projRoot = path.join(tmp, "proj");
+		fs.mkdirSync(path.join(projRoot, ".agents", "skills", "sr-askme"), { recursive: true });
+		const viaProjectRoot = registerAll({ projectRoot: projRoot }).find((s) => s.name === "sr-askme");
+		assert.equal(viaProjectRoot.resourceBase.kind, "directory");
+		assert.equal(viaProjectRoot.resourceBase.path, path.join(projRoot, ".agents", "skills", "sr-askme"));
+		// 但 skillsRoot 仍然优先于 projectRoot
+		const both = registerAll({ skillsRoot: tmp, projectRoot: projRoot }).find((s) => s.name === "sr-askme");
+		assert.equal(both.resourceBase.path, path.join(tmp, "sr-askme"), "skillsRoot 应优先于 projectRoot 推导");
 
 		// config 与 env 都不存在 ⇒ 回落到构建期记录的源目录：本机存在就是 directory，
 		// 分发到没有技能目录的机器上就是 opaque —— 两种都对，这里如实按磁盘现状断言。

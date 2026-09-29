@@ -93,7 +93,9 @@ npm run check:skills   # 只比对不写盘：SKILLS[] 逐字段 + 每个源 SKI
 | 磁盘目录不在（同事机器） | `{kind:'opaque', description:'…没有随包分发，磁盘上也找不到技能目录'}` | **如实说明资源不可用**，不假装可用 |
 | 技能本身没有兄弟资源（`sr-figma-design-system`） | 不挂这个字段 | 没什么可解析的 |
 
-磁盘根按 `config.skillsRoot` → 环境变量 `SR_SKILLS_ROOT` → 构建期记录的源目录 依次找，都没有就 opaque。
+磁盘根按 `config.skillsRoot` → 环境变量 `SR_SKILLS_ROOT` → `<config.projectRoot>/.agents\skills`
+（web profile 的 `sr-workbench` 行里已配 `projectRoot`，换机器只要配了它就能命中）
+→ 构建期记录的源目录 依次找，都不存在就 opaque。
 ⇒ **纯正文流程不受影响**；依赖兄弟文件的环节（`sr-askme` 的 `references/decision.schema.json`、
 `sr-gdd-html` 的 `tools/`）在没 clone 技能目录的机器上仍然缺文件。连兄弟资源一起打包是后续票的选项。
 

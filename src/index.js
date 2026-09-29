@@ -40,14 +40,21 @@ const RESOURCE_FILES = new Map(SKILLS_MANIFEST.files.map((f) => [f.name, f.resou
 
 /**
  * 找"磁盘上的技能根"。只用于 `resourceBase`（兄弟资源解析），**技能的可见性不依赖它**。
- * 顺序：宿主行 config 的 `skillsRoot` → 环境变量 `SR_SKILLS_ROOT` → 构建期记录的源目录。
- * 三个都没有/都不存在就返回 `undefined`（走 opaque）。
- * @param {{ skillsRoot?: unknown } | undefined} config 宿主行传入的 config（web profile 里那份含 configPath/projectRoot）
+ * 顺序：宿主行 config 的 `skillsRoot` → 环境变量 `SR_SKILLS_ROOT` →
+ *       `<config.projectRoot>/.agents/skills`（与 `dsh-skill-filesystem` 的 project-agents 根同构，
+ *        本机 web profile 的 `sr-workbench` 行里就配了 `projectRoot` ⇒ 换台机器只要配了它也能命中）→
+ *       构建期记录的源目录（生成 `src/generated/skills.ts` 时的那台机器上的路径）。
+ * 都不存在就返回 `undefined`（走 opaque）。
+ * @param {{ skillsRoot?: unknown, projectRoot?: unknown } | undefined} config 宿主行传入的 config
  */
 function findDiskSkillsRoot(config) {
 	const candidates = [];
-	if (typeof config?.skillsRoot === "string" && config.skillsRoot.trim() !== "") candidates.push(config.skillsRoot);
-	if (typeof process.env.SR_SKILLS_ROOT === "string" && process.env.SR_SKILLS_ROOT.trim() !== "") candidates.push(process.env.SR_SKILLS_ROOT);
+	const push = (v) => { if (typeof v === "string" && v.trim() !== "") candidates.push(v); };
+	push(config?.skillsRoot);
+	push(process.env.SR_SKILLS_ROOT);
+	if (typeof config?.projectRoot === "string" && config.projectRoot.trim() !== "") {
+		candidates.push(path.join(config.projectRoot, ".agents", "skills"));
+	}
 	candidates.push(SKILLS_MANIFEST.source);
 	for (const candidate of candidates) {
 		try {
