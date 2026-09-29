@@ -129,6 +129,19 @@ rolldown 会对入口模块做**声明级 DCE 与内联**，`treeshake: false`�
 > ⚠️ 客户端 bundle 若有**加载期**错误，整个 GUI 会白屏（"Failed to load plugins"）。
 > 所以改完 `src/` 先跑 `npm run smoke`，再 build。
 
+### 本机（2026-09-29 迁移现场）的一条过渡 junction
+
+`@deepseek-ai/dsh-client-modules` 在**启动时**解析并缓存插件的真实路径（"until restart"）。
+迁移当时正在运行的 3080 实例缓存的是**旧路径** `outputs\_dsh-panel-test\dsh-client-ui-sr-workbench\lib\client.js`，
+所以那条旧路径被留成**指向本仓库的 junction**（不是副本）——当前实例因此立刻服务新产物。
+**下次重启 dsh 之后**可以删掉它，只留 profile 里那一条 junction：
+
+```powershell
+cmd /c rmdir "D:\TimeMachine\outputs\_dsh-panel-test\dsh-client-ui-sr-workbench"
+```
+
+细节与判据写在 `D:\TimeMachine\outputs\_dsh-panel-test\插件已搬到-sr-workbench.md`。
+
 ---
 
 ## `legacy/` —— 历史脚本（仅历史用途）
@@ -147,7 +160,20 @@ rolldown 会对入口模块做**声明级 DCE 与内联**，`treeshake: false`�
 | `sync-intake.js` | 比对 `client.js` 内联 INTAKE 与 `intake-parse.js` 两份副本的函数体指纹 | **已失效**：拆分后不再有两份副本 |
 | `migrate-to-features.js` | 旧扁平层 → `features\<主题>\<桶>\` 的迁移 | 历史一次性脚本 |
 | `intake-parse.js` | 当年的"跨文件复用"尝试 | **已废弃**：DSH 运行期只服务 `client.js` 一个入口（坑 11），这份逻辑现在是 `src/client.js` 里的内联 INTAKE |
+| `test-intake.mjs` | `intake-parse.js` 的离线回归（28 项） | 随 `intake-parse.js` 一起废弃；已改成本目录内相对 `import` |
 | `package.pre-migration.json` | 迁移前那份 `package.json` 原件（`dsh.client.inject` / `platform` / `exports` 的原始形态） | 只作留档，证明"历史没丢"；生效的是仓库根的 `package.json` |
+
+**迁移前那份手写版 `lib/client.js`（244,814 字节）不留工作副本**（避免"第二份源码"），
+逐字节留档在 git 里：
+
+```powershell
+git show pre-migration-baseline:legacy/pre-migration/lib/client.js      # 手写版原件
+git show pre-migration-baseline:legacy/pre-migration/package.json
+```
+
+核对口径（本票的"逐字不变"判据）：`src/client.js` 的正文与该原件**逐行相同**，
+唯一差异是那一行 `const React = require("react")` → `import * as React from "react"`，
+外加头尾的外壳↔ESM 入口互换。
 
 ---
 
