@@ -1,0 +1,5 @@
+# 依赖：不需要入库（安装 = clone + junction；build 时才需要 tsdown）
+node_modules/
+
+# 临时实验目录
+.tmp-*/

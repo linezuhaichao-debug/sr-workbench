@@ -1,0 +1,6 @@
+{
+  "name": "sr-workbench-legacy-scripts",
+  "private": true,
+  "type": "commonjs",
+  "description": "历史自查/回归脚本的落点。本目录强制 CommonJS —— 仓库根的 package.json 是 \"type\": \"module\"，而这些脚本当年写在无 package.json 的目录里（默认 CJS）。"
+}

@@ -1,0 +1,5 @@
+# lib/client.js 是构建产物但**入库**：必须按字节稳定，不能被 autocrlf 改行尾。
+# （Windows 上默认 core.autocrlf=true 会把 LF 换成 CRLF，导致"clone 下来的产物"与构建产物不一致。）
+* text=auto eol=lf
+*.png binary
+*.jpg binary
