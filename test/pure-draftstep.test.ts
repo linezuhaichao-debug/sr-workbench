@@ -13,8 +13,10 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-	DRAFT_ACTIONS_TABLE, buildDraftInstruction, configBranchState, parseConfigContract, readbacksOf
+	DRAFT_ACTIONS_TABLE, DRAFT_PHASES, buildDraftInstruction, configBranchState, configBranchStory,
+	draftActionOf, parseConfigContract, readbacksOf, wireBranchStory
 } from "../src/pure/draftstep.ts";
+import { draftDocOf } from "../src/pure/drafttree.ts";
 
 const SR_ROOT = process.env.SR_WB_WORKSPACE || "D:\\TimeMachine\\GameDesignOS\\workspace";
 const FEATURE = path.join(SR_ROOT, "features", "联盟悬赏");
@@ -172,15 +174,144 @@ test("读回回执：只按文件名认出 readback_*（真数据一份都没有
 	assert.deepEqual(readbacksOf(ev), [], "联盟悬赏的 evidence\\ 里确实没有 readback_*：" + ev.join(" / "));
 });
 
-test("三个动作：表只有一份、顺序是一条链（不是并列四入口）", () => {
-	assert.deepEqual(DRAFT_ACTIONS_TABLE.map((a) => a.id), ["create", "revise", "integrate"]);
+test("动作表：表只有一份、顺序是一条链 + 24c 的两条支线出口", () => {
+	// ★ 工单 24c：从"三个动作"扩到"五个" —— 新增的 `config`（配置表）与 `wireframe`（线框图）
+	//   就是 Y 形中部那两条支线的出口；`integrate` 仍是底部唯一主按钮。
+	assert.deepEqual(DRAFT_ACTIONS_TABLE.map((a) => a.id), ["create", "revise", "config", "wireframe", "integrate"]);
 	assert.equal(DRAFT_ACTIONS_TABLE[0].hint, "跑 /sr-gdd-human");
-	assert.equal(DRAFT_ACTIONS_TABLE[2].hint, "跑 /sr-gdd-ai");
+	assert.equal(DRAFT_ACTIONS_TABLE[2].hint, "跑 /sr-config", "支线 A 出口：配置表走 /sr-config");
+	assert.equal(DRAFT_ACTIONS_TABLE[3].hint, "把 §5 的 ASCII 占位换成真实界面图", "支线 B 出口：线框图");
+	assert.equal(DRAFT_ACTIONS_TABLE[4].hint, "跑 /sr-gdd-ai");
 	for (const a of DRAFT_ACTIONS_TABLE) {
 		assert.ok(a.label && a.needs && a.output && a.handoff, a.id + " 的四个字段都要有");
 	}
-	assert.ok(DRAFT_ACTIONS_TABLE[2].output.includes("_定稿.md"), "整合定稿的产出落点写清");
+	assert.ok(DRAFT_ACTIONS_TABLE[4].output.includes("_定稿.md"), "整合定稿的产出落点写清");
 	assert.ok(/draft_gdd/.test(DRAFT_ACTIONS_TABLE[0].output), "写成稿的头部字段写清");
+	// ★ 分层表：`DRAFT_PHASES` 只引 id，不重写定义（防"第二份定义"）
+	assert.deepEqual(DRAFT_PHASES.map((p) => p.key), ["card", "wire"]);
+	assert.deepEqual(DRAFT_PHASES[0].ids, ["create", "revise"], "纸面动作（折在〔看正文〕里）");
+	assert.deepEqual(DRAFT_PHASES[1].ids, ["config", "wireframe", "integrate"], "Y 形两条支线 + 合流");
+	for (const p of DRAFT_PHASES) for (const id of p.ids) assert.ok(draftActionOf(id), "阶段表里的 id 都能在动作表里找到：" + id);
+	assert.equal(draftActionOf("nope"), null, "查不到的 id 给 null（不静默造一个）");
+});
+
+test("支线状态：**人话**由纯函数成形（`configBranchStory` / `wireBranchStory`），机器口径留 `mis`", () => {
+	const b = configBranchState({
+		draft: { exists: true, name: "联盟悬赏_20260918.md", status: "archived", docType: "draft_gdd", line: 13, archived: true },
+		final: { exists: true, name: "联盟悬赏_20260923_定稿.md", status: "active", docType: "final_gdd", line: 1 },
+		contract: parseConfigContract(read(FINAL)), referencedMissing: [], readbacks: [], configFiles: CONFIG_FILES
+	});
+	const a = configBranchStory(b);
+	// ★ 线框 A 的原文口径：点名几张表 + 「字段都齐」+ 「还有 N 处『待配表』没填」
+	assert.equal(a.story.label, "规则已派生成 3 张表（A079-联盟悬赏.xlsx · A012-全局变量表.xlsx · A006-掉落表.xlsx），字段都齐；还有 1 处「待配表」没填");
+	assert.equal(a.story.tone, "warn");
+	assert.equal(a.story.gap, true);
+	assert.ok(a.story.label.indexOf("missing-pending") < 0, "人话里**不许出现**机器口径 missing-pending");
+	// ★ 机器口径**不丢**：`mis` 里原样带着 `configBranchState` 的结论（界面把它放进「详情」）
+	assert.equal(a.mis.stage, "missing-pending");
+	assert.equal(a.mis.label, b.label, "mis.label 就是 configBranchState 的结论原文");
+	assert.equal(a.mis.gapCount, 1);
+	// 没有 §6 / 有章无字段时也给人话（不硬编"一切都好"）
+	const none = configBranchStory(configBranchState({
+		draft: { exists: false, name: "", status: "", docType: "", line: 0, archived: false },
+		final: { exists: false, name: "", status: "", docType: "", line: 0 },
+		contract: parseConfigContract(""), referencedMissing: [], readbacks: [], configFiles: []
+	}));
+	assert.ok(/还没开始/.test(none.story.label), none.story.label);
+
+	// 支线 B：数字全从真数据来
+	const img = (n: string) => ({ name: n, rel: "gdd/UI/" + n, abs: "D:\\f\\gdd\\UI\\" + n });
+	const w0 = wireBranchStory({ ascii: [], images: [], why: "" });
+	assert.equal(w0.story.label, "§5 里现在是 0 处 ASCII 占位；0 张界面图提交后可替换");
+	assert.equal(w0.story.gap, false, "没有图 ⇒ 不算「还有没填的」");
+	const ascii = draftDocOf(read(DRAFT)).ascii;
+	const w1 = wireBranchStory({ ascii: ascii, images: ["UI-M1 a.png", "UI-M1 b.png"].map(img), why: "" });
+	assert.equal(w1.story.label, "§5 里现在是 " + ascii.length + " 处 ASCII 占位；2 张界面图提交后可替换");
+	assert.equal(w1.story.tone, "warn");
+});
+
+test("§5 的 ASCII 占位：认得出 §5.1–§5.4 四处（真成稿），认不出就如实给空", () => {
+	const d = draftDocOf(read(DRAFT));
+	// ★ 真成稿的 §5 是 5.1 / 5.2 / 5.3 的界面骨架 + 5.4 的界面流程，共 4 段 ```text
+	assert.equal(d.ascii.length, 4);
+	assert.deepEqual(d.ascii.map((x) => x.no), ["5.1", "5.2", "5.3", "5.4"]);
+	assert.deepEqual(d.ascii.map((x) => x.id), ["UI-M1", "UI-M2", "UI-M3", ""]);
+	assert.deepEqual(d.ascii.map((x) => x.line), [193, 231, 263, 293], "行号与真文件逐条一致");
+	assert.ok(d.ascii.every((x) => x.lines > 0), "每处都量出占了多少行：" + d.ascii.map((x) => x.no + "=" + x.lines).join(" "));
+	// 5.0 界面清单与 5.5 全局交互规范是**表格**，不算 ASCII 图（数进去会把"几处"算虚）
+	assert.ok(d.ascii.every((x) => x.no !== "5.0" && x.no !== "5.5"));
+	// 没有 §5 的文本 → 空数组（不编）
+	assert.deepEqual(draftDocOf("# 标题\n\n## 1. 功能意图\n\n文字\n").ascii, []);
+	assert.deepEqual(draftDocOf("").ascii, []);
+});
+
+test("指令 · 支线 A「配置表」：改哪儿 = §4 的规则范围；现状逐字带 §6 字段行与缺口", () => {
+	const contract = parseConfigContract(read(FINAL));
+	const parts = draftDocOf(read(DRAFT)).parts;
+	const got = buildDraftInstruction({
+		action: "config", root: "D:\\ws\\features\\联盟悬赏", topic: "联盟悬赏",
+		draftPath: "D:\\ws\\features\\联盟悬赏\\gdd\\联盟悬赏_20260918.md",
+		contract: contract, parts: parts, readbacks: [],
+		intent: "把 §6.5 L363 的三处落到 A012-全局变量表"
+	});
+	assert.equal(got.blocked, "");
+	const L = got.instruction.split("\n");
+	assert.ok(L[0].indexOf("/sr-config") >= 0, "第一段：跑 /sr-config → " + L[0]);
+	assert.ok(L[2].indexOf("§4 功能规则") >= 0 && L[2].indexOf("L79–L180") >= 0, "「改哪儿」是成稿 §4 的规则范围：" + L[2]);
+	assert.ok(got.instruction.includes("§6 共 24 个字段行"), "现状带字段行数");
+	assert.ok(got.instruction.includes("A079-联盟悬赏.xlsx") && got.instruction.includes("A006-掉落表.xlsx"), "现状带三张表");
+	assert.ok(got.instruction.includes("待配表（缺口说明）：L363") || got.instruction.includes("L363"), "现状带真缺口");
+	assert.ok(got.instruction.includes("**是缺口**"), "缺口措辞区分①：是缺口");
+	assert.ok(got.instruction.includes("面板看不到读回回执") && got.instruction.includes("**不等于**没验收过"), "缺口措辞区分②：面板看不到回执 ≠ 没验收过");
+	assert.ok(got.instruction.includes("面板**不重做 Excel、不改任何表**"), "写明面板不改表");
+	assert.ok(got.instruction.includes("把 §6.5 L363 的三处落到 A012-全局变量表"), "我写的那句话进指令");
+	// 缺前提：没有成稿也没有主题
+	const noDraft = buildDraftInstruction({ action: "config", root: "D:\\ws\\f" });
+	assert.equal(noDraft.instruction, "");
+	assert.ok(noDraft.blocked.includes("需要成稿"));
+});
+
+test("指令 · 支线 B「线框图」：**没输入不发**；有输入才把现状原文与图路径一起发", () => {
+	const ascii = draftDocOf(read(DRAFT)).ascii;
+	const base = {
+		action: "wireframe", root: "D:\\ws\\features\\联盟悬赏", topic: "联盟悬赏",
+		draftPath: "D:\\ws\\features\\联盟悬赏\\gdd\\联盟悬赏_20260918.md", ascii: ascii
+	};
+	// ★ 没输入 ⇒ blocked + next，**一条指令都不组**
+	const none = buildDraftInstruction(base);
+	assert.equal(none.instruction, "", "没给图路径时不组指令");
+	assert.ok(none.blocked.includes("路径是唯一的可靠输入"), none.blocked);
+	assert.ok(none.next.includes("gdd\\UI\\"), "提示告诉用户可以从此处挑：" + none.next);
+	assert.equal(buildDraftInstruction(Object.assign({}, base, { images: [] })).instruction, "");
+	assert.equal(buildDraftInstruction(Object.assign({}, base, { images: ["  ", ""] })).instruction, "", "只有空白的也算没输入");
+	// 有输入 ⇒ 三段式：改哪儿（§5 的 ASCII 占位，逐处带行号）+ 现状原文 + 要换成什么（图路径）
+	const img = "D:\\ws\\features\\联盟悬赏\\gdd\\UI\\UI-M1 联盟悬赏主面板 · 常规难度.png";
+	const got = buildDraftInstruction(Object.assign({}, base, { images: [img] }));
+	assert.equal(got.blocked, "");
+	assert.ok(got.instruction.includes("界面图落到成稿 §5"), "第一段写清落点是 §5：" + got.instruction.split("\n")[0]);
+	assert.ok(got.instruction.includes("§5 里那 4 处 ASCII 占位"), "改哪儿点到 §5 的 4 处占位");
+	for (const x of ascii) assert.ok(got.instruction.includes("§" + x.no), "逐处点到 §" + x.no + "（现状原文）");
+	assert.ok(got.instruction.includes("L193"), "并带行号（行号会漂，原文不会）");
+	assert.ok(got.instruction.includes(img), "要换成什么：图路径逐字进指令");
+	assert.ok(got.instruction.includes("整段换掉"), "处置口径：ASCII 整段换掉");
+	assert.ok(got.instruction.includes("不要顺手改编号或列序"), "不顺手改 §5.x 编号与 UE* 条目");
+	assert.ok(got.instruction.includes("配置内容一律不进成稿"), "守住成稿的「零配置指代」口径");
+	// https 链接与 file:// 前缀都要能收
+	const url = buildDraftInstruction(Object.assign({}, base, { images: ["https://example.com/a.png"] }));
+	assert.ok(url.instruction.includes("https://example.com/a.png"), "链接原样保留");
+	const fileUrl = buildDraftInstruction(Object.assign({}, base, { images: ["file:///D:/ws/a.png"] }));
+	assert.ok(fileUrl.instruction.includes("D:\\ws\\a.png"), "file:// 前缀去掉、转成 Windows 形态");
+});
+
+test("指令 · 未知动作 / 拿不到功能根 —— 都不发指令并给下一步", () => {
+	const bad = buildDraftInstruction({ action: "nope", root: "D:\\ws\\f" });
+	assert.equal(bad.instruction, "");
+	assert.ok(bad.blocked.includes("未知的文档生成动作"));
+	assert.ok(bad.next.includes("线框图"), "五个动作都点出来：" + bad.next);
+	const noRoot = buildDraftInstruction({ action: "create", topic: "X" });
+	assert.equal(noRoot.instruction, "");
+	assert.ok(noRoot.blocked.includes("功能目录"));
+	assert.ok(noRoot.next.includes("文档生成"));
 });
 
 test("指令 · 写成稿：三段式 + 纯规则口径 + 落点由功能根派生", () => {

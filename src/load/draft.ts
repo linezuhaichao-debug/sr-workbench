@@ -22,7 +22,7 @@
 import { dateOf, topicOf } from "../pure/topic.ts";
 import { parseFrontmatter } from "../pure/finalgdd.ts";
 import { draftDocOf } from "../pure/drafttree.ts";
-import { configBranchState, parseConfigContract, readbacksOf } from "../pure/draftstep.ts";
+import { configBranchState, configBranchStory, parseConfigContract, readbacksOf, wireBranchStory } from "../pure/draftstep.ts";
 import type { WorkspacePort } from "../port/types.ts";
 import { listFiles, readAllText, readHead } from "./read.ts";
 
@@ -32,6 +32,47 @@ export interface GddFile {
 	rel?: string;
 	subdir?: string;
 	kind?: string;
+}
+
+/** 界面图的扩展名（`gdd\UI\` 里能当"界面图"用的那些；与 `split.ts` 认的图片类型同口径） */
+const IMAGE_RE = /\.(png|jpe?g|gif|webp|svg)$/i;
+
+/** 字节数 → KB 一位小数（`39495` → `38.6`；0 就是 `0.0`，不编） */
+function kbOf(bytes: number): number {
+	return Math.round((Number(bytes) || 0) / 1024 * 10) / 10;
+}
+
+/**
+ * 文本的 **UTF-8 字节数**。
+ *
+ * ★ 这一层跑在**浏览器半侧**（`lib/client.js` 里那个 bundle）—— **没有 `Buffer`、没有 `node:*`**，
+ *   所以既不能 `Buffer.byteLength`，也不该去 import node 的东西。优先用平台自带的 `TextEncoder`
+ *   （浏览器与 Node 都有；`TextEncoder` 只吃 string，不看 BOM），拿不到时退回**数码点**：
+ *   非 ASCII 按 3 字节算 —— 这是**如实标注的近似**（真实工作区里的成稿是纯中文 markdown，
+ *   中文在 UTF-8 里就是 3 字节；emoji 这类 4 字节的会低估，界面上"约"的口径与它一致）。
+ */
+function utf8BytesOf(text: string): number {
+	const s = String(text == null ? "" : text);
+	try {
+		const TE = (globalThis as { TextEncoder?: new () => { encode(v: string): { length: number } } }).TextEncoder;
+		if (typeof TE === "function") return new TE().encode(s).length;
+	} catch (e) {
+		// 退化到数码点
+	}
+	let n = 0;
+	for (const ch of s) n += ch.codePointAt(0)! < 0x80 ? 1 : 3;
+	return n;
+}
+
+/** `20260918` → `2026-09-18`（认不出就原样返回，不编日期） */
+function dashDate(ymd: unknown): string {
+	const s = String(ymd == null ? "" : ymd);
+	return /^\d{8}$/.test(s) ? s.slice(0, 4) + "-" + s.slice(4, 6) + "-" + s.slice(6, 8) : s;
+}
+
+/** 绝对路径（功能根 + 相对路径，正斜杠） */
+function joinAbs(root: string, rel: string): string {
+	return String(root).replace(/\\+$/, "") + "/" + String(rel).replace(/\\/g, "/");
 }
 
 export interface DraftWorkfaceOptions {
@@ -83,6 +124,8 @@ export async function loadDraftWorkface(port: WorkspacePort, options: DraftWorkf
 	let name = "";
 	let head: Record<string, unknown> | null = null;
 	let doc: ReturnType<typeof draftDocOf> | null = null;
+	/** 成稿全文（字节数进"人话"里的 KB；读不到就是空串） */
+	let raw = "";
 	if (!current) {
 		notes.push("gdd\\ 里没有成稿（`<主题>_<日期>.md`，头部 `doc_type: draft_gdd`）—— 这一屏的第一个动作就是「写成稿」。");
 	} else {
@@ -101,6 +144,7 @@ export async function loadDraftWorkface(port: WorkspacePort, options: DraftWorkf
 		if (text === null) {
 			notes.push("成稿 `" + name + "` 读不动正文 —— 两大部分与左树本屏为空。");
 		} else {
+			raw = text;
 			doc = draftDocOf(text, undefined);
 			if (!doc.complete) {
 				notes.push("没认出「" + doc.missingParts.join("」与「") + "」这两大部分里的全部 —— 面板按章标题关键词认，认不出来就如实说认不出来（不硬指一个章号）。");
@@ -176,6 +220,41 @@ export async function loadDraftWorkface(port: WorkspacePort, options: DraftWorkf
 	// 主题（从成稿文件名派生，用于动作里的产出命名）
 	const topic = name ? topicOf(name) : "";
 
+	// ── ④ 两条支线的**人话状态**（工单 24c）─────────────────────────────────
+	// ★ 状态文字**只在这里成形一次**（`configBranchStory` / `wireBranchStory` 是纯函数、有回归网）：
+	//   界面上看到的与指令里带的是同一份字符串，不存在"界面再拼一遍"。
+	// ★ 界面图：`gdd\UI\` 里的真文件。**两个来源**（先看 detail 的清单，再核磁盘列举）——
+	//   两处都指向同一个目录，取并集并如实说明哪个来源认的（不猜、不假装核过）。
+	const storyA = configBranchStory(branch);
+	let images = ((options && options.gddFiles) || [])
+		.filter((f) => f && f.name && String(f.subdir || "") !== "" && /^ui$/i.test(String(f.subdir)) && IMAGE_RE.test(f.name))
+		.map((f) => {
+			const rel = String(f.rel || "gdd/" + f.subdir + "/" + f.name);
+			return { name: String(f.name), rel: rel, abs: joinAbs(root, rel) };
+		});
+	let uiWhy = "";
+	if (root !== "") {
+		try {
+			const listed = await listFiles(port, root + "/gdd/UI", signal, false);
+			const imgs = listed.filter((n) => IMAGE_RE.test(n));
+			if (imgs.length) {
+				const have: Record<string, boolean> = {};
+				for (const x of images) have[x.name] = true;
+				images = images.concat(imgs.filter((n) => !have[n]).map((n) => ({
+					name: n, rel: "gdd/UI/" + n, abs: joinAbs(root, "gdd/UI/" + n)
+				})));
+			}
+		} catch (e) {
+			// 列不出来**不编**：如实说明这一项没核到，并把清单来源讲清
+			uiWhy = "`gdd/UI/` 这次列不出来（" + String((e && e.message) || e) + "）—— 界面图清单用的是产物清单里的那些。";
+			if (images.length === 0) {
+				uiWhy = "`gdd/UI/` 这次列不出来（" + String((e && e.message) || e) + "），产物清单里也没有 `gdd\\UI\\` 的图片 —— 这一项**没核到**。";
+			}
+		}
+	}
+	images = images.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+	const storyB = wireBranchStory({ ascii: (doc && doc.ascii) || [], images: images, why: uiWhy });
+
 	return {
 		root: root,
 		path: path,
@@ -183,6 +262,20 @@ export async function loadDraftWorkface(port: WorkspacePort, options: DraftWorkf
 		head: head,
 		topic: topic,
 		doc: doc,
+		/** 成稿的 1-based 行数 / 字节数 / KB（人话里的「39 KB」）与文件名里的日期（人话里的「2026-09-18」） */
+		lines: (doc && doc.lines) || 0,
+		bytes: utf8BytesOf(raw),
+		kb: kbOf(utf8BytesOf(raw)),
+		date: dashDate(dateOf(name)),
+		/** ★ 两条支线的人话状态（界面直接念；`mis` 里保留机器口径供「详情」核对） */
+		story: { config: storyA.story, wire: storyB.story },
+		configMis: storyA.mis,
+		wireLabel: storyB.label,
+		/** §5 里的 ASCII 占位（支线 B 的现状原文） */
+		ascii: (doc && doc.ascii) || [],
+		/** `gdd\UI\` 里的界面图（支线 B 的唯一可靠输入） */
+		uiImages: images,
+		uiWhy: uiWhy,
 		drafts: drafts.map((d) => d.name),
 		finalName: finalName,
 		finalHead: finalHead,

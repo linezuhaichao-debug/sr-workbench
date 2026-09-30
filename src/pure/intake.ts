@@ -16,7 +16,7 @@
  */
 
 import { ENTRANCES, humanNoteName, legacyDocName } from "./analysisdoc.ts";
-import { DRAFT_ACTIONS_TABLE, buildDraftInstruction } from "./draftstep.ts";
+import { DRAFT_ACTIONS_TABLE, DRAFT_PHASES, buildDraftInstruction } from "./draftstep.ts";
 
 const INTAKE = (function () {
 	/** 文档类扩展名（导入时只复制这些，跳过图片/视频等大文件） */
@@ -422,8 +422,11 @@ const INTAKE = (function () {
 	return {
 		INTAKE_KINDS: INTAKE_KINDS,
 		BRAINSTORM_KINDS: ENTRANCES,
-		// ★ 工单 24：文档生成工作面的三个动作 + 三段式组装器（表只有一份，在 `./draftstep.ts`）
+		// ★ 工单 24：文档生成工作面的动作 + 三段式组装器（表只有一份，在 `./draftstep.ts`）
+		//   ★ 工单 24c：`DRAFT_PHASES` 也一并 re-export —— Y 形两层（纸面动作 / 支线出口）
+		//     各画哪些动作由它给，**界面不再自己列 id**（列 id 就会变成第二份定义）。
 		DRAFT_ACTIONS: DRAFT_ACTIONS_TABLE,
+		DRAFT_PHASES: DRAFT_PHASES,
 		parseMaterial: parseMaterial, parseMaterials: parseMaterials,
 		baseName: baseName, extOf: extOf, isDoc: isDoc, isTextExt: isTextExt,
 		deriveTopic: deriveTopic, safeName: safeName,

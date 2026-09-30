@@ -333,6 +333,13 @@ export function configBranchState(facts: ConfigBranchFacts): ConfigBranch {
  * `gdd-pipeline.md` §一·三份产出是一条链（成稿 → 配置表 → 定稿），不是四条并列的路。
  *
  * `hint` 是"跑什么"，`needs` 是前置（缺了就在界面上说缺，不发指令），`output` 是产出落点。
+ *
+ * ★ 工单 24c 把它拆成**两个阶段**（`DRAFT_PHASES`）：
+ *   ① `card` —— 成稿纸面上的动作（写成稿 / 改成稿）：Y 形之外，落在「看正文」那一折里；
+ *   ② `wire` —— Y 形那两条支线（配置表 / 线框图）各自的出口。
+ *   `DRAFT_PHASES[1]` 里的 `integrate`（发起整合定稿）就是 Y 形底部的**唯一主按钮**。
+ *   **表只有这一份**（面板的按钮、指令的前置、"这一步产出什么"全读它），
+ *   阶段只是"这一条画在哪一层"的标注，不是第二份定义。
  */
 const DRAFT_ACTIONS = [
 	{
@@ -350,6 +357,22 @@ const DRAFT_ACTIONS = [
 		needs: "成稿在盘上 + 你要改的那一条（建议带上它在成稿里的章 / 组号）",
 		output: "就地改成稿（不改配置表；改到规则就走这条）",
 		handoff: "阶段交给了 skill：它按撰写纪律闭合影响面，成稿门由你在那个会话里拍板"
+	},
+	{
+		id: "config",
+		label: "配置表",
+		hint: "跑 /sr-config",
+		needs: "成稿的 §4 规则已定 + 定稿 §6 已读回（缺的那处「待配表」要能点到行与原文）",
+		output: "改配置表本身（面板不改表：指令只把「§4 的哪条规则 → 哪张表 / 哪个字段 → 缺口在哪」说到不用再找）",
+		handoff: "阶段交给了 skill：字段与记录的落地、读回验收（`evidence\\readback_*`）都在那个会话里做"
+	},
+	{
+		id: "wireframe",
+		label: "线框图",
+		hint: "把 §5 的 ASCII 占位换成真实界面图",
+		needs: "至少一条界面图路径（粘贴的 http/https/本地路径，或从 gdd\\UI\\ 里挑）",
+		output: "就地改 §5：把对应的 ```text ASCII 段换成 <img src=…>，并同步该 UI-M 组下的条目",
+		handoff: "阶段交给了 skill：图能不能用、要不要重画由你在那个会话里定；这一步只把图落到 §5 上"
 	},
 	{
 		id: "integrate",
@@ -373,6 +396,113 @@ export interface DraftActionDef {
 /** 三个动作（**表只有这一份**：面板的卡、指令的前置、"这一步产出什么"都读它） */
 export const DRAFT_ACTIONS_TABLE: DraftActionDef[] = DRAFT_ACTIONS;
 
+/**
+ * 「这一条画在哪一层」—— 工单 24c 的 Y 形分层（**引用 `DRAFT_ACTIONS_TABLE` 的 id，不重写定义**）。
+ *
+ * `card`  = Y 形之外（成稿纸面上的动作，落在「看正文」那一折里）
+ * `wire`  = Y 形的两条支线 + 底部合流（`integrate` 就是那一屏**唯一的主按钮**）
+ */
+export const DRAFT_PHASES: Array<{ key: string; ids: string[] }> = [
+	{ key: "card", ids: ["create", "revise"] },
+	{ key: "wire", ids: ["config", "wireframe", "integrate"] }
+];
+
+/** 动作 id → 定义（面板与指令共用；查不到给 `null`，不静默造一个） */
+export function draftActionOf(id: unknown): DraftActionDef | null {
+	const k = String(id == null ? "" : id);
+	return DRAFT_ACTIONS.filter((x) => x.id === k)[0] || null;
+}
+
+/** 一条支线的**人话状态**（`label` 是结论、`tone` 是小标记、`gap` 是要不要提示"还有没填的"） */
+export interface BranchStory {
+	label: string;
+	tone: "ok" | "warn" | "info";
+	gap: boolean;
+}
+
+/** 路径里最后一段（用于把工作簿文件名念给人听；空串进 → 空串出） */
+function tailOf(p: unknown): string {
+	const s = String(p == null ? "" : p);
+	const parts = s.split(/[\\/]/).filter((x) => x !== "");
+	return parts.length ? parts[parts.length - 1] : s;
+}
+
+/**
+ * 支线 A（配置表）→ **一句话人话状态**。
+ *
+ * ★ 为什么不让界面自己看着 `ConfigBranch` 拼：口径只能有一份。这里是它唯一的成形地，
+ *   有真数据回归网（`test/pure-draftstep.test.ts`），界面只念结果。
+ * ★ **机器口径不丢**：`mis.stage` 与 `mis.label`（`configBranchState` 的结论原文）逐字带上，
+ *   界面把它们放进「详情」里 —— 人话给人看，机器口径留给核对。
+ * ★ **不讲面板看不见的话**：表的存在性只说"按主题挂上来的真实文件名"（`configFiles`），
+ *   不解析工作簿、不猜字段落地情况（`spec.md:212`）。
+ */
+export function configBranchStory(state: unknown): { story: BranchStory; mis: { stage: string; label: string; gapCount: number } } {
+	const c = (state || {}) as ConfigBranch;
+	const stage = String(c.stage || "");
+	const label = String(c.label || "");
+	const ctr = c.facts && c.facts.contract ? c.facts.contract : ({ fields: [], pending: [], notedGaps: [], workbooks: [] } as any);
+	const fields = (ctr.fields || []) as ConfigFieldRow[];
+	const pending = (ctr.pending || []) as ConfigFieldRow[];
+	const notedGaps = (ctr.notedGaps || []) as Array<{ line: number; group: string; cn: string; status: string }>;
+	const books = ((ctr.workbooks || []) as string[]).map(tailOf);
+	const gapCount = pending.length + notedGaps.length;
+	const mis = { stage: stage, label: label, gapCount: gapCount };
+
+	// 还没有 §6 可读（成稿都没有 / 还没定稿 / 定稿里没有那一章）—— 只说光秃秃的事实
+	if (!ctr.present || stage === "before-draft" || stage === "rules-ready" || stage === "integrating") {
+		return { story: { label: label || "配置支线还没开始", tone: stage === "before-draft" ? "info" : "warn", gap: true }, mis: mis };
+	}
+	if (fields.length === 0) {
+		return { story: { label: "配置契约是空的 —— §6 有章但没有字段行", tone: "warn", gap: true }, mis: mis };
+	}
+
+	const head = books.length
+		? "规则已派生成 " + books.length + " 张表（" + books.join(" · ") + "），字段都齐"
+		: "规则已派生，" + fields.length + " 个字段行都齐（章引言里没写工作簿名，表名读不到）";
+	const tail = gapCount
+		? "；还有 " + gapCount + " 处「待配表」没填"
+		: "；没有待配表缺口";
+	return { story: { label: head + tail, tone: gapCount ? "warn" : "ok", gap: gapCount > 0 }, mis: mis };
+}
+
+/** 一份界面图（`gdd\UI\` 里的真文件；**支线 B 的可选输入**） */
+export interface WireImage {
+	/** 文件名（含扩展名） */
+	name: string;
+	/** 相对功能根的路径（正斜杠，`gdd/UI/<文件名>`） */
+	rel: string;
+	/** 绝对路径（正斜杠；有它才能让 skill 直接读盘） */
+	abs: string;
+}
+
+/** 支线 B（线框图）的**现状**：§5 里现在是 ASCII 占位 + 已备好的界面图 */
+export interface WireBranchFacts {
+	/** §5 里的 ASCII 占位处（`drafttree.asciiOf` 的结论，原样给） */
+	ascii: Array<{ no: string; id: string; title: string; line: number; lines: number }>;
+	/** `gdd\UI\` 里已备好的界面图（真实目录列举） */
+	images: WireImage[];
+	/** `gdd\UI\` 列不出来时的原因（如实说；空串 = 列到了） */
+	why: string;
+}
+
+/**
+ * 支线 B → **一句话人话状态**（线框 A 的原话：`§5 里现在是 ASCII 图占位；7 张界面图提交后可替换`）。
+ *
+ * ★ 数字全部从真数据来：`ascii.length` 是 §5 里认出来的 ASCII 段数，`images.length` 是
+ *   `gdd\UI\` 里真实存在的界面图数。两样都认不出来时**照实说认不出来**，不假装。
+ */
+export function wireBranchStory(facts: unknown): { story: BranchStory; label: string } {
+	const f = (facts || {}) as WireBranchFacts;
+	const ascii = Array.isArray(f.ascii) ? f.ascii : [];
+	const images = Array.isArray(f.images) ? f.images : [];
+	const label = "§5 里现在是 " + ascii.length + " 处 ASCII 占位；" + images.length + " 张界面图提交后可替换";
+	return {
+		story: { label: label, tone: images.length ? "warn" : "info", gap: images.length > 0 },
+		label: label
+	};
+}
+
 export interface DraftInstructionInput {
 	/** 动作 id：`create` / `revise` / `integrate` */
 	action: string;
@@ -393,6 +523,20 @@ export interface DraftInstructionInput {
 	/** 配置支线的一句话结论 + 缺口（`integrating` 动作的第三段；直接搬 `configBranchState` 的输出） */
 	configLabel?: unknown;
 	configMissing?: unknown[];
+	// ── 支线 A（配置表）与支线 B（线框图）的现状（工单 24c）────────────────────
+	// ★ 现状**照原样搬**（不在这里重解析）：`contract` 是 `parseConfigContract` 的结论、
+	//   `parts` 是 `drafttree.draftDocOf().parts`、`ascii` 是 `drafttree.asciiOf` 的结论、
+	//   `readbacks` 是 `readbacksOf` 的结论。面板与指令看到的是同一份，不存在"再算一次"。
+	/** 定稿 §6 配置契约（`parseConfigContract` 的结论；支线 A 的现状） */
+	contract?: ConfigContract | null;
+	/** 成稿的两大部分（`draftDocOf().parts`；支线 A 用它把"改哪儿"写成 §4 的规则范围） */
+	parts?: Array<{ key: string; no: string; label: string; line: number; endLine: number }>;
+	/** 读回验收回执（`readbacksOf` 的结论；支线 A 只用它的文件名） */
+	readbacks?: ReadbackRecord[];
+	/** §5 里的 ASCII 占位（`drafttree.asciiOf` 的结论；支线 B 的现状原文） */
+	ascii?: Array<{ no: string; id: string; title: string; line: number; lines: number }>;
+	/** 界面图路径（**支线 B 的唯一可靠输入**；粘贴的路径或 `gdd\UI\` 里挑的） */
+	images?: unknown[];
 	/** `date` 由调用方给（面板用今天）—— 纯函数不吃时钟，测试才能逐字断言 */
 	date?: unknown;
 }
@@ -420,7 +564,7 @@ export function buildDraftInstruction(input: DraftInstructionInput): { instructi
 	const inp = input || ({} as DraftInstructionInput);
 	const a = DRAFT_ACTIONS.filter((x) => x.id === inp.action)[0];
 	if (!a) {
-		return { instruction: "", blocked: "未知的文档生成动作：" + String(inp.action), next: "三个动作是：写成稿 / 改成稿 / 发起整合定稿。" };
+		return { instruction: "", blocked: "未知的文档生成动作：" + String(inp.action), next: "五个动作是：写成稿 / 改成稿 / 配置表 / 线框图 / 发起整合定稿。" };
 	}
 	const root = winOf(inp.root);
 	if (root === "") {
@@ -507,6 +651,119 @@ export function buildDraftInstruction(input: DraftInstructionInput): { instructi
 		L.push("连带影响（工作台只报**结构引用**扫得出的那部分；语义影响请按撰写纪律的影响面闭合自行扫全）：");
 		L.push("  · 成稿的 §4 规则 / §5 界面流程 / §9 验收标准 三处要一起看（改一条规则通常牵到界面与验收）。");
 		L.push(tail);
+		return { instruction: L.join("\n"), blocked: "", next: "" };
+	}
+
+	// ── 支线 A · 配置表（工单 24c）────────────────────────────────────────────
+	// 三段式照 `instruction.ts` / `intake.ts`：改哪儿（§4 的哪条规则 → 哪张表/哪个字段）→
+	// 现状原文（§6 的字段行逐字 + 「待配表」缺口的行号与中文名）→ 要改成什么（缺口怎么处置）。
+	if (a.id === "config") {
+		const path = winOf(inp.draftPath);
+		if (path === "" && topic === "") {
+			return {
+				instruction: "",
+				blocked: "「配置表」需要成稿 —— 配置字段是从成稿 §4 的规则派生的，规则文档拿不到。",
+				next: "先走「写成稿」把这份成稿写出来；或从「功能详情 › 文档生成」进来（面板会带上成稿路径）。"
+			};
+		}
+		const contract = inp.contract || ({} as ConfigContract);
+		const pend = (contract.pending || []).slice();
+		const noted = (contract.notedGaps || []).slice();
+		const books = ((contract.workbooks || []) as string[]).map(oneLine).filter((x) => x !== "");
+		const rulePart = ((inp.parts || []) as Array<{ key: string; no: string; label: string; line: number; endLine: number }>)
+			.filter((p) => p && p.key === "rules")[0] || null;
+		const L = [
+			"【文档生成 · 配置表】请执行 `/sr-config`（走 `/sr-config` 的正常调用，不要改动该 skill）。",
+			"主题：" + (topic || "（按成稿推导）"),
+			"改哪儿（配置字段的设计依据 —— 成稿 §4 的规则）：" +
+				(rulePart
+					? "§" + rulePart.no + " " + rulePart.label + "（" + winOf(path || gddDir + "\\" + (topic || "<主题>") + "_*（按日期取最新）") + "　L" + rulePart.line + "–L" + rulePart.endLine + "）"
+					: winOf(path || gddDir + "\\" + (topic || "<主题>") + "_*（按日期取最新）") + " 的 §4 功能规则")
+		];
+		L.push("现状（定稿 §6 配置契约读回的字段行 —— 面板只读、不改表）：");
+		if (contract.present && (contract.fields || []).length) {
+			L.push("  · §6 共 " + (contract.fields || []).length + " 个字段行" +
+				(books.length ? "，涉及 " + books.length + " 张表：" + books.join(" / ") : "（章引言里没写工作簿名）") + "。");
+			for (const r of (contract.fields || []).slice(0, 6)) L.push("  · L" + r.line + " " + r.group + " · " + r.cn + "（`" + r.field + "`）状态：" + r.status);
+			if ((contract.fields || []).length > 6) L.push("  · （其余 " + ((contract.fields || []).length - 6) + " 行按 §6 原文看，面板只报前 6 行）");
+		} else if (contract.present) {
+			L.push("  · §6 有章但没有可解析的字段行（认得出却没解析的行 " + (contract.otherRows || 0) + " 条）。");
+		} else {
+			L.push("  · 面板没读到定稿 §6（还没有定稿，或定稿里没有 `## 6. 配置契约`）。");
+		}
+		if (pend.length + noted.length) {
+			L.push("还有没填的（**是缺口** —— §6.5 的状态列写着「待配表」，不是「面板看不到」）：");
+			for (const r of pend) L.push("  · L" + r.line + " " + r.group + " · " + r.cn + "（`" + r.field + "`）：" + r.status);
+			for (const g of noted) L.push("  · L" + g.line + " " + g.group + " · " + g.cn + "：" + g.status);
+			L.push("  ⇒ 请把这几处**落到表里**（或明确告诉我它要挂在哪张表的哪个字段上）；落不下来的，请在回话里逐条说明卡在哪。");
+		} else {
+			L.push("没有「待配表」缺口 —— 这一轮要改的是规则变动牵动的字段（若有）。");
+		}
+		const rb = (inp.readbacks || []) as Array<{ name: string }>;
+		L.push("读回验收（`evidence\\readback_*`）：" + (rb.length ? rb.map((r) => r.name).join(" / ") : "面板看不到读回回执（**不等于**没验收过 —— 只代表 evidence\\ 里没有 `readback_*`）"));
+		if (inp.intent) L.push("这次要改的（我的一句话）：" + oneLine(inp.intent));
+		L.push(
+			"要求：",
+			"  · 字段名 / 表名 / 结构以配置表的**实际落地**为准；面板给的 §4 规则是设计依据，不是字段清单。",
+			"  · 改了字段就同步 INDEX 与配置说明 / 字段批注（按 /sr-config 的既定纪律）。",
+			"  · 落表之后跑一次读回验收并留 `evidence\\readback_<表>_<主题>_<日期>.md` —— 面板看的就是它。",
+			"  · 面板**不重做 Excel、不改任何表**：它只显示这条支线走到哪。",
+			tail
+		);
+		return { instruction: L.join("\n"), blocked: "", next: "" };
+	}
+
+	// ── 支线 B · 线框图（工单 24c）────────────────────────────────────────────
+	// 面板拿不到二进制，**路径是唯一可靠输入** ⇒ 有输入才发（没输入时 `blocked` + `next`，界面先展开输入）。
+	if (a.id === "wireframe") {
+		const imgs = (Array.isArray(inp.images) ? inp.images : []).map((x: unknown) => {
+			const s = String(x == null ? "" : x).trim();
+			return { raw: s, win: /^https?:\/\//i.test(s) ? s : winOf(s === "" ? "" : s.replace(/^file:\/\/\/?/i, "")) };
+		}).filter((x) => x.raw !== "");
+		if (imgs.length === 0) {
+			return {
+				instruction: "",
+				blocked: "「线框图」需要至少一条界面图路径 —— 面板拿不到二进制，路径是唯一的可靠输入。",
+				next: "在下面粘一条路径（本机文件 / 目录 / 链接都行，可多行），或从 `gdd\\UI\\` 里已备好的那几张里点一个。"
+			};
+		}
+		const ascii = ((inp.ascii || []) as Array<{ no: string; id: string; title: string; line: number; lines: number }>)
+			.filter((x) => x && (x.no || x.id));
+		const where = oneLine(inp.where);
+		const uiPart = (() => {
+			const m = /UI-M\d+/i.exec(where || "") || (ascii.length === 1 ? /UI-M\d+/i.exec(ascii[0].id || "") : null);
+			return m ? m[0] : "";
+		})();
+		const path = winOf(inp.draftPath) || (gddDir + "\\" + (topic || "<主题>") + "_*（按日期取最新）");
+		const L = [
+			"【文档生成 · 线框图】请把界面图落到成稿 §5（该功能目录下 `gdd\\` 里那一份成稿），**不要动任何别的章**。",
+			"主题：" + (topic || "（按成稿推导）"),
+			"改哪儿：" + (where ||
+				(ascii.length
+					? "§5 里那 " + ascii.length + " 处 ASCII 占位（" + ascii.map((x) => "§" + x.no + (x.id ? " " + x.id : "") + " L" + x.line).join(" · ") + "）"
+					: "§5（面板这次没在 §5 里认出 ASCII 占位 —— 请按下面的现状原文自行核对）")) +
+				"；成稿：" + path
+		];
+		L.push("现状原文（面板读出来的 ASCII 占位；行号会漂、原文不会）：");
+		if (ascii.length) {
+			for (const x of ascii) L.push("  · §" + x.no + (x.id ? " " + x.id : "") + " " + x.title + "　L" + x.line + "　（约 " + x.lines + " 行）");
+			L.push("  · 这些段在成稿里都是 ```text 围栏 —— 替换时**整段换掉**，不要把 ASCII 留在下面当备份。");
+		} else {
+			L.push("  · （没认出 ASCII 占位：可能 §5 里已经是图片引用了。若是，请只补/换下面这些图，不要重排 §5 的组与条目。）");
+		}
+		L.push("要换成什么（界面图，逐条给路径）：");
+		for (const im of imgs) L.push("  · " + im.win);
+		L.push(
+			"要求：",
+			"  · §5 是**用户体验与界面流程**章（`#5`）—— 换图时保留原有的 §5.x 组号、UI-M* 标识与 UE* 条目，不要顺手改编号或列序。",
+			uiPart
+				? "  · " + uiPart + " 组的图请跟着该组的条目走：图换了但条目还对不上图的，逐条指出哪几条要跟着改。"
+				: "  · 图与条目要对得上：换了图之后如果 UE* 条目说的和图上不一致，逐条列出来（不要自己顺手改规则）。",
+			"  · §5 的条目是**界面流程与交互规则**（纯设计），不要在这里写字段名 / 表名——配置内容一律不进成稿。",
+			"  · 若图里有面板看不清的东西（缺状态、缺文案、缺边界），**先问我**，不要自己猜着补。",
+			"  · 面板不做这件事：它只把「现状原文 + 图路径 + 落点」说到不用再找，落纸与对账都在那个会话里。",
+			tail
+		);
 		return { instruction: L.join("\n"), blocked: "", next: "" };
 	}
 

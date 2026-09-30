@@ -56,10 +56,38 @@ export interface DraftPart {
 	note: string;
 }
 
+/**
+ * §5 里**一处 ASCII 占位图**（工单 24c：支线 B「线框图」的现状）。
+ *
+ * ── 为什么需要它（口径出处）────────────────────────────────────────────────
+ *   `spec.md` 的 Y 形：界面支线要「把 §5 里的 ASCII 图 / 骨架图换成真实界面图」。
+ *   所以"§5 里现在有几处 ASCII 占位、各在哪一行"是这条支线的**现状原文**——
+ *   线框图提交后要替换的就是这些段落，替换指令必须能逐处点到（行号会漂、原文不会）。
+ *
+ * ── 认哪一段（保守判据，宁可少认）────────────────────────────────────────────
+ *   `level === 3` 的块（`### 5.1 UI-M1 …` 这种）里含 ```text 围栏的段。
+ *   真实成稿的 §5 正好是 5.1 / 5.2 / 5.3 的界面骨架 + 5.4 的界面流程，共 4 段。
+ *   5.0 界面清单与 5.5 全局交互规范是**表格**，不是 ASCII 图 ⇒ 不算（数进去会把"几处"算虚）。
+ */
+export interface DraftAsciiBlock {
+	/** 组号原文（`5.1` / `5.4`） */
+	no: string;
+	/** 组标识（`UI-M1`；没有就是空串，如 5.4 界面流程） */
+	id: string;
+	/** 组标题（`联盟悬赏主面板`） */
+	title: string;
+	/** 1-based 行号（那个 `###` 标题所在行） */
+	line: number;
+	/** 围栏里**非空且非围栏**的行数（"这一处占位画了多少行"）。**逐字用行数，不臆造"处"以外的单位** */
+	lines: number;
+}
+
 export interface DraftDoc {
 	title: string;
 	/** 两大部分（恒两条：认出来的是 `no !== ""`） */
 	parts: DraftPart[];
+	/** §5 里的 ASCII 占位处（按行号升序；空数组 = §5 里没有 ASCII 占位了，如实报） */
+	ascii: DraftAsciiBlock[];
 	/** 两条都认出来了 */
 	complete: boolean;
 	/** 没认出来的话，缺哪一条 */
@@ -140,6 +168,7 @@ export function draftDocOf(text: unknown, parsed?: ReturnType<typeof parseFinalG
 	return {
 		title: String(doc.title || ""),
 		parts: parts,
+		ascii: asciiOf(doc),
 		complete: parts.length === PARTS.length,
 		missingParts: PARTS.filter((p) => !found[p.key]).map((p) => p.label),
 		tree: tree,
@@ -162,4 +191,36 @@ export function partKeyOfChapter(d: DraftDoc | null | undefined, no: unknown): s
 	const n = String(no == null ? "" : no);
 	const hit = ((d && d.chapters) || []).filter((c) => c.no === n)[0];
 	return hit ? hit.part : "";
+}
+
+/** ```text 围栏（ASCII 骨架图的既有写法；成稿 §5 的 5.1–5.4 都用它） */
+const FENCE_TEXT_RE = /```text[^\n]*\n([\s\S]*?)```/g;
+
+/**
+ * `parseFinalGdd` 的块 → §5 里的 ASCII 占位处（**支线 B 的现状**）。
+ *
+ * 只认 `level === 3` 且**组号是 5.x** 的块；行数只数围栏内非空行（如实量"这一处占位画了多少行"）。
+ * 一条都认不出来就返回空数组 —— 界面照实说"§5 里没有 ASCII 占位了"，**不假装还有**。
+ */
+export function asciiOf(doc: ReturnType<typeof parseFinalGdd> | null | undefined): DraftAsciiBlock[] {
+	const blocks = ((doc && doc.blocks) || []) as any[];
+	const out: DraftAsciiBlock[] = [];
+	for (const b of blocks) {
+		if (!b || Number(b.level) !== 3) continue;
+		const no = String(b.no || "");
+		if (!/^5\./.test(no)) continue;
+		const text = String(b.text || "");
+		FENCE_TEXT_RE.lastIndex = 0;
+		let m;
+		let lines = 0;
+		while ((m = FENCE_TEXT_RE.exec(text)) !== null) {
+			lines += (m[1] || "").split("\n").filter((x) => x.trim() !== "").length;
+		}
+		if (lines === 0) continue;
+		out.push({
+			no: no, id: String(b.id || ""), title: String(b.title || ""),
+			line: Number(b.line) || 0, lines: lines
+		});
+	}
+	return out.sort((a, b) => a.line - b.line);
 }

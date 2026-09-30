@@ -1447,12 +1447,12 @@ import {
 			/** 跳到某个会话（DSH 自己的 uiWorkspace.openSession）—— 失败也要说话 */
 			const jump = (sid) => {
 				if (!sid || !props.onOpenSession) {
-					setSendMsg((m) => Object.assign({}, m, { jumpErr: "面板拿不到「跳会话」的通道（onOpenSession 没挂上）。" }));
+					setSendMsg((m) => Object.assign({}, m || {}, { jumpErr: "面板拿不到「跳会话」的通道（onOpenSession 没挂上）。" }));
 					return;
 				}
 				const r = props.onOpenSession(sid);
 				if (r && r.ok === false) {
-					setSendMsg((m) => Object.assign({}, m, {
+					setSendMsg((m) => Object.assign({}, m || {}, {
 						jumpErr: "跳转失败：" + ((r.error && (r.error.message || r.error.code)) || "未知原因") +
 							"　—— 你可以在左侧列表里按标题找到它。"
 					}));
@@ -2458,12 +2458,12 @@ import {
 			};
 			const jump = (sid) => {
 				if (!sid || typeof props.onOpenSession !== "function") {
-					setSendMsg((m) => Object.assign({}, m, { jumpErr: "面板拿不到「跳会话」的通道（onOpenSession 没挂上）。" }));
+					setSendMsg((m) => Object.assign({}, m || {}, { jumpErr: "面板拿不到「跳会话」的通道（onOpenSession 没挂上）。" }));
 					return;
 				}
 				const r = props.onOpenSession(sid);
 				if (r && r.ok === false) {
-					setSendMsg((m) => Object.assign({}, m, {
+					setSendMsg((m) => Object.assign({}, m || {}, {
 						jumpErr: "跳转失败：" + ((r.error && (r.error.message || r.error.code)) || "未知原因") + "　—— 你可以在左侧列表里按标题找到它。"
 					}));
 				}
@@ -2782,20 +2782,38 @@ import {
 			const config = (data && data.config) || null;
 			const notes = (data && data.notes) || [];
 			const actions = (INTAKE && INTAKE.DRAFT_ACTIONS) || [];
+			const phases = (INTAKE && INTAKE.DRAFT_PHASES) || [];
+			const story = (data && data.story) || {};
+			/** Y 形两层的动作 id（`DRAFT_PHASES`；表只有一份，这里只是按阶段取） */
+			const cardIds = ((phases.filter((p) => p.key === "card")[0] || {}).ids) || [];
+			const defOf = (id) => actions.filter((x) => x.id === id)[0] ||
+				{ id: id, label: id, hint: "", needs: "", output: "", handoff: "" };
 			const [act, setAct] = React.useState("create");
 			const [seed, setSeed] = React.useState("");
 			const [mats, setMats] = React.useState("");
 			const [where, setWhere] = React.useState("");
-			const [before, setBefore] = React.useState("");
+			const [before, setBefore] = React.useState("§5");
 			const [intent, setIntent] = React.useState("");
-			const [sendMsg, setSendMsg] = React.useState(null);
+			/** 支线 B 的图路径（粘的 + 从 `gdd\UI\` 里挑的，逐行） */
+			const [wirePaste, setWirePaste] = React.useState("");
+			const [picked, setPicked] = React.useState([]);
+			/** 三个「先展开输入/预览，再发」的入口 + 三个折叠区（两大部分 / 看正文 / 详情） */
+			const [openCfg, setOpenCfg] = React.useState(false);
+			const [openWire, setOpenWire] = React.useState(false);
+			const [openInt, setOpenInt] = React.useState(false);
+			const [openParts, setOpenParts] = React.useState(false);
+			const [openBody, setOpenBody] = React.useState(false);
+			const [openMachine, setOpenMachine] = React.useState(false);
+			const [sendMsg, setSendMsg] = React.useState({});
 			const [openG, setOpenG] = React.useState({});
-			const [openDet, setOpenDet] = React.useState(false);
 			const [sel, setSel] = React.useState(-1);
 			const bodyRef = React.useRef(null);
 
 			const e = actions.filter((x) => x.id === act)[0] || actions[0] ||
 				{ id: "", label: "", hint: "", needs: "", output: "", handoff: "" };
+
+			/** 今天，`YYYY-MM-DD`（**只有一处**：指令预览与真正发出去的必须是同一天） */
+			const today = (() => { const s = todayYmd(); return s.slice(0, 4) + "-" + s.slice(4, 6) + "-" + s.slice(6, 8); })();
 
 			/** 组标识：有 `id`（R1 / UI-M1）用它，否则退回组号（5.0）——与 `finaltree.groupKey` 同口径 */
 			const gk = (g) => String(g.id || g.no || "");
@@ -2811,53 +2829,86 @@ import {
 			};
 
 			// ★ 卡上显示的就是**要发出去的原文**（组装只有一份实现：`src/pure/draftstep.ts`）
-			const built = (INTAKE && INTAKE.buildDraftInstruction && e.id)
-				? INTAKE.buildDraftInstruction({
-					action: e.id, root: root, topic: (data && data.topic) || "",
-					date: todayYmd(),
-					// ★ 每个动作的"要写成什么/要改成什么"来自**它自己那张卡**的输入：
-					//   写成稿用 `seed`（要写成什么）、改成稿用 `intent`（要改成什么）、整合定稿不带意图。
-					//   （这里踩过一次：写成稿的输入存在 `seed`，却把 `intent` 传下去 ——
-					//    界面上的预览就会永远显示"（未指定）"，而输入框里明明有字。）
-					intent: (e.id === "create" ? seed : (e.id === "integrate" ? "" : intent)),
-					draftPath: (data && data.path) || "",
-					before: before, where: where,
-					materials: INTAKE.parseMaterials(mats),
-					configLabel: (config && config.label) || "",
-					configMissing: (config && config.missing) || []
-				})
+			//   五个动作的公共入参**只拼一次**（`common`）—— 五个分支各自的差异由 `act` 决定。
+			const common = {
+				root: root, topic: (data && data.topic) || "", date: today,
+				draftPath: (data && data.path) || "",
+				configLabel: (config && config.label) || "",
+				configMissing: (config && config.missing) || [],
+				contract: (config && config.facts && config.facts.contract) || null,
+				parts: (doc && doc.parts) || [],
+				readbacks: (config && config.facts && config.facts.readbacks) || [],
+				ascii: (data && data.ascii) || []
+			};
+			const build = (over) => (INTAKE && INTAKE.buildDraftInstruction)
+				? INTAKE.buildDraftInstruction(Object.assign({}, common, { action: "create" }, over || {}))
 				: { instruction: "", blocked: "文档生成的组装器没加载上（draftstep 模块缺失）。", next: "" };
 
-			const send = () => {
-				if (built.blocked) {
-					setSendMsg({ kind: "blocked", text: built.blocked, next: built.next || "" });
+			/** 支线 B 的输入（逐行；粘的 + 挑的，去重保序）—— **路径是唯一可靠输入** */
+			const wirePaths = (() => {
+				const out = [];
+				const seen = {};
+				const push = (s) => {
+					const v = String(s == null ? "" : s).trim().replace(/^file:\/\/\/?/i, "");
+					if (v === "" || seen[v]) return;
+					seen[v] = true;
+					out.push(v);
+				};
+				for (const x of picked) push(x);
+				for (const line of String(wirePaste).split(/\r?\n/)) push(line);
+				return out;
+			})();
+
+			/** 五个动作各自的「要发出去的原文」（组装只有一份实现；卡上看到的 = 发出去的） */
+			const builtOf = (id) => {
+				if (id === "create") return build({ action: "create", intent: seed, materials: INTAKE.parseMaterials(mats) });
+				if (id === "revise") return build({ action: "revise", where: where, before: before, intent: intent });
+				if (id === "config") return build({ action: "config", where: where, intent: intent });
+				if (id === "wireframe") return build({ action: "wireframe", where: where, images: wirePaths });
+				return build({ action: "integrate" });
+			};
+			const built = builtOf(e.id);
+			const builtWire = builtOf("wireframe");
+			const builtCfg = builtOf("config");
+			const builtInt = builtOf("integrate");
+
+			/** 发一条指令（正文由上面的组装器给；`built.blocked` 时**不发**，原样显示提示） */
+			const sendOne = (id, b, tag) => {
+				if (b.blocked) {
+					setSendMsg((m) => Object.assign({}, m || {}, { [id]: { kind: "blocked", text: b.blocked, next: b.next || "" } }));
 					return;
 				}
 				if (typeof props.onSend !== "function") {
-					setSendMsg({ kind: "err", text: "发送通道没挂上（onSend 缺失）。", next: "刷新页面；仍失败就把这条发给开发者。" });
+					setSendMsg((m) => Object.assign({}, m || {}, { [id]: { kind: "err", text: "发送通道没挂上（onSend 缺失）。", next: "刷新页面；仍失败就把这条发给开发者。" } }));
 					return;
 				}
-				setSendMsg({ kind: "pending", text: "正在发给该功能的专属工作会话…" });
-				props.onSend(e.id, { text: built.instruction, root: root }).then(
-					(r) => setSendMsg(r && r.ok
-						? { kind: "ok", text: "已交给工作会话。", sid: r.sid || "", target: r.target || null, healed: !!r.healed, queued: !!r.queued, note: r.note || "" }
-						: {
-							kind: "err",
-							text: (r && (r.message || r.blocked || r.note)) || "发送失败",
-							next: (r && r.next) || "再按一次；仍失败就把这条错误发给开发者。",
-							sid: (r && r.sid) || ""
-						}),
-					(err) => setSendMsg({ kind: "err", text: String((err && err.message) || err), next: "再按一次。" })
+				setSendMsg((m) => Object.assign({}, m || {}, { [id]: { kind: "pending", text: "正在发给该功能的专属工作会话…" } }));
+				props.onSend(id, { text: b.instruction, root: root }).then(
+					(r) => setSendMsg((m) => Object.assign({}, m || {}, {
+						[id]: r && r.ok
+							? { kind: "ok", text: "已交给工作会话。", sid: r.sid || "", target: r.target || null, healed: !!r.healed, queued: !!r.queued, note: r.note || "" }
+							: {
+								kind: "err",
+								text: (r && (r.message || r.blocked || r.note)) || "发送失败",
+								next: (r && r.next) || "再按一次；仍失败就把这条错误发给开发者。",
+								sid: (r && r.sid) || ""
+							}
+					})),
+					(err) => setSendMsg((m) => Object.assign({}, m || {}, { [id]: { kind: "err", text: String((err && err.message) || err), next: "再按一次。" } }))
 				);
 			};
+			const sendWire = () => sendOne("wireframe", builtWire);
+			const sendCfg = () => sendOne("config", builtCfg);
+			const sendInt = () => sendOne("integrate", builtInt);
+
 			const jump = (sid) => {
 				if (!sid || typeof props.onOpenSession !== "function") {
-					setSendMsg((m) => Object.assign({}, m, { jumpErr: "面板拿不到「跳会话」的通道（onOpenSession 没挂上）。" }));
+					setSendMsg((m) => Object.assign({}, m || {}, { jumpErr: "面板拿不到「跳会话」的通道（onOpenSession 没挂上）。" }));
 					return;
 				}
 				const r = props.onOpenSession(sid);
 				if (r && r.ok === false) {
-					setSendMsg((m) => Object.assign({}, m, {
+					setSendMsg((m) => Object.assign({}, m || {}, {
 						jumpErr: "跳转失败：" + ((r.error && (r.error.message || r.error.code)) || "未知原因") + "　—— 你可以在左侧列表里按标题找到它。"
 					}));
 				}
@@ -2892,7 +2943,133 @@ import {
 					})
 			]);
 
-			// ── 选中那张卡的输入（三个动作各自的表单）──
+			// ── 折叠区（**默认收起**：收起时里面的字根本不渲染，不是拿 CSS 藏）──
+			//   `data-fold` = 这是哪一折，`data-open` = 0/1（渲染级 harness 靠它判"在不在首屏"）
+			const fold = (key, title, open, onToggle, kids, extra) => h("div", {
+				key: key, style: Object.assign({ marginTop: "10px" }, (extra && extra.style) || {})
+			}, [
+				h("button", {
+					key: "s", type: "button", "data-fold": key, "data-open": open ? "1" : "0",
+					"data-btn": extra && extra.btn ? extra.btn : "link",
+					onClick: onToggle, "aria-expanded": open ? "true" : "false",
+					style: {
+						font: "inherit", fontSize: "12.5px", textAlign: "left", cursor: "pointer",
+						border: "1px solid " + (extra && extra.solid ? C.soft : "transparent"),
+						background: "#fff", borderRadius: "4px", padding: (extra && extra.solid ? "4px 10px" : "0"),
+						color: (extra && extra.tone) || C.muted, textDecoration: (extra && extra.solid ? "none" : "underline")
+					}
+				}, [
+					h("span", { key: "a", "data-fold-arrow": open ? "1" : "0" }, (open ? "▾ " : "▸ ")),
+					h("span", { key: "b" }, title),
+					open && extra && extra.openHint ? h("span", { key: "c", style: { color: C.muted, marginLeft: "6px" } }, extra.openHint) : null
+				]),
+				open ? h("div", { key: "b", "data-fold-body": key }, kids) : null
+			]);
+
+			/** 一行状态 + 一个小标记（**人话**：不带 `missing-pending` 这种机器口径） */
+			const sayLine = (key, text, tone, chip) => h("div", {
+				key: key, "data-say": key,
+				style: { display: "flex", gap: "8px", alignItems: "baseline", flexWrap: "wrap" }
+			}, [
+				h("span", {
+					key: "t", "data-say-text": key,
+					style: { fontSize: "12.5px", lineHeight: "1.75", color: tone === "warn" ? C.ink : C.ink }
+				}, text),
+				chip ? h("span", {
+					key: "c", "data-chip": key,
+					style: {
+						fontSize: "11.5px", color: tone === "ok" ? C.ok : tone === "warn" ? C.warn : C.muted,
+						border: "1px solid " + (tone === "ok" ? C.ok : tone === "warn" ? C.warn : C.soft),
+						borderRadius: "2px", padding: "0 5px", whiteSpace: "nowrap"
+					}
+				}, chip) : null
+			]);
+
+			/** 次按钮（首屏上除主按钮之外的一切动作都必须是它或链接） */
+			const ghost = (key, label, onClick, title, dis) => h("button", {
+				key: key, type: "button", "data-btn": "ghost", onClick: onClick, title: title || "",
+				style: {
+					font: "inherit", fontSize: "11.5px", padding: "4px 11px", borderRadius: "4px",
+					border: "1px solid " + (dis ? C.faint : C.soft), background: "#fff",
+					color: dis ? C.muted : C.ink, cursor: "pointer"
+				}
+			}, label);
+
+			/** 指令预览 + 发送 + 回报（**预览就是发出去的原文**；卡上看到的 = 发出去的） */
+			const actBlock = (key, id, b, goLabel, hint) => {
+				// ★ 每个动作各记一份回报状态（`sendMsg[id]`）；**没发过时是 undefined** —— 这里必须
+				//   先取到局部变量再判空（第一版写成 `sendMsg[id] ? … : sendMsg[id].kind` 是自相矛盾的，
+				//   渲染层写成了"有才渲染、没发过却又要读 kind" ⇒ 渲染期 TypeError，实测踩到）。
+				const m = (sendMsg || {})[id];
+				return h("div", {
+				key: key, "data-actbox": id,
+				style: { marginTop: "8px", borderTop: "1px solid " + C.faint, paddingTop: "7px" }
+			}, [
+				b.blocked
+					? h("div", {
+						key: "blk", "data-blocked": id,
+						style: { fontSize: "11.5px", color: C.bad, background: "#fef2f2", border: "1px solid " + C.faint, borderRadius: "3px", padding: "6px 8px", marginBottom: "7px", lineHeight: 1.75 }
+					}, [
+						h("div", { key: "a" }, "✗ " + b.blocked),
+						b.next ? h("div", { key: "b", style: { color: C.ink } }, "下一步：" + b.next) : null
+					])
+					: null,
+				b.instruction
+					? h("div", { key: "pv", style: { marginBottom: "7px" } }, [
+						h("div", { key: "t", style: LABEL }, "组出来的指令 —— 下面这段就是发给工作会话的原文（卡上看到的 = 发出去的）："),
+						h("pre", {
+							key: "v", "data-kind": id,
+							style: {
+								margin: "3px 0 0", padding: "6px 8px", background: C.bg, border: "1px solid " + C.faint,
+								borderRadius: "3px", fontFamily: "monospace", fontSize: "10.5px", lineHeight: 1.6,
+								whiteSpace: "pre-wrap", color: C.ink, userSelect: "text", maxHeight: "26vh", overflow: "auto"
+							}
+						}, b.instruction)
+					])
+					: null,
+				h("div", { key: "act", style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, [
+					h("button", {
+						key: "go", type: "button", "data-send": id, onClick: b === builtWire ? sendWire : (b === builtCfg ? sendCfg : (b === builtInt ? sendInt : sendOne.bind(null, id, b))),
+						style: {
+							font: "inherit", fontSize: "11.5px", padding: "5px 12px", borderRadius: "4px",
+							border: "1px solid " + (b.blocked ? C.soft : C.link),
+							background: b.blocked ? "#fff" : C.link, color: b.blocked ? C.muted : "#fff", cursor: "pointer"
+						}
+					}, goLabel),
+					h("span", { key: "n", style: { fontSize: "10.5px", color: C.muted } },
+						hint || ("发到：本功能的专属工作会话" + (root ? "（cwd " + winPath(root) + "）" : "") + "　—— 不占用你自己的对话"))
+				]),
+				m ? h("div", {
+					key: "m",
+					style: { fontSize: "11px", marginTop: "6px", lineHeight: 1.75, color: m.kind === "err" || m.kind === "blocked" ? C.bad : (m.kind === "ok" ? C.ok : C.muted) }
+				}, [
+					h("div", { key: "t" }, (m.kind === "ok" ? "✓ " : (m.kind === "pending" ? "" : "✗ ")) + m.text),
+					m.kind === "ok" ? h("div", { key: "d", "data-sent": "ok", style: { color: C.muted, userSelect: "text" } }, [
+						h("div", { key: "s" }, "阶段交给了 skill，进度与提问都在那个会话里 —— 面板不重画流程，跑完回本页重进就能看到产物。"),
+						h("div", { key: "g" },
+							"目标：" + ((m.target && m.target.title) || "工作会话") +
+							(m.sid ? "　会话 " + String(m.sid).slice(0, 12) + "…" : "") +
+							(m.target && m.target.root ? "　cwd " + winPath(m.target.root) : "") +
+							"　（" + pickSourceText(m.target && m.target.source) + "）"),
+						m.healed ? h("div", { key: "h", style: { color: C.warn } }, "上一轮记的那条会话已经不在了 —— 已自动重建一条并重发。") : null,
+						m.queued ? h("div", { key: "q", style: { color: C.warn } }, "它正在跑别的活，这条指令排在队列里，等它跑完当前这一轮就会处理。") : null
+					]) : null,
+					m.kind === "err" || m.kind === "blocked"
+						? h("div", { key: "n", "data-sent": "fail", style: { color: C.ink } }, "下一步：" + (m.next || "再按一次。"))
+						: null,
+					m.sid && props.onOpenSession ? h("button", {
+						key: "j", type: "button", "data-jump": m.sid,
+						onClick: () => jump(m.sid),
+						style: {
+							font: "inherit", fontSize: "11px", padding: "2px 9px", marginTop: "3px",
+							border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer"
+						}
+					}, "跳到那个会话 ›") : null
+				]) : null
+			]);
+			};
+
+			// ── 选中那张卡的输入（纸面动作各自的表单）──
 			const form = () => {
 				if (e.id === "create") return [
 					field("s", "要写成什么（我的意图；选填 —— 空着就按上游材料与 VOI 门现场确认）", seed, setSeed,
@@ -2906,11 +3083,7 @@ import {
 						"| 终结奖励 | 击杀 BOSS（打出终结一击）的玩家获得… |", 3),
 					field("t", "要改成什么（一句话）", intent, setIntent, "终结奖励与通关奖励合并为一个宝箱入口", 1)
 				];
-				return [
-					h("div", { key: "n", style: { fontSize: "11px", color: C.muted, lineHeight: 1.8, marginBottom: "6px" } },
-						"这个动作不发新东西 —— 它把「整合定稿」这件事**连同配置支线的现状**（上面那一段，逐条带上缺口）交给该功能的专属工作会话。" +
-						"整合结果（定稿与审查报告）由后续那一票承接，本屏不重画流程。")
-				];
+				return [];
 			};
 
 			// ── 动作卡（三张，**有先后**：写成稿 → 改成稿 → 发起整合定稿）──
@@ -2932,22 +3105,26 @@ import {
 				]);
 			};
 
-			// ── ① 配置支线走到哪 ──
+			// ── ① 配置支线走到哪（**只进「详情」**：四步勾 / 字段行数 / 缺口清单 / 依据）──
+			//   ★ 首屏上只留一句人话（`data.story.config`）——机器口径 `config.stage` / `config.label`
+			//     原样留在这一块里，供"到底卡在哪"时核对（线框 A 第 2 条）。
 			const STAGE_TONE = {
 				"before-draft": C.muted, "rules-ready": C.link, "integrating": C.warn,
 				"missing-pending": C.warn, "missing-nofields": C.warn, landed: C.ok
 			};
 			const tone = (config && STAGE_TONE[config.stage]) || C.muted;
 			const cfgBox = config ? h("div", {
-				key: "cfg", "data-config-stage": config.stage,
+				key: "cfg", "data-config-stage": config.stage, "data-config-label": config.label,
 				style: {
 					border: "1px solid " + C.faint, borderLeft: "3px solid " + tone, background: "#fff",
 					borderRadius: "4px", padding: "8px 11px", marginBottom: "10px"
 				}
 			}, [
 				h("div", { key: "h", style: { display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap" } }, [
-					h("b", { key: "t", style: { fontSize: "12px" } }, "配置支线"),
-					h("span", { key: "v", "data-config-label": config.label, style: { fontSize: "12px", color: tone, fontWeight: 600 } }, config.label)
+					h("b", { key: "t", style: { fontSize: "12px" } }, "配置支线走到哪"),
+					h("span", { key: "v", style: { fontSize: "12px", color: tone, fontWeight: 600 } }, config.label),
+					h("span", { key: "m", style: { fontSize: "10.5px", color: C.muted, fontFamily: "monospace" } },
+						"（机器口径 " + String((data && data.configMis && data.configMis.stage) || config.stage) + "）")
 				]),
 				h("div", { key: "r", "data-config-reason": config.reason, style: { fontSize: "10.5px", color: C.muted, marginTop: "4px", lineHeight: 1.75, userSelect: "text" } },
 					"依据：" + config.reason),
@@ -2970,23 +3147,21 @@ import {
 						key: "m", "data-config-missing": String(config.missing.length),
 						style: { marginTop: "6px", borderTop: "1px solid " + C.faint, paddingTop: "5px" }
 					}, [
-						h("div", {
-							key: "t", onClick: () => setOpenDet(!openDet),
-							style: { fontSize: "11px", color: C.warn, cursor: "pointer", userSelect: "none" }
-						}, "⚠ 缺口 / 缺件 " + config.missing.length + " 条　" + (openDet ? "收起 ▾" : "展开 ▸")),
-						openDet
-							? h("div", { key: "l", style: { marginTop: "3px" } },
-								config.missing.map((m, i) => h("div", {
-									key: i, "data-missing": String(i),
-									style: { fontSize: "10.5px", color: C.ink, lineHeight: 1.75, userSelect: "text" }
-								}, "· " + m)))
-							: null
+						h("div", { key: "t", style: { fontSize: "11px", color: C.warn } }, "⚠ 缺口 / 缺件 " + config.missing.length + " 条（逐条）"),
+						h("div", { key: "l", style: { marginTop: "3px" } },
+							config.missing.map((m, i) => h("div", {
+								key: i, "data-missing": String(i),
+								style: { fontSize: "10.5px", color: C.ink, lineHeight: 1.75, userSelect: "text" }
+							}, "· " + m)))
 					])
 					: h("div", { key: "nm", style: { fontSize: "11px", color: C.ok, marginTop: "5px" } }, "✔ 没有待配表缺口、没有缺件"),
 				// 面板**不做**的事，写在脸上
 				h("div", { key: "n", style: { fontSize: "10px", color: C.muted, marginTop: "5px", lineHeight: 1.7 } },
 					"面板只显示配置支线走到哪（读定稿 §6 + `evidence\\readback_*` + 配置表文件名的存在性）—— " +
-					"**配置表的读写仍在 /sr-config 与配置表工具侧**，这里不解析工作簿、不改表。")
+					"**配置表的读写仍在 /sr-config 与配置表工具侧**，这里不解析工作簿、不改表。"),
+				h("div", { key: "p", style: { fontSize: "10px", color: C.muted, marginTop: "4px", lineHeight: 1.7 } },
+					"措辞上的两种缺口（别混）：①「**是缺口**」= §6 / §6.5 里状态列确实写着「待配表」（上面缺口清单第 1 条那种）；" +
+					"②「**面板看不到读回回执**」= `evidence\\readback_*` 一份都没有 —— **不等于**没验收过（回执可能还没落盘）。")
 			]) : null;
 
 			// ── ③ 两大部分 ──
@@ -3143,8 +3318,210 @@ import {
 				)))
 				: null;
 
-			return h("div", { "data-workface": "draft" }, [
-				// 缺件 / 降级：**先说清**
+			// ── ② 纸面动作（写成稿 / 改成稿）—— **落在「看正文」那一折里**，不在首屏 ──
+			const paperActs = h("div", {
+				key: "acts", "data-row": "actions",
+				style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "9px 11px", marginBottom: "10px" }
+			}, [
+				h("div", { key: "h", style: { fontSize: "11.5px", fontWeight: 600, marginBottom: "6px" } },
+					"成稿纸面上的动作（一条链，有先后：写成稿 → 改成稿）—— 它们改的是**规则与界面流程本身**"),
+				h("div", { key: "row", "data-row": "actioncards", style: { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" } },
+					cardIds.map((id) => defOf(id)).map(card)),
+				h("div", { key: "d", "data-action": e.id, style: { borderTop: "1px solid " + C.faint, paddingTop: "8px" } }, [
+					h("div", { key: "t", style: { fontSize: "11.5px", marginBottom: "6px" } }, [
+						h("b", { key: "b" }, e.label + "　"),
+						h("span", { key: "s", style: { color: C.muted, fontSize: "10.5px" } }, e.hint + "　前置：" + e.needs)
+					]),
+					h("div", { key: "f" }, form()),
+					actBlock("ab", e.id, built, "发到工作会话"),
+					h("div", { key: "ho", "data-handoff": e.id, style: { fontSize: "10.5px", color: C.muted, marginTop: "5px", lineHeight: 1.7 } },
+						"发起后：" + e.handoff + " —— 面板只给「跳到那个会话」。")
+				])
+			]);
+
+			/** 「看正文」折里的内容：标题一栏 + 左树 + 分块正文（**默认收起**，点开才渲染） */
+			//   ★ 只在**读到成稿**（`doc.tree` 在）时构造：认不出成稿时这一折整块不出现（不编内容）
+			const foldBody = (doc && doc.tree)
+				? h("div", { style: { display: "flex", flexDirection: "column", gap: "12px", marginTop: "4px" } }, [
+					// ★ 纸面动作（写成稿 / 改成稿）与正文写在**同一折**里：
+					//   它们是"改这份成稿"的动作，看正文的时候才用得上（工单 24c 的分层）
+					paperActs,
+					h("div", { key: "cols", style: { display: "flex", gap: "16px", alignItems: "flex-start" } }, [
+						h("div", { key: "toc", style: { flex: "0 0 272px", width: "272px", maxHeight: "62vh", overflow: "auto", borderRight: "1px solid " + C.faint, paddingRight: "10px" } }, [
+							h("div", { key: "head", style: { fontSize: "11px", color: C.muted, marginBottom: "8px", lineHeight: 1.7, userSelect: "text" } }, [
+								h("div", { key: "a" }, (data && data.name) + " · " + doc.counts.chapters + " 章 / " + doc.counts.groups + " 组 / " +
+									(doc.counts.rules + doc.counts.ues) + " 条（两大部分）"),
+								h("div", { key: "b" }, "点任一行 → 右边正文滚到那一块；§4 / §5 是后面两条支线的依据")
+							]),
+							toc
+						]),
+						h("div", {
+							key: "body", ref: bodyRef,
+							style: { flex: "1 1 auto", minWidth: 0, maxHeight: "62vh", overflow: "auto" }
+						}, body)
+					])
+				])
+				: null;
+
+			// ── ③ 支线 B（线框图）的**输入**：路径是唯一可靠输入 ⇒ 先展开、有输入才发 ──
+			const wireInput = h("div", { key: "wi", "data-wire-input": "1", style: { marginTop: "7px" } }, [
+				h("div", { key: "t", style: { fontSize: "11px", color: C.muted, lineHeight: 1.7, marginBottom: "5px" } },
+					"面板拿不到二进制 —— **路径是唯一的可靠输入**。粘进下面这一框，或从 `gdd\\UI\\` 已备好的图里点一个（可多选）。"),
+				field("wp", "界面图路径（一行一条；本机文件 / 目录 / 链接都行）", wirePaste, setWirePaste,
+					"D:\\…\\features\\联盟悬赏\\gdd\\UI\\UI-M1 联盟悬赏主面板 · 常规难度.png", 2),
+				(data && (data.uiImages || []).length)
+					? h("div", { key: "pk", style: { marginBottom: "7px" } }, [
+						h("div", { key: "l", style: LABEL }, "从 `gdd\\UI\\` 里挑（" + (data.uiImages || []).length + " 张；点一下加入/移出）"),
+						h("div", { key: "r", style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
+							(data.uiImages || []).map((im, i) => {
+								const on = picked.indexOf(im.abs) >= 0;
+								return h("button", {
+									key: "p" + i, type: "button", "data-pick": im.name, "data-picked": on ? "1" : "0",
+									title: im.abs,
+									onClick: () => setPicked((prev) => (prev.indexOf(im.abs) >= 0 ? prev.filter((x) => x !== im.abs) : prev.concat([im.abs]))),
+									style: {
+										font: "inherit", fontSize: "11px", padding: "3px 9px", borderRadius: "4px", cursor: "pointer",
+										border: "1px solid " + (on ? C.ink : C.soft), background: on ? C.ink : "#fff",
+										color: on ? "#fff" : C.ink
+									}
+								}, (on ? "✓ " : "") + im.name);
+							}))
+					])
+					: h("div", { key: "np", "data-wire-none": "1", style: { fontSize: "11px", color: C.warn, marginBottom: "7px", lineHeight: 1.7 } },
+						"`gdd\\UI\\` 里这次没列到界面图" + ((data && data.uiWhy) ? "（" + data.uiWhy + "）" : "") + " —— 那就把图**放进去**再回来，或直接粘一个别的路径。"),
+				h("div", { key: "c", "data-wire-count": String(wirePaths.length), style: { fontSize: "11px", color: C.muted } },
+					"已经给了 " + wirePaths.length + " 条路径。"),
+				h("div", { key: "f", style: { fontSize: "10.5px", color: C.muted, marginTop: "4px", lineHeight: 1.7 } },
+					"现状原文（面板读出来的 §5 ASCII 占位，会一并带进指令）：" +
+					((data && (data.ascii || []).length)
+						? (data.ascii || []).map((x) => "§" + x.no + (x.id ? " " + x.id : "") + " L" + x.line + "（约 " + x.lines + " 行）").join(" · ")
+						: "这次没在 §5 里认出 ASCII 占位（可能已经是图片引用了）"))
+			]);
+
+			// ── 首屏（Y 形三层）────────────────────────────────────────────────
+			//   ★ 判据（线框 A 注释 1）：**一屏只留一个主按钮**。`data-btn="primary"` 的那一颗恒为
+			//     整合定稿；两条支线的动作一律 `data-btn="ghost"`，折叠入口一律 `data-btn="link"`。
+			const noDoc = !(data && data.path);
+			const topExtra = doc
+				? "已就绪 · " + ((data && data.kb) || 0) + " KB · " + doc.counts.chapters + " 章"
+				: (notes.length ? "还没读到成稿 —— 先看下面的说明" : "还没读到成稿");
+			const top = h("div", {
+				key: "top", "data-node": "top",
+				style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "11px 13px" }
+			}, [
+				h("div", { key: "r", style: { display: "flex", gap: "10px", alignItems: "baseline", flexWrap: "wrap", justifyContent: "space-between" } }, [
+					h("span", { key: "t", "data-node-title": "top", style: { fontSize: "14px", fontWeight: 600, color: C.ink } },
+						(data && data.date ? "成稿 · " + data.date : (doc ? "成稿" : "成稿（还没有）"))),
+					h("span", { key: "m", "data-node-meta": "top", style: { fontSize: "12px", color: C.muted } }, topExtra)
+				]),
+				noDoc
+					? h("div", { key: "n", style: { fontSize: "11.5px", color: C.muted, marginTop: "6px", lineHeight: 1.75 } },
+						"这个功能目录的 `gdd\\` 里还没有成稿 —— 这一屏的第一个动作就是「写成稿」（在下面的〔看正文〕里）。")
+					: null,
+				doc && doc.parts.length
+					? fold("parts", openParts ? "收起两大部分" : "两大部分（点开看，默认收起）", openParts, () => setOpenParts(!openParts),
+						h("div", { key: "pp", style: { marginTop: "8px" } }, [
+							h("div", { key: "row", "data-row": "parts", style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
+								doc.parts.map(partCard)),
+							h("div", { key: "n", style: { fontSize: "10.5px", color: C.muted, marginTop: "7px", lineHeight: 1.75 } },
+								"这两部分是下面两条支线的依据：配置表从「功能规则」派生，线框图替换针对「用户体验与界面流程」。")
+						]))
+					: h("div", { key: "pn", style: { fontSize: "11.5px", color: doc ? C.warn : C.muted, marginTop: "8px", lineHeight: 1.75 } },
+						doc
+							? "⚠ 没认出两大部分（缺：" + doc.missingParts.join(" / ") + "）—— 面板不硬指一个章号，请核对成稿的章标题。"
+							: "（还没读到成稿，两大部分为空）"),
+				doc && doc.tree && (doc.tree.chapters || []).length
+					? fold("body", openBody ? "收起正文" : "看正文（" + ((data && data.kb) || 0) + " KB / " + doc.lines + " 行 / " + doc.counts.chapters + " 章 —— 左树 + 分块正文，点开才读）",
+						openBody, () => setOpenBody(!openBody), foldBody, { style: { marginTop: "8px" } })
+					: null
+			]);
+
+			const branches = h("div", { key: "br", "data-node": "mid", style: { display: "grid", gap: "12px", gridTemplateColumns: "1fr 1fr" } }, [
+				// 支线 A · 配置表
+				h("div", {
+					key: "a", "data-branch": "config",
+					style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "11px 13px" }
+				}, [
+					h("div", { key: "h", style: { display: "flex", gap: "8px", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap" } }, [
+						h("span", { key: "n", style: { fontSize: "12.5px", fontWeight: 600 } }, "支线 A · 配置表"),
+						h("span", {
+							key: "s", "data-branch-state": "config",
+							style: { fontSize: "11px", color: (story.config && story.config.tone) === "warn" ? C.warn : ((story.config && story.config.tone) === "ok" ? C.ok : C.muted) }
+						}, (story.config && story.config.gap) ? "还有没填的" : "已就绪")
+					]),
+					sayLine("config", (story.config && story.config.label) || "（还没读到配置支线的状态）", (story.config && story.config.tone) || "info",
+						(data && data.configMis && data.configMis.gapCount) ? "缺 " + data.configMis.gapCount + " 处" : ""),
+					h("div", { key: "b", style: { marginTop: "9px", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, [
+						ghost("gc", openCfg ? "收起" : "去配表", () => setOpenCfg(!openCfg), "把「§4 的规则 → 哪张表 / 哪个字段 → 缺口在哪」组装成指令，发给本功能的专属工作会话"),
+						h("span", { key: "h", style: { fontSize: "10.5px", color: C.muted } }, "跑 /sr-config：字段落表在那边做，面板不改表")
+					]),
+					openCfg ? h("div", { key: "oc", "data-wire-input": "config", style: { marginTop: "7px" } }, [
+						field("ci", "这次要改的（选填，一句话）", intent, setIntent,
+							"比如：把 §6.5 L363 的活动周期 / 排行过滤门槛 / 展示上限落到 A012-全局变量表", 2),
+						actBlock("cb", "config", builtCfg, "发「去配表」到工作会话")
+					]) : null
+				]),
+				// 支线 B · 线框图
+				h("div", {
+					key: "b", "data-branch": "wire",
+					style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "11px 13px" }
+				}, [
+					h("div", { key: "h", style: { display: "flex", gap: "8px", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap" } }, [
+						h("span", { key: "n", style: { fontSize: "12.5px", fontWeight: 600 } }, "支线 B · 线框图"),
+						h("span", {
+							key: "s", "data-branch-state": "wire",
+							style: { fontSize: "11px", color: (story.wire && story.wire.tone) === "warn" ? C.warn : C.muted }
+						}, (data && (data.uiImages || []).length) ? "待提交 " + data.uiImages.length + " 张" : "还没有图")
+					]),
+					sayLine("wire", (story.wire && story.wire.label) || "（还没读到线框图支线的状态）", (story.wire && story.wire.tone) || "info",
+						wirePaths.length ? "已给 " + wirePaths.length + " 条路径" : ""),
+					h("div", { key: "b2", style: { marginTop: "9px", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, [
+						ghost("gw", openWire ? "收起" : "提交线框图", () => setOpenWire(!openWire), "先展开输入（粘路径，或从 gdd\\UI\\ 里挑），有输入才发指令"),
+						h("span", { key: "h", style: { fontSize: "10.5px", color: C.muted } }, "落 §5：把 ASCII 占位换成 <img src=…>")
+					]),
+					openWire ? h("div", { key: "ow", style: { marginTop: "7px" } }, [
+						wireInput,
+						actBlock("wb", "wireframe", builtWire, "发「提交线框图」到工作会话")
+					]) : null
+				])
+			]);
+
+			const merge = h("div", {
+				key: "mg", "data-node": "bottom",
+				style: { border: "1px solid " + C.ink, borderRadius: "4px", padding: "13px 15px", display: "flex", gap: "12px", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }
+			}, [
+				h("div", { key: "t" }, [
+					h("div", { key: "a", style: { fontSize: "14px", fontWeight: 600 } }, "合流 → 定稿"),
+					h("div", { key: "b", style: { fontSize: "12px", color: C.muted, marginTop: "2px" } },
+						"先整合（sr-gdd-ai），" + "必经审查" + "（sr-gdd-review），再成立定稿。"),
+					openInt
+						? h("div", { key: "c", style: { fontSize: "10.5px", color: C.muted, marginTop: "4px", lineHeight: 1.7 } },
+							"这个动作不发新东西 —— 它把「整合定稿」连同配置支线的现状（逐条带缺口）交给该功能的专属工作会话。整合结果（定稿与审查报告）由后续那一票承接，本屏不重画流程。")
+						: null
+				]),
+				h("button", {
+					key: "go", type: "button", "data-send": "integrate", "data-btn": "primary",
+					onClick: () => { if (!openInt) setOpenInt(true); else sendInt(); },
+					style: {
+						font: "inherit", fontSize: "13px", fontWeight: 600, padding: "8px 18px", borderRadius: "4px",
+						border: "1px solid " + C.ink, background: C.ink, color: "#fff", cursor: "pointer"
+					}
+				}, openInt ? "发到工作会话" : "发起整合定稿")
+			]);
+
+			// 主按钮的预览挂在合流块下面（点一次展开、再点一次发；先看清楚要发什么）
+			const mergeBlock = h("div", { key: "mgb", "data-merge": "1" }, [
+				merge,
+				openInt
+					? h("div", {
+						key: "pv", "data-integrate-open": "1",
+						style: { border: "1px solid " + C.faint, borderTop: "none", borderRadius: "0 0 4px 4px", background: "#fff", padding: "9px 13px" }
+					}, [actBlock("ib", "integrate", builtInt, "发到工作会话")])
+					: null
+			]);
+
+			// ── ④ 详情（**全折**：四步勾 / 字段行数 / 缺口清单 / 两大部分明细 / 指纹 / 会话 / 说明）──
+			const machine = h("div", { key: "mc", style: { marginTop: "8px" } }, [
 				notes.length
 					? h("div", {
 						key: "nt", "data-notes": String(notes.length),
@@ -3154,115 +3531,70 @@ import {
 						}
 					}, notes.map((x, i) => h("div", { key: i }, "⚠ " + x)))
 					: null,
+				cfgBox,
+				h("dl", { key: "kv", style: { margin: "0 0 10px", display: "grid", gridTemplateColumns: "max-content 1fr", gap: "4px 12px", fontSize: "11px", color: C.ink, lineHeight: 1.8 } }, [
+					h("dt", { key: "d1", style: { color: C.muted } }, "这一屏读的是"),
+					h("dd", { key: "v1", style: { margin: 0, userSelect: "text" } },
+						((data && data.name) || "（没有成稿）") + ((data && data.path) ? "　" + winPath(data.path) : "")),
+					h("dt", { key: "d2", style: { color: C.muted } }, "会话"),
+					h("dd", { key: "v2", style: { margin: 0, userSelect: "text" } },
+						"目标：本功能的专属工作会话" + (root ? "（cwd " + winPath(root) + "）" : "") + "　—— 面板只给「跳到那个会话」"),
+					h("dt", { key: "d3", style: { color: C.muted } }, "内容指纹"),
+					h("dd", { key: "v3", style: { margin: 0, userSelect: "text" } },
+						props.live
+							? shortDigest(props.live.digest) + " · " + freshnessOf({ phase: props.live.phase, pending: props.live.pending, digest: props.live.digest, reason: props.live.reason }).text +
+								" · 订阅 " + (Number(props.live.ready) || 0) + "/" + (Number(props.live.total) || 0)
+							: "（这一屏没拿到订阅实况）"),
+					h("dt", { key: "d4", style: { color: C.muted } }, "两大部分"),
+					h("dd", { key: "v4", style: { margin: 0, userSelect: "text" } },
+						doc && doc.parts.length
+							? doc.parts.map((p) => "§" + p.no + " " + p.label + "　L" + p.line + "–L" + p.endLine + "　" + p.groups + " 组 / " + p.items + " 条").join("　·　")
+							: "（没认出两大部分）"),
+					h("dt", { key: "d5", style: { color: C.muted } }, "§5 的 ASCII 占位"),
+					h("dd", { key: "v5", style: { margin: 0, userSelect: "text" } },
+						(data && (data.ascii || []).length)
+							? (data.ascii || []).map((x) => "§" + x.no + (x.id ? " " + x.id : "") + " L" + x.line + "（约 " + x.lines + " 行）").join("　·　")
+							: "（§5 里没认出 ASCII 占位）"),
+					h("dt", { key: "d6", style: { color: C.muted } }, "gdd\\UI\\ 里的图"),
+					h("dd", { key: "v6", style: { margin: 0, userSelect: "text" } },
+						(data && (data.uiImages || []).length)
+							? (data.uiImages || []).length + " 张：" + (data.uiImages || []).map((x) => x.name).join(" / ")
+							: "（没列到" + ((data && data.uiWhy) ? "：" + data.uiWhy : "") + "）"),
+					h("dt", { key: "d7", style: { color: C.muted } }, "动作表"),
+					h("dd", { key: "v7", style: { margin: 0, userSelect: "text" } },
+						actions.map((a) => a.label + "（" + a.hint + "）").join("　·　"))
+				]),
+				h("div", { key: "fp", style: { fontSize: "10px", color: C.muted, lineHeight: 1.8 } },
+					"面板只显示状态、不改文件；所有动作的指令都由 `src/pure/draftstep.ts` 组装，与卡上预览逐字相同。")
+			]);
+
+			return h("div", { "data-workface": "draft" }, [
 				data && data.error
 					? h("div", { key: "er", style: { fontSize: "12px", color: C.bad, marginBottom: "9px" } }, data.error)
 					: null,
 				!data ? h("div", { key: "ld", style: { fontSize: "12px", color: C.muted, marginBottom: "9px" } }, "正在读成稿…") : null,
 
-				// ① 配置支线走到哪
-				cfgBox,
-
-				// ② 三个动作卡 + 选中卡的输入与**要发出去的原文**
-				h("div", { key: "acts", style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "9px 11px", marginBottom: "10px" } }, [
-					h("div", { key: "h", style: { fontSize: "11.5px", fontWeight: 600, marginBottom: "6px" } },
-						"这一阶段的动作（一条链，有先后：写成稿 → 改成稿 → 发起整合定稿）"),
-					h("div", { key: "row", "data-row": "actions", style: { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" } },
-						actions.map(card)),
-					h("div", { key: "d", "data-action": e.id, style: { borderTop: "1px solid " + C.faint, paddingTop: "8px" } }, [
-						h("div", { key: "t", style: { fontSize: "11.5px", marginBottom: "6px" } }, [
-							h("b", { key: "b" }, e.label + "　"),
-							h("span", { key: "s", style: { color: C.muted, fontSize: "10.5px" } }, e.hint + "　前置：" + e.needs)
-						]),
-						h("div", { key: "f" }, form()),
-						built.blocked
-							? h("div", {
-								key: "blk", "data-blocked": e.id,
-								style: { fontSize: "11.5px", color: C.bad, background: "#fef2f2", border: "1px solid " + C.faint, borderRadius: "3px", padding: "6px 8px", marginBottom: "7px", lineHeight: 1.75 }
-							}, [
-								h("div", { key: "a" }, "✗ " + built.blocked),
-								built.next ? h("div", { key: "b", style: { color: C.ink } }, "下一步：" + built.next) : null
-							])
-							: null,
-						built.instruction
-							? h("div", { key: "pv", style: { marginBottom: "7px" } }, [
-								h("div", { key: "t", style: LABEL }, "组出来的指令 —— 下面这段就是发给工作会话的原文（卡上看到的 = 发出去的）："),
-								h("pre", {
-									key: "v", "data-kind": e.id,
-									style: {
-										margin: "3px 0 0", padding: "6px 8px", background: C.bg, border: "1px solid " + C.faint,
-										borderRadius: "3px", fontFamily: "monospace", fontSize: "10.5px", lineHeight: 1.6,
-										whiteSpace: "pre-wrap", color: C.ink, userSelect: "text", maxHeight: "26vh", overflow: "auto"
-									}
-								}, built.instruction)
-							])
-							: null,
-						h("div", { key: "act", style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, [
-							h("button", {
-								key: "go", type: "button", "data-send": e.id, onClick: send,
-								style: {
-									font: "inherit", fontSize: "11.5px", padding: "5px 12px", borderRadius: "4px",
-									border: "1px solid " + (built.blocked ? C.soft : C.link),
-									background: built.blocked ? "#fff" : C.link, color: built.blocked ? C.muted : "#fff", cursor: "pointer"
-								}
-							}, "发到工作会话"),
-							h("span", { key: "n", style: { fontSize: "10.5px", color: C.muted } },
-								"发到：本功能的专属工作会话" + (root ? "（cwd " + winPath(root) + "）" : "") + "　—— 不占用你自己的对话")
-						]),
-						h("div", { key: "ho", "data-handoff": e.id, style: { fontSize: "10.5px", color: C.muted, marginTop: "5px", lineHeight: 1.7 } },
-							"发起后：" + e.handoff + " —— 面板只给「跳到那个会话」。"),
-						sendMsg ? h("div", {
-							key: "m",
-							style: { fontSize: "11px", marginTop: "6px", lineHeight: 1.75, color: sendMsg.kind === "err" || sendMsg.kind === "blocked" ? C.bad : (sendMsg.kind === "ok" ? C.ok : C.muted) }
-						}, [
-							h("div", { key: "t" }, (sendMsg.kind === "ok" ? "✓ " : (sendMsg.kind === "pending" ? "" : "✗ ")) + sendMsg.text),
-							sendMsg.kind === "ok" ? h("div", { key: "d", "data-sent": "ok", style: { color: C.muted, userSelect: "text" } }, [
-								h("div", { key: "s" }, "阶段交给了 skill，进度与提问都在那个会话里 —— 面板不重画流程，跑完回本页重进就能看到产物。"),
-								h("div", { key: "g" },
-									"目标：" + ((sendMsg.target && sendMsg.target.title) || "工作会话") +
-									(sendMsg.sid ? "　会话 " + String(sendMsg.sid).slice(0, 12) + "…" : "") +
-									(sendMsg.target && sendMsg.target.root ? "　cwd " + winPath(sendMsg.target.root) : "") +
-									"　（" + pickSourceText(sendMsg.target && sendMsg.target.source) + "）"),
-								sendMsg.healed ? h("div", { key: "h", style: { color: C.warn } }, "上一轮记的那条会话已经不在了 —— 已自动重建一条并重发。") : null,
-								sendMsg.queued ? h("div", { key: "q", style: { color: C.warn } }, "它正在跑别的活，这条指令排在队列里，等它跑完当前这一轮就会处理。") : null
-							]) : null,
-							sendMsg.kind === "err" || sendMsg.kind === "blocked"
-								? h("div", { key: "n", "data-sent": "fail", style: { color: C.ink } }, "下一步：" + (sendMsg.next || "再按一次。"))
-								: null,
-							sendMsg.sid && props.onOpenSession ? h("button", {
-								key: "j", type: "button", "data-jump": sendMsg.sid,
-								onClick: () => jump(sendMsg.sid),
-								style: {
-									font: "inherit", fontSize: "11px", padding: "2px 9px", marginTop: "3px",
-									border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer"
-								}
-							}, "跳到那个会话 ›") : null,
-							sendMsg.jumpErr ? h("div", { key: "je", style: { color: C.bad } }, sendMsg.jumpErr) : null
-						]) : null
-					])
+				// ── Y 形（上 → 中 → 下）────────────────────────────────────────
+				h("div", { key: "y", "data-y": "1", style: { display: "grid", gap: "14px", margin: "4px 0 14px" } }, [
+					h("div", { key: "stem", "aria-hidden": "true", style: { height: "12px", borderLeft: "1px dashed " + C.soft, marginLeft: "26px" } }),
+					top,
+					h("div", { key: "fork", "aria-hidden": "true", style: { height: "12px", borderTop: "1px dashed " + C.soft, margin: "0 25% 0 26px" } }),
+					branches,
+					mergeBlock
 				]),
 
-				// ③ 两大部分（后续两条支线的依据）+ ④ 树与正文
-				h("div", { key: "main", style: { border: "1px solid " + C.faint, borderRadius: "4px", background: C.bg, padding: "8px 10px" } }, [
-					h("div", { key: "h", style: { fontSize: "11.5px", fontWeight: 600, marginBottom: "6px" } },
-						"成稿的两大部分（点它跳到正文；左树里带 ★ 的章就是它们）" +
-						(doc ? "　" + (data && data.name) + " · " + doc.lines + " 行" : "")),
-					doc && doc.parts.length
-						? h("div", { key: "p", "data-row": "parts", style: { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "9px" } },
-							doc.parts.map(partCard))
-						: h("div", { key: "pn", style: { fontSize: "11px", color: C.warn, marginBottom: "9px" } },
-							doc ? "⚠ 没认出两大部分（缺：" + doc.missingParts.join(" / ") + "）—— 面板不硬指一个章号，请核对成稿的章标题。" : "（还没读到成稿）"),
-					doc && doc.tree
-						? h("div", { key: "cols", style: { display: "flex", gap: "16px", alignItems: "flex-start" } }, [
-							h("div", {
-								key: "toc",
-								style: { flex: "0 0 272px", width: "272px", maxHeight: "62vh", overflow: "auto", borderRight: "1px solid " + C.faint, paddingRight: "10px" }
-							}, toc),
-							h("div", {
-								key: "body", ref: bodyRef,
-								style: { flex: "1 1 auto", minWidth: 0, maxHeight: "62vh", overflow: "auto" }
-							}, body)
-						])
-						: null
+				// ── 底部一条：指纹 + 〔详情〕（**默认收起**：机器口径全在里面）──
+				h("div", {
+					key: "strip",
+					style: {
+						display: "flex", gap: "10px", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap",
+						borderTop: "1px solid " + C.faint, paddingTop: "9px", fontSize: "11px", color: C.muted
+					}
+				}, [
+					h("span", { key: "t", "data-strip": "1", style: { lineHeight: 2 } },
+						props.live ? "内容指纹 " + shortDigest(props.live.digest) + " · " + freshnessOf({ phase: props.live.phase, pending: props.live.pending, digest: props.live.digest, reason: props.live.reason }).text : "（没有订阅实况）"),
+					fold("machine", openMachine ? "收起详情" : "详情（展开看落到哪一步 / 缺在哪 / 这一屏读的是哪一版）", openMachine, () => setOpenMachine(!openMachine),
+						machine, { style: { marginTop: 0, flex: "1 1 auto" }, btn: "link" })
 				])
 			]);
 		}
@@ -5962,6 +6294,8 @@ import {
 							key: "dw",
 							data: draftV,
 							feature: f,
+							// ★ 工单 24c：指纹 / 订阅实况进「详情」（首屏只留人话），所以这里要把 live 传下去
+							live: live,
 							root: (dview && dview.root) || "",
 							srWs: d.srWs,
 							onSend: typeof draftRunner === "function"

@@ -82,6 +82,29 @@ test("真数据 · 联盟悬赏：成稿被认出来（不带「成稿」后缀�
 	// ⑤ 没有读不动的文件；唯一的说明是"有两份定稿，读的是当前有效那一份"（如实交代读的是哪一版）
 	assert.equal(got.notes.length, 1, got.notes.join("\n"));
 	assert.ok(/2 份定稿/.test(got.notes[0]) && /当前有效/.test(got.notes[0]), got.notes[0]);
+
+	// ⑥ 工单 24c：Y 形要的那几样真数据（人话状态 / 体量 / 日期 / §5 的 ASCII / gdd\UI 里的图）
+	assert.equal(got.kb, 38.6, "「已就绪 · 38.6 KB」里的那个数（39495 字节 / 1024 四舍五入一位小数）");
+	assert.ok(got.bytes === 39494 || got.bytes === 39495,
+		"字节数按 UTF-8 算（浏览器半侧没有 Buffer，用的是 TextEncoder）：" + got.bytes + "（真文件 " + fs.statSync(path.join(FEATURE, "gdd", "联盟悬赏_20260918.md")).size + " 字节；读回来的文本少了末尾那个空行）");
+	assert.equal(got.date, "2026-09-18", "「成稿 · 2026-09-18」里的日期取自文件名（YYYYMMDD → YYYY-MM-DD）");
+	assert.equal(got.lines, 541, "成稿 541 行（1-based，与解析器一致）");
+	// 支线 A 的人话（逐字；界面直接念它）
+	assert.equal(got.story.config.label,
+		"规则已派生成 3 张表（A079-联盟悬赏.xlsx · A012-全局变量表.xlsx · A006-掉落表.xlsx），字段都齐；还有 1 处「待配表」没填");
+	assert.equal(got.configMis.stage, "missing-pending");
+	assert.equal(got.configMis.gapCount, 1);
+	assert.ok(got.story.config.label.indexOf("missing-pending") < 0, "人话里没有机器口径");
+	// 支线 B 的人话 + ASCII 占位（数字全从真数据来）
+	assert.equal(got.ascii.length, 4);
+	assert.deepEqual(got.ascii.map((x) => x.no), ["5.1", "5.2", "5.3", "5.4"]);
+	assert.equal(got.story.wire.label, "§5 里现在是 4 处 ASCII 占位；7 张界面图提交后可替换");
+	// gdd\UI\ 里的 7 张界面图（支线 B 的唯一可靠输入）
+	assert.equal(got.uiImages.length, 7, "真目录里就是 7 张：" + got.uiImages.map((x) => x.name).join(" / "));
+	assert.ok(got.uiImages.every((x) => x.rel.indexOf("gdd/UI/") === 0), "相对路径都是 gdd/UI/…");
+	assert.ok(got.uiImages.every((x) => x.abs.indexOf("/gdd/UI/") > 0), "绝对路径由功能根派生");
+	assert.ok(got.uiImages.some((x) => x.name.indexOf("UI-M1 联盟悬赏主面板 · 常规难度.png") === 0), "UI-M1 的两张都在");
+	assert.equal(got.uiWhy, "", "列得到就不该有「列不出来」的说明");
 });
 
 test("真数据 · 诸神降临：有成稿、没定稿 → 配置支线停在「规则就绪」（缺什么写什么）", async () => {
