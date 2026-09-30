@@ -16,6 +16,11 @@
 
 import * as React from "react";
 
+// ★ 工单 32 · 面板接线：`src/client.js` 不再保留内联副本，改为直接用 `src/pure/` 那份
+//   （测试覆盖的就是它）。接线是**一次一个模块**做的，每步都过 `npm run build:safe`。
+//   已接：path（toAbs）
+import { toAbs } from "./pure/path.ts";
+
 		const h = React.createElement;
 
 		/**
@@ -1654,20 +1659,13 @@ import * as React from "react";
 		}
 
 		/**
-		 * 拼绝对路径。
-		 * ★ rel 可能**已经是绝对路径**（openPath 现在存的是 srWs 拼出来的绝对路径），
-		 *   无条件前缀 cwd 会拼成 `D:\TimeMachine/D:\TimeMachine\...`。
-		 * Windows 绝对路径同时把 `/` 归一成 `\`，避免混合分隔符。
+		 * 拼绝对路径 —— **工单 32 起改为 import `./pure/path.ts` 的 `toAbs`**（不再内联副本）。
+		 * 原内联实现与模块那份逐字相同（只差缩进），所以这里删掉的是纯重复。
+		 * 保留这条注释是因为它记着两件容易踩的事：
+		 *   ★ rel 可能**已经是绝对路径**（openPath 现在存的是 srWs 拼出来的绝对路径），
+		 *     无条件前缀 cwd 会拼成 `D:\TimeMachine/D:\TimeMachine\...`。
+		 *   ★ Windows 绝对路径同时把 `/` 归一成 `\`，避免混合分隔符。
 		 */
-		function toAbs(cwd, rel) {
-			if (!rel) return "";
-			let p = String(rel);
-			const isWinAbs = /^[A-Za-z]:[\\/]/.test(p);
-			const isAbs = isWinAbs || /^[\\/]/.test(p) || /^\\\\/.test(p);
-			if (!isAbs) p = (cwd ? String(cwd).replace(/[\\/]+$/, "") + "\\" : "") + p;
-			if (isWinAbs || /^[A-Za-z]:/.test(p)) p = p.replace(/\//g, "\\");
-			return p;
-		}
 
 		/**
 		 * 设计台账（设计 §7）—— 一份"过程叙述"，不是数据列表。
