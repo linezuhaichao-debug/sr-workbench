@@ -9,13 +9,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+	ARCHIVED_CACHED_NOTE,
 	INDEX_TITLE,
+	NO_ARCHIVE_INFO_NOTE,
 	WORK_TITLE,
+	archivedFromSnapshot,
+	archivedIdSet,
 	configPathCandidates,
 	containsPath,
 	featureTopicOf,
 	indexCacheKey,
 	indexTitleFor,
+	isArchivedId,
 	isIndexTitle,
 	isWorkTitle,
 	mergeRows,
@@ -26,6 +31,7 @@ import {
 	rowsFromStore,
 	samePath,
 	titleOf,
+	withoutArchived,
 	workCacheDrop,
 	workCacheGet,
 	workCacheKey,
@@ -321,4 +327,94 @@ test("running：会话列表与 store 两种形状都收（忙碌要如实说一
 	assert.deepEqual(fromList.map((r) => r.running), [true, false]);
 	const fromStore = rowsFromStore({ ids: ["a"], byId: { a: { cwd: FEATURE, running: true } } });
 	assert.equal(fromStore[0].running, true);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 归档（2026-09-30 实测缺陷）：已归档的会话**侧边栏看不见** ⇒ 不许被认领
+//   现象：面板认领了一条已归档会话 → 指令发进去了、会话日志有写入，
+//         但侧边栏什么也没出现，用户判定"面板没反应，F5 都不出现"。
+// ════════════════════════════════════════════════════════════════════════════
+
+test("archivedFromSnapshot：唯一取值口径是快照的 archivedSessionIds；缺字段 = **拿不到**（不是空表）", () => {
+	// 真实形状（dsh-api-workspace-controller 的 ClientWorkspaceModel.buildSnapshot）
+	assert.deepEqual(
+		archivedFromSnapshot({ items: [], archivedSessionIds: ["session-a", "session-b"], pinnedSessionIds: [] }),
+		["session-a", "session-b"],
+	);
+	assert.deepEqual(archivedFromSnapshot({ archivedSessionIds: [] }), [], "明确的空集：一条都没归档");
+	assert.deepEqual(archivedFromSnapshot({ archivedSessionIds: ["a", "", null, undefined] }), ["a"], "空值不进表");
+	assert.equal(archivedFromSnapshot({ items: [] }), null, "没有这个字段 ⇒ 拿不到");
+	assert.equal(archivedFromSnapshot(null), null);
+	assert.equal(archivedFromSnapshot(undefined), null);
+	assert.equal(archivedFromSnapshot({ archivedSessionIds: "session-a" }), null, "不是数组 ⇒ 拿不到");
+});
+
+test("archivedIdSet / isArchivedId / withoutArchived：拿不到归档集时**一律判否**（旧行为）", () => {
+	assert.equal(archivedIdSet(["a"])?.has("a"), true);
+	assert.equal(archivedIdSet(new Set(["a"]))?.has("a"), true, "Set 形状也收");
+	assert.equal(archivedIdSet(null), null, "拿不到 = null（与空 Set 不同）");
+	assert.equal(archivedIdSet("坏值"), null);
+
+	assert.equal(isArchivedId(["a"], "a"), true);
+	assert.equal(isArchivedId(["a"], "b"), false);
+	assert.equal(isArchivedId(null, "a"), false, "拿不到 ⇒ 判否（降级不静默，由组合根说清）");
+	assert.equal(isArchivedId(["a"], ""), false);
+	assert.equal(isArchivedId(["a"], undefined), false);
+
+	const rows = [row({ id: "a" }), row({ id: "b" })];
+	assert.deepEqual(withoutArchived(rows, ["a"]).map((r) => r.id), ["b"]);
+	assert.deepEqual(withoutArchived(rows, []).map((r) => r.id), ["a", "b"]);
+	assert.deepEqual(withoutArchived(rows, null).map((r) => r.id), ["a", "b"], "拿不到 ⇒ 原样返回");
+});
+
+test("pickWorkSession：缓存里那条**已归档** ⇒ 不被选中（调用方据此去新建）", () => {
+	const rows = [row({ id: "archived", title: workTitleFor(FEATURE), cwd: FEATURE, updatedAt: 99 })];
+	// 不传归档集 = 旧行为（这就是缺陷现场）：缓存命中、被认领
+	assert.equal(pickWorkSession(rows, FEATURE, { cachedId: "archived" })?.id, "archived");
+	// 传了归档集：已归档的**不当可用** —— 它要被发指令，必须在界面上看得见
+	assert.equal(pickWorkSession(rows, FEATURE, { cachedId: "archived", archived: ["archived"] }), null);
+	assert.equal(pickWorkSession(rows, FEATURE, { archived: ["archived"] }), null, "标题认领也不许认它");
+	// 归档集合是别的 id 时照旧命中（排除要精确，不能一刀切）
+	assert.equal(pickWorkSession(rows, FEATURE, { cachedId: "archived", archived: ["别的一条"] })?.id, "archived");
+	// 拿不到归档集 ⇒ 退回旧行为
+	assert.equal(pickWorkSession(rows, FEATURE, { cachedId: "archived", archived: null })?.id, "archived");
+});
+
+test("pickWorkSession：同功能的旧条目被归档时，仍能认回**没被归档**的那条（不是一刀砍掉认领）", () => {
+	const rows = [
+		row({ id: "old", title: workTitleFor(FEATURE), cwd: FEATURE, updatedAt: 9 }),
+		row({ id: "live", title: workTitleFor(FEATURE), cwd: FEATURE, updatedAt: 3 }),
+	];
+	const hit = pickWorkSession(rows, FEATURE, { archived: ["old"] });
+	assert.equal(hit && hit.id, "live", "认最近更新的那条**可用的**");
+	assert.equal(hit && hit.source, "title");
+	// 缓存指到已归档那条时，也不会被它带偏
+	assert.equal(pickWorkSession(rows, FEATURE, { cachedId: "old", archived: ["old"] })?.id, "live");
+});
+
+test("pickIndexSession：归档的会话从四条认领路径（缓存 / 标题 / cwd / 当前选中 / recent）里全部出局", () => {
+	const rows = [
+		row({ id: "cached", cwd: TM_ROOT, updatedAt: 1 }),
+		row({ id: "named", title: INDEX_TITLE, cwd: SR_ROOT, updatedAt: 50 }),
+		row({ id: "bycwd", cwd: SR_ROOT, updatedAt: 40 }),
+		row({ id: "main", cwd: TM_ROOT, updatedAt: 30, main: true }),
+	];
+	const all = ["cached", "named", "bycwd", "main"];
+	assert.equal(pickIndexSession(rows, SR_ROOT, { cachedId: "cached", archived: all }), null);
+	assert.equal(pickIndexSession(rows, "", { cachedId: "cached", allowForeign: true, archived: all }), null);
+	// 只归档一部分：缓存与标题出局后，退到 cwd 覆盖那条
+	const hit = pickIndexSession(rows, SR_ROOT, { cachedId: "cached", archived: ["cached", "named"] });
+	assert.equal(hit && hit.id, "bycwd");
+	assert.equal(hit && hit.source, "cwd");
+	// 向后兼容：不传 = 旧行为；拿不到（null）= 旧行为
+	assert.equal(pickIndexSession(rows, SR_ROOT, { cachedId: "cached" })?.id, "cached");
+	assert.equal(pickIndexSession(rows, SR_ROOT, { cachedId: "cached", archived: null })?.id, "cached");
+});
+
+test("归档的两句话就在纯层：拿不到要说「无法确认可见」，复用失败要说「归档 ≠ 删除」", () => {
+	assert.ok(NO_ARCHIVE_INFO_NOTE.includes("取不到侧边栏的「已归档」集"));
+	assert.ok(NO_ARCHIVE_INFO_NOTE.includes("无法确认目标会话在侧边栏可见"), "不许装成知道它在界面上可见");
+	assert.ok(NO_ARCHIVE_INFO_NOTE.includes("取消归档"), "要给用户可执行的动作");
+	assert.ok(ARCHIVED_CACHED_NOTE.includes("归档 ≠ 删除"));
+	assert.ok(ARCHIVED_CACHED_NOTE.includes("不算可用"));
 });

@@ -47,6 +47,100 @@ export interface SessionPick {
 	row: SessionRow;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// 「已归档」= 侧边栏看不见（工作区层的显示过滤，**不是删除**）
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 侧边栏的「已归档」集（工作区 registry 的 **registry-global** 归档集）。
+ *
+ * ★ 为什么认领必须排除它（2026-09-30 用户实测缺陷）：
+ *   归档 = **工作区层的显示过滤**，不是删除。归档的会话照样出现在 `remote.session.list` 里
+ *   —— `SessionListRequest` 只有可选 `cursor`，列表**不按归档过滤**（`dsh-api-session-controller/
+ *   lib/types/types.d.ts:262`）—— 只是官方侧边栏按 `archivedSessionIds` 把行藏起来了。
+ *   于是"认领一条已归档的会话"会出现最坏的现象：指令**发进去了**、会话日志也有写入，
+ *   但**侧边栏什么也没出现**，用户判定"面板没反应"（F5 也没用）。
+ *   所以：被面板**发指令**的会话，**在界面上可见才算可用**（用户故事 27/28）。
+ *
+ * 取值口径：`WorkspaceSnapshot.archivedSessionIds`
+ *   · 客户端形状：`dsh-api-workspace-controller/lib/types/client/model.d.ts:12`
+ *     （`ClientWorkspaceModel.buildSnapshot()`，宿主叫 `WorkspaceBaseline.archivedSessionIds`）
+ *   · 官方半侧就是这么用的：`dsh-client-ui-workspace/lib/client.js:801`（`reuseOrCreateBlank`
+ *     挑空白会话时排除它）与 `:870`（`pinSession` 传给排序）。
+ *
+ * `null` / `undefined` = **拿不到**（服务没提供 / 形状变了）⇒ 如实降级，见 `NO_ARCHIVE_INFO_NOTE`；
+ * `[]` = 明确知道"一条都没归档"。这两者**不是一回事**，别混（拿不到时不许装成"没有归档的"）。
+ */
+export type ArchivedIds = readonly string[] | ReadonlySet<string> | null | undefined;
+
+/** 取不到归档集时的那句话（面板照实说，绝不装成"我知道它在侧边栏可见"）。 */
+export const NO_ARCHIVE_INFO_NOTE =
+	"取不到侧边栏的「已归档」集（官方 workspaces 快照里没有 archivedSessionIds）：" +
+	"这次无法确认目标会话在侧边栏可见 —— 若发完看不到它，去侧边栏「已归档」里取消归档即可。";
+
+/** 上次用的那条已被归档时的那句话（归档 ≠ 删除，所以要说清"它不算可用"）。 */
+export const ARCHIVED_CACHED_NOTE =
+	"上次用的那条会话已被你在侧边栏归档（归档 ≠ 删除，只是不显示）：它不算可用，这次没用它。";
+
+/** 归档集合归一成查找用的 Set；**拿不到**（null / undefined / 坏形状）时返回 `null`。 */
+export function archivedIdSet(archived: ArchivedIds | unknown): Set<string> | null {
+	if (archived instanceof Set) {
+		const out = new Set<string>();
+		for (const one of archived as ReadonlySet<unknown>) {
+			const s = one === null || one === undefined ? "" : String(one);
+			if (s !== "") out.add(s);
+		}
+		return out;
+	}
+	if (Array.isArray(archived)) {
+		const out = new Set<string>();
+		for (const one of archived) {
+			const s = one === null || one === undefined ? "" : String(one);
+			if (s !== "") out.add(s);
+		}
+		return out;
+	}
+	return null;
+}
+
+/**
+ * 这个 id 是不是已归档。
+ * ★ **拿不到归档集时一律判否**（= 不排除 = 旧行为）——降级绝不静默：调用方要按
+ *   `NO_ARCHIVE_INFO_NOTE` 把"我不知道"如实说出来。
+ */
+export function isArchivedId(archived: ArchivedIds | unknown, id: unknown): boolean {
+	const set = archivedIdSet(archived);
+	return set !== null && typeof id === "string" && id !== "" && set.has(id);
+}
+
+/**
+ * 从候选里**剔掉**已归档的那些（它们点不出来：侧边栏不显示）。
+ * ★ 拿不到归档集时**原样返回**（向后兼容：不传归档集 = 旧行为）。
+ */
+export function withoutArchived(rows: SessionRow[], archived: ArchivedIds | unknown): SessionRow[] {
+	const list = (rows || []).filter((r) => r && r.id);
+	const set = archivedIdSet(archived);
+	if (set === null) return list;
+	return list.filter((r) => !set.has(String(r.id)));
+}
+
+/**
+ * 官方 `workspaces` 客户端服务的**快照** → 归档 id 表。
+ * `null` = 这个快照里**没有**归档集（拿不到 ⇒ 调用方如实降级，别当成空表）。
+ * 形状判据只有一处（这里），将来官方改字段只改这一个函数。
+ */
+export function archivedFromSnapshot(snap: unknown): string[] | null {
+	if (!snap || typeof snap !== "object") return null;
+	const raw = (snap as { archivedSessionIds?: unknown }).archivedSessionIds;
+	if (!Array.isArray(raw)) return null;
+	const out: string[] = [];
+	for (const one of raw) {
+		const s = one === null || one === undefined ? "" : String(one);
+		if (s !== "") out.push(s);
+	}
+	return out;
+}
+
 /** 路径归一：统一成反斜杠、去掉尾部分隔符、小写（Windows 大小写不敏感）。 */
 export function normPath(p: unknown): string {
 	if (p === null || p === undefined) return "";
@@ -193,6 +287,8 @@ export function mergeRows(primary: SessionRow[], extra: SessionRow[]): SessionRo
  * 挑一条索引会话。
  *
  * 顺序（前一条命中就不再往下走）：
+ *   ⓪ `opts.archived` —— **先剔掉已归档的那些**（侧边栏看不见的会话不算可用；
+ *      见 `ArchivedIds` 那段。不传 = 旧行为）；
  *   ① `opts.cachedId` —— 上次用的那条，**还在候选里且（给了 root 时）cwd 覆盖 root**；
  *   ② 标题认领 —— 标题以 `INDEX_TITLE` 开头（自己建的索引会话，跨浏览器/清缓存都能认回）；
  *   ③ cwd 覆盖 sr 根 —— 优先 cwd 与 root 完全相等，其次祖先目录；各自取 updatedAt 最新；
@@ -204,10 +300,10 @@ export function mergeRows(primary: SessionRow[], extra: SessionRow[]): SessionRo
 export function pickIndexSession(
 	rows: SessionRow[],
 	srWs: string,
-	opts?: { cachedId?: string; allowForeign?: boolean },
+	opts?: { cachedId?: string; allowForeign?: boolean; archived?: ArchivedIds },
 ): SessionPick | null {
 	const o = opts || {};
-	const live = (rows || []).filter((r) => r && r.id);
+	const live = withoutArchived(rows || [], o.archived);
 	if (live.length === 0) return null;
 
 	const covers = (r: SessionRow) => !srWs || containsPath(r.cwd, srWs);
@@ -321,6 +417,8 @@ export function workTitleFor(root: unknown): string {
  * 挑一条**该功能的**工作会话。
  *
  * 顺序（前一条命中就不再往下走）：
+ *   ⓪ `opts.archived` —— **先剔掉已归档的那些**：这条会话是**要被发指令**的，
+ *      用户看不见它 = 指令发进去了、界面什么也没有（2026-09-30 实测缺陷）。不传 = 旧行为；
  *   ① `opts.cachedId` —— 面板上次给这个功能用的那条，**且 cwd 就是功能根**；
  *   ② 标题认领 —— 标题以 `WORK_TITLE` 开头，**且 cwd 就是功能根**（自己建的会话，清缓存也能认回）；
  *   ③ 没有 → 返回 null（调用方去建；建完一定 `rename` 成 `workTitleFor(root)`，下次就靠 ② 认回来）。
@@ -335,12 +433,12 @@ export function workTitleFor(root: unknown): string {
 export function pickWorkSession(
 	rows: SessionRow[],
 	featureRoot: unknown,
-	opts?: { cachedId?: string },
+	opts?: { cachedId?: string; archived?: ArchivedIds },
 ): SessionPick | null {
 	const o = opts || {};
 	const root = normPath(featureRoot);
 	if (root === "") return null;
-	const live = (rows || []).filter((r) => r && r.id && samePath(r.cwd, root));
+	const live = withoutArchived(rows || [], o.archived).filter((r) => samePath(r.cwd, root));
 	if (live.length === 0) return null;
 
 	// ① 缓存

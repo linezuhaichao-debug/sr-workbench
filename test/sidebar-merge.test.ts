@@ -30,7 +30,13 @@ import test from "node:test";
 import vm from "node:vm";
 
 const REPO = path.resolve(import.meta.dirname, "..");
-const TARGET = path.join(REPO, "lib", "client.js");
+/**
+ * 被驱动的**真产物**。默认就是 3080 服务的那一份；`SR_WB_BUNDLE` 可指向别处的 bundle
+ * —— 只为"红演示"用（拿修复前的产物跑同一套用例，证明用例真的抓得住这个缺陷）。
+ */
+const TARGET = process.env.SR_WB_BUNDLE
+	? path.resolve(process.env.SR_WB_BUNDLE)
+	: path.join(REPO, "lib", "client.js");
 
 const SR_ROOT = "D:\\TimeMachine\\GameDesignOS\\workspace";
 const FEATURE_ROOT = path.join(SR_ROOT, "features", "联盟悬赏");
@@ -95,8 +101,10 @@ interface HostSession {
 }
 interface HostWorkspace { workspaceId: string; path: string; title: string; createdAt: string; updatedAt: string }
 
-function makeEnv() {
+function makeEnv(opts: { archived?: string[]; dropArchiveField?: boolean } = {}) {
 	const calls: string[] = [];
+	/** 每次 `session.list` 的返回里都有哪些 id（证据：归档的会话**照样被交到面板手里**） */
+	const listedIds: string[][] = [];
 	const sessions: HostSession[] = [];
 	const wsByPath = new Map<string, HostWorkspace>();
 	let wsSeq = 0;
@@ -117,6 +125,9 @@ function makeEnv() {
 		session: {
 			async list() {
 				calls.push("session.list");
+				// ★ 照 host：列表**不按归档过滤**（`SessionListRequest` 只有可选 cursor）——
+				//   所以归档的会话照样在这里返回。排除它只能靠工作区侧的归档集。
+				listedIds.push(sessions.map((s) => s.sessionId));
 				return { ok: true, value: { items: sessions.map((s) => Object.assign({}, s, { projections: { kind: s.projections.kind, asOfSeq: s.projections.asOfSeq, values: Object.assign({}, s.projections.values) } })) } };
 			},
 			async create(req: { workspaceId?: string; cwd?: string; agentPreset?: string }) {
@@ -170,7 +181,17 @@ function makeEnv() {
 
 	const workspacesService = {
 		list: {
-			getSnapshot: () => ({ items: wsItems.slice(), archivedSessionIds: [], pinnedSessionIds: [], phase: "ready", state: "idle" }),
+			getSnapshot: () => {
+				const snap: Record<string, unknown> = {
+					items: wsItems.slice(), pinnedSessionIds: [], phase: "ready", state: "idle"
+				};
+				// ★ 侧边栏的「已归档」集（官方 `ClientWorkspaceModel.buildSnapshot()` 的
+				//   `archivedSessionIds`）—— 官方半侧就按它把行藏起来
+				//   （`dsh-client-ui-workspace/lib/client.js:801`）。面板必须看它。
+				//   `dropArchiveField` = 模拟"快照里没有这个字段"的老版本/形状变化 ⇒ 如实降级。
+				if (opts.dropArchiveField !== true) snap.archivedSessionIds = (opts.archived || []).slice();
+				return snap;
+			},
 			subscribe: () => () => {}
 		},
 		/** 官方 `WorkspaceController.create`（client.js:393）→ `ClientWorkspaceModel.create`（:51）→ `upsert`（:53/287） */
@@ -227,7 +248,7 @@ function makeEnv() {
 
 	return {
 		ctx: ctx, remote: remote, calls: calls, sessions: sessions, wsByPath: wsByPath,
-		wsItems: wsItems, sesIds: sesIds, sesById: sesById,
+		wsItems: wsItems, sesIds: sesIds, sesById: sesById, listedIds: listedIds,
 		registered: registered, injects: injects
 	};
 }
@@ -235,10 +256,10 @@ function makeEnv() {
 type Env = ReturnType<typeof makeEnv>;
 
 /** 在假 ModuleLoader 里跑真产物，返回注册到 `main` 槽的那个组件（= `PanelBound`）。 */
-function runBundle(env: Env): (props: Record<string, unknown>) => El {
+function runBundle(env: Env, localStorageImpl?: unknown): (props: Record<string, unknown>) => El {
 	const src = fs.readFileSync(TARGET, "utf8");
 	const loaded: { factory: (req: (id: string) => unknown) => { apply: (ctx: unknown, config: unknown) => void } }[] = [];
-	const sandbox = {
+	const sandbox: Record<string, unknown> = {
 		window: { __ModuleLoader__: { load: (r: never) => loaded.push(r) }, location: { origin: "http://127.0.0.1:3080" } },
 		console: { log: () => {}, warn: () => {}, error: () => {}, info: () => {}, debug: () => {} },
 		setTimeout: setTimeout, clearTimeout: clearTimeout, setInterval: setInterval, clearInterval: clearInterval,
@@ -248,8 +269,10 @@ function runBundle(env: Env): (props: Record<string, unknown>) => El {
 		Promise: Promise, JSON: JSON, Math: Math, Date: Date, Object: Object, Array: Array, String: String,
 		Number: Number, Boolean: Boolean, Symbol: Symbol, Map: Map, Set: Set, WeakMap: WeakMap, WeakSet: WeakSet,
 		RegExp: RegExp, Error: Error, TypeError: TypeError, RangeError: RangeError
-		// ★ 刻意**不给** localStorage / navigator：面板对它们全都有 typeof 兜底（无缓存也能用）
+		// ★ 默认**不给** localStorage / navigator：面板对它们全都有 typeof 兜底（无缓存也能用）；
+		//   要验"缓存里那条已归档"的场景时才注入（见 `makeStorage`）。
 	};
+	if (localStorageImpl !== void 0) sandbox.localStorage = localStorageImpl;
 	Object.assign(sandbox, { globalThis: sandbox, self: sandbox });
 	vm.createContext(sandbox);
 	new vm.Script(src, { filename: TARGET }).runInContext(sandbox, { timeout: 10000 });
@@ -361,4 +384,123 @@ test("取不到官方客户端服务时：如实说「要刷新页面」，不�
 	assert.ok(note.includes("刷新页面"), "如实说清这次要刷新页面才看得见：" + note);
 	assert.ok(!env.calls.includes("sessions.refresh") && !env.calls.includes("workspaces.create " + FEATURE_ROOT),
 		"服务取不到就不硬调：" + JSON.stringify(env.calls));
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 缺陷（2026-09-30 实测）· 面板认领会话时**不看归档状态**
+//   现象：面板认领了一条"已归档（侧边栏不可见）"的会话 ⇒ 指令发进去了、
+//         会话日志也有写入，但侧边栏什么也没出现，用户判定"面板没反应，F5 都不出现"。
+//   口径：归档 = **工作区层的显示过滤**，不是删除 —— 归档的会话照样在 `session.list` 里
+//         （列表不按归档过滤），只是官方侧边栏按 `archivedSessionIds` 把行藏起来。
+//         ⇒ 被面板**发指令**的会话，**在界面上可见才算可用**（用户故事 27/28）。
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 假 localStorage：只够面板那两处缓存用（面板对它是 typeof 兜底，不给也能跑） */
+function makeStorage(seed: Record<string, string>) {
+	const m = new Map<string, string>();
+	for (const k of Object.keys(seed)) m.set(k, seed[k]);
+	return {
+		getItem: (k: string): string | null => (m.has(k) ? String(m.get(k)) : null),
+		setItem: (k: string, v: unknown): void => { m.set(k, String(v)); },
+		removeItem: (k: string): void => { m.delete(k); },
+		dump: (): Record<string, string> => Object.fromEntries(m)
+	};
+}
+
+/** 缓存原文：`{ "功能根": "会话 id" }`（键的写法由 `workCacheGet` 的 normPath 决定） */
+const workCacheRawFor = (sid: string): string =>
+	JSON.stringify({ [path.resolve(FEATURE_ROOT).toLowerCase()]: sid });
+
+/** 一条"面板自己建过的工作会话"（认领凭据 = 标题），放进 host 的会话表 */
+function seededWorkSession(id: string, updatedAt = 100): HostSession {
+	return {
+		sessionId: id, cwd: FEATURE_ROOT, updatedAt: updatedAt, running: false, blank: false,
+		projections: { kind: "sequenced", asOfSeq: 3, values: { title: WORK_TITLE } }
+	};
+}
+
+test("归档缺陷：缓存里记的那条**已归档**（侧边栏看不见）⇒ 当作不可用 → 走新建 + 官方两刀", async () => {
+	const OLD = "session-old-0001";
+	const env = makeEnv({ archived: [OLD] });
+	// host 上它**还在**（归档 ≠ 删除）：列表里能查到、还带标题 —— 认领时唯一的判据就是归档集
+	env.sessions.push(seededWorkSession(OLD));
+	const storage = makeStorage({ "sr-wb.work.v1": workCacheRawFor(OLD) });
+	const props = panelPropsOf(runBundle(env, storage));
+
+	const res = await (props.__fix as (srWs: string, req: unknown, extra: unknown) => Promise<Record<string, unknown>>)(
+		SR_ROOT,
+		{
+			path: FINAL_ABS, ref: "§5 UI-M1 UE3",
+			before: "| UE3 | 出刀按钮… |", intent: "改成「一键出刀」并加二次确认", impact: []
+		},
+		{ root: FEATURE_ROOT }
+	);
+	assert.equal(res.ok, true, "发送本身照旧成功：" + JSON.stringify(res.message || ""));
+	const sid = String(res.sid || "");
+	assert.ok(sid.startsWith("session-new-"), "缓存那条不能用 ⇒ 新建了一条：" + sid);
+	assert.notEqual(sid, OLD, "**没有**复用那条已归档的会话");
+
+	// 它确实在候选里（`session.list` 不按归档过滤）—— 所以"排除"这一步不是多余的
+	assert.ok(env.calls.includes("session.list"), "拉过会话列表：" + JSON.stringify(env.calls));
+	assert.ok(env.listedIds.some((ids) => ids.includes(OLD)),
+		"那条已归档的会话**确实被交到面板手里**（列表不按归档过滤）：" + JSON.stringify(env.listedIds));
+	assert.ok(env.sessions.some((s) => s.sessionId === OLD), "host 上它还在（归档 ≠ 删除）");
+	assert.equal(env.calls.filter((c) => c === "session.prompt " + OLD).length, 0,
+		"**没有**把指令发进那条看不见的会话（这正是缺陷本身）：" + JSON.stringify(env.calls));
+	assert.equal(env.calls.filter((c) => c.startsWith("session.prompt ")).length, 1, "指令只发一次");
+	assert.equal(env.calls.filter((c) => c === "session.prompt " + sid).length, 1, "发到的是新建的那条：" + sid);
+	assert.equal(env.calls.filter((c) => c.startsWith("session.create ")).length, 1, "只为这个功能建一条会话");
+	assert.ok(env.calls.some((c) => c.startsWith("session.rename ") && c.includes(WORK_TITLE)),
+		"新建的那条照旧打可识别标题「" + WORK_TITLE + "」：" + JSON.stringify(env.calls));
+
+	// 新建之后**补了官方那两刀**（侧边栏当场看得见），顺序：先工作区行、再会话基线
+	const createAt = env.calls.findIndex((c) => c.startsWith("session.create "));
+	const resolveAt = env.calls.findIndex((c) => c === "workspaces.create " + FEATURE_ROOT);
+	const refreshAt = env.calls.findIndex((c) => c === "sessions.refresh");
+	assert.ok(resolveAt > createAt, "建完会话之后补调 `workspaces.create({path: 功能根})`：" + JSON.stringify(env.calls));
+	assert.ok(refreshAt > resolveAt, "再补调 `sessions.refresh()`（重拉会话基线）：" + JSON.stringify(env.calls));
+
+	// 缓存被更新成新 id（下次不用再建一条）
+	assert.ok(String(storage.dump()["sr-wb.work.v1"] || "").includes(sid),
+		"缓存更新成新建的那条：" + String(storage.dump()["sr-wb.work.v1"] || ""));
+	// 如实说清"为什么不复用上次那条"
+	assert.ok(String(res.note || "").includes("归档"), "界面上说清那条已被归档、不算可用：" + String(res.note || ""));
+
+	console.log("【记录器】缓存里那条已归档时，按下「发到工作会话」之后实际调到的顺序：\n  " + env.calls.join("\n  "));
+});
+
+test("归档缺陷·降级：快照里没有 archivedSessionIds ⇒ 退回旧行为（照旧认领），但**如实说清**无法确认可见", async () => {
+	const OLD = "session-old-0002";
+	const env = makeEnv({ archived: [OLD], dropArchiveField: true });
+	env.sessions.push(seededWorkSession(OLD));
+	const props = panelPropsOf(runBundle(env, makeStorage({ "sr-wb.work.v1": workCacheRawFor(OLD) })));
+
+	const res = await (props.__fix as (srWs: string, req: unknown, extra: unknown) => Promise<Record<string, unknown>>)(
+		SR_ROOT,
+		{ path: FINAL_ABS, ref: "§10 AC1", before: "a", intent: "b", impact: [] },
+		{ root: FEATURE_ROOT }
+	);
+	assert.equal(res.ok, true, "指令照旧发出去（降级不影响干活）");
+	assert.equal(String(res.sid), OLD, "拿不到归档集 ⇒ 退回旧行为：仍然认领缓存里那条");
+	const note = String(res.note || "");
+	assert.ok(note.includes("取不到侧边栏的「已归档」集"), "如实降级，不静默假装知道：" + note);
+	assert.ok(note.includes("archivedSessionIds"), "连原因（哪一步拿不到）一起说清：" + note);
+});
+
+test("归档缺陷：索引会话路径同样不认已归档的那条（认领 ⇒ 走新建）", async () => {
+	const ARCHIVED_INDEX = "session-index-old";
+	const env = makeEnv({ archived: [ARCHIVED_INDEX] });
+	env.sessions.push({
+		sessionId: ARCHIVED_INDEX, cwd: DEFAULT_ROOT, updatedAt: 99, running: false, blank: false,
+		projections: { kind: "sequenced", asOfSeq: 2, values: { title: INDEX_TITLE + "（timemachine）" } }
+	});
+	const props = panelPropsOf(runBundle(env));
+
+	const got = await (props.__resolve as (opts: unknown) => Promise<Record<string, unknown>>)({});
+	assert.equal(got.ok, true, "索引会话解析成功：" + JSON.stringify(got.error || ""));
+	assert.equal(got.source, "created", "已归档的那条不算可用 ⇒ 新建：" + JSON.stringify(got.source));
+	assert.notEqual(String(got.sid || ""), ARCHIVED_INDEX, "没有复用那条已归档的索引会话");
+	assert.ok(env.calls.includes("sessions.refresh"), "新建之后照旧补官方两刀：" + JSON.stringify(env.calls));
+	assert.equal(env.calls.filter((c) => c === "workspaces.create " + DEFAULT_ROOT).length, 1,
+		"补调 `workspaces.create({path: 兜底根})`：" + JSON.stringify(env.calls));
 });

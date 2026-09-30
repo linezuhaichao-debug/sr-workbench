@@ -31,10 +31,14 @@ import { loadFeatureDetail } from "./load/feature.ts";
 //   于是面板上的 `fieldCheck` 一直是 undefined —— "悬空即报错"在面板里根本看不见。
 import { ledgerOf } from "./pure/ledger.ts";
 import {
+	ARCHIVED_CACHED_NOTE,
+	NO_ARCHIVE_INFO_NOTE,
+	archivedFromSnapshot,
 	configPathCandidates,
 	containsPath,
 	indexCacheKey,
 	indexTitleFor,
+	isArchivedId,
 	mergeRows,
 	pickIndexSession,
 	pickWorkSession,
@@ -4870,26 +4874,40 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 				const note = [];
 				const title = workTitleFor(root);
 				const key = workKey("sr-workbench", root);
-				if (!o.fresh) {
-					const mem = WORK_SESSIONS.get(key);
-					if (mem) return { ok: true, sid: mem, source: "memory", title: title, root: root, running: false, note: note };
-				} else {
+				// ★ 归档集（侧边栏看不见的会话**不算可用**）—— 认了它 = 指令发进去、界面什么也没有
+				//   （2026-09-30 实测缺陷；取值与降级见 `sidebarArchived`）。
+				const arch = sidebarArchived();
+				if (arch.ids === null) note.push(NO_ARCHIVE_INFO_NOTE + "（" + arch.reason + "）");
+				// 两个"上次用的那条"（内存 / localStorage）里，只要有一条已被归档，就都不算了：
+				// 归档 ≠ 删除，它还在列表里、还能被 prompt，但用户**看不见**它 —— 那正是本缺陷的形状。
+				const staleMemory = o.fresh ? "" : (WORK_SESSIONS.get(key) || "");
+				const staleCache = o.fresh ? "" : workCacheGet(workCacheRaw(), root);
+				if (isArchivedId(arch.ids, staleMemory) || isArchivedId(arch.ids, staleCache)) {
 					WORK_SESSIONS.delete(key);
 					workCacheSet(root, null);
+					note.push(ARCHIVED_CACHED_NOTE);
+				}
+				if (o.fresh) {
+					WORK_SESSIONS.delete(key);
+					workCacheSet(root, null);
+				} else if (staleMemory !== "" && !isArchivedId(arch.ids, staleMemory)) {
+					return { ok: true, sid: staleMemory, source: "memory", title: title, root: root, running: false, note: note };
 				}
 				// 候选：store 快照先（带着 cwd / running）——
 				// ★ 认不着时再补一次 `remote.session.list`：store 行的 `title` 要等 host 投影下来
 				//   （`SessionSummary.title` 是 "absent until the host projects one"），
 				//   而列表里的标题在 `projections.values.title`。少了这一步，"清掉缓存"之后
 				//   会看不见自己起过名的会话 ⇒ 每次刷新又新建一条（用户故事 27）。
+				//   ★ 但列表**不按归档过滤**（`SessionListRequest` 只有可选 cursor）——所以两条
+				//   通道的候选都要过归档这一关（`pickWorkSession` 的 `archived` 参数）。
 				let rows = (rowsIn || []).filter((r) => r && r.id && r.id !== o.exclude);
-				const cached = o.fresh ? "" : workCacheGet(workCacheRaw(), root);
-				let hit = pickWorkSession(rows, root, { cachedId: cached });
+				const cached = isArchivedId(arch.ids, staleCache) ? "" : staleCache;
+				let hit = pickWorkSession(rows, root, { cachedId: cached, archived: arch.ids });
 				if (!hit) {
 					const L = await probe.listSessions(o.signal);
 					if (L.ok) {
 						rows = mergeRows(rows, rowsFromList(L.value).filter((r) => r.id !== o.exclude));
-						hit = pickWorkSession(rows, root, { cachedId: cached });
+						hit = pickWorkSession(rows, root, { cachedId: cached, archived: arch.ids });
 					} else if (rows.length === 0) {
 						note.push("会话列表读取失败：" + humanError(L));
 					}
@@ -4928,8 +4946,11 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 					const wsId = info && info.id ? info.id : "";
 					// 绝对路径兜底：拿不到工作区 id 时用路径建（影响分组归属，不影响可用性）
 					const key = workKey("sr-workbench", wsId || srWs || "__assets__");
-					const hit = WORK_SESSIONS.get(key) || "";
-					if (hit) return { sid: hit, error: "" };
+					const mem = WORK_SESSIONS.get(key) || "";
+					// ★ 归档集：内存里记的那条若已被归档（侧边栏看不见）⇒ 不算可用，另建一条
+					//   （这条路径也会发指令；见 `sidebarArchived`）
+					if (mem && !isArchivedId(sidebarArchived().ids, mem)) return { sid: mem, error: "" };
+					if (mem) WORK_SESSIONS.delete(key);
 					if (wsId) {
 						// ★ 给了工作区 id 就**不能**再给 cwd（互斥）；cwd 由工作区自己的 path 决定
 						const cr = await probe.create(wsId, "", "sr-workbench");
@@ -5033,6 +5054,12 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 					const key = workKey("sr-workbench", "__assets__");
 					let sid = WORK_SESSIONS.get(key) || "";
 					let syncNotes = [];
+					// ★ 归档集：内存里记的那条若已被归档（侧边栏看不见）⇒ 不算可用，另建一条
+					//   （这条路径会发指令；同 `ensureFeatureWorkSession` 的口径）
+					if (sid && isArchivedId(sidebarArchived().ids, sid)) {
+						WORK_SESSIONS.delete(key);
+						sid = "";
+					}
 					if (!sid) {
 						const cr = info && info.id
 							? await probe.create(info.id, "", "sr-workbench")
@@ -5280,6 +5307,44 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 			};
 
 			/**
+			 * ═══ 侧边栏的「已归档」集（2026-09-30 实测缺陷修复）════════════════════════
+			 *
+			 * 缺陷：面板认领会话时**不看归档状态**，于是认领了一条"已归档（侧边栏不可见）"
+			 * 的会话 —— 指令发进去了（会话日志 13:35 仍有写入），用户却什么也看不到，
+			 * 判定"面板没反应，F5 都不出现"。
+			 *
+			 * 归档 = **工作区层的显示过滤**，不是删除：归档的会话照样出现在 `remote.session.list`
+			 * 里（`SessionListRequest` 只有可选 `cursor`，列表**不按归档过滤**，
+			 * `dsh-api-session-controller/lib/types/types.d.ts:262`），
+			 * 只是官方侧边栏按 `archivedSessionIds` 把行藏起来（`ArchivedFilter`）。
+			 * 所以"能不能被认领"不能只看它在不在列表里 —— **必须看它在界面上可不可见**。
+			 *
+			 * 唯一权威读口子就是官方客户端 workspace store 的快照
+			 * （`ClientWorkspaceModel.buildSnapshot()` 里的 `archivedSessionIds`，
+			 * `dsh-api-workspace-controller/lib/types/client/model.d.ts:12`；
+			 * 官方半侧自己也是这么用的：`dsh-client-ui-workspace/lib/client.js:801` 挑空白会话时排除它）。
+			 * 我们**只读**它 —— 不 patch 官方半侧、不自己维护一份归档表。
+			 *
+			 * ★ 拿不到时（服务没提供 / 快照形状变了）**如实降级**，绝不静默假装知道：
+			 *   返回 `ids: null`，调用方把 `NO_ARCHIVE_INFO_NOTE` 显示到面板上。
+			 *   降级行为 = **退回旧行为**（不做排除，照旧认领），因为"排除"这件事此刻无从判定；
+			 *   代价与补救写在提示里（去侧边栏「已归档」里取消归档）。
+			 *
+			 * @returns `{ ids, reason }` —— `ids: string[] | null`（`null` = 拿不到）
+			 */
+			const sidebarArchived = () => {
+				try {
+					const store = storeOf("workspaces", "uiWorkspace");
+					if (!store) return { ids: null, reason: "取不到官方 workspaces 客户端服务" };
+					const ids = archivedFromSnapshot(store.getSnapshot());
+					if (ids === null) return { ids: null, reason: "快照里没有 archivedSessionIds" };
+					return { ids: ids, reason: "" };
+				} catch (e) {
+					return { ids: null, reason: String((e && e.message) || e) };
+				}
+			};
+
+			/**
 			 * 「用户当前选中的会话」。
 			 * ★ **0.2.0 没有 `state.current` 了** —— 官方 `dsh-client-ui-layout` 与
 			 *   `dsh-client-ui-workspace` 一律用 `byId[id].retainedBy.mainView > 0` 算"当前会话"。
@@ -5523,6 +5588,13 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 				let rows = (o.rows || []).filter((r) => r && r.id);
 				const cached = cacheRead();
 				const storeRowCount = rows.length;
+				// ★ 归档集：认领索引会话时也要排除（侧边栏看不见的会话不算可用）。
+				//   缓存里记的那条若已被归档 ⇒ 当作"不可用"（不指名它），下面按 ②③ 认别的或新建。
+				const arch = sidebarArchived();
+				if (arch.ids === null) note.push(NO_ARCHIVE_INFO_NOTE + "（" + arch.reason + "）");
+				const cachedSid = cached && cached.sid ? String(cached.sid) : "";
+				const cachedArchived = isArchivedId(arch.ids, cachedSid);
+				if (cachedArchived) note.push(ARCHIVED_CACHED_NOTE);
 
 				// 候选根：显式提示 → 工作区列表 → 会话 cwd → 本机兜底
 				const roots = [];
@@ -5540,7 +5612,13 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 				}
 
 				// 1) 读配置只需要"一条能读文件的会话"
-				const boot = pickIndexSession(rows, "", { cachedId: cached && cached.sid, allowForeign: true });
+				//   ★ 这一步**不排除归档**（也有意与下面的正式认领不同）：它只被 `read` 用，
+				//     不显示、更不发指令 —— 用户看不见它不影响任何结果；反过来排除它会在
+				//     "用户把会话都归档了"时读不到 sr 配置、把锚点退回默认根。只是缓存里那条
+				//     已归档时不再指名它。
+				const boot = pickIndexSession(rows, "", {
+					cachedId: cachedArchived ? "" : cachedSid, allowForeign: true
+				});
 
 				// 2) 读 sr 配置 → 绝对锚点
 				const cands = configPathCandidates(roots);
@@ -5561,9 +5639,11 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 				if (!cfg) note.push("没读到 sr 配置（试过 " + cands.length + " 个候选路径），锚点退回 " + root);
 				if (storeRowCount === 0) note.push("客户端会话快照为空，已走 remote.session.list。");
 
-				// 3) 索引会话：必须是"cwd 覆盖 root"的那一类
+				// 3) 索引会话：必须是"cwd 覆盖 root"的那一类，**且没被归档**（侧边栏看得见才算可用）
 				const able = rows.filter((r) => containsPath(r.cwd, root));
-				const hit = pickIndexSession(able, root, { cachedId: cached && cached.sid });
+				const hit = pickIndexSession(able, root, {
+					cachedId: cachedArchived ? "" : cachedSid, archived: arch.ids
+				});
 				if (hit) {
 					cacheWrite(root, hit.id);
 					return {
