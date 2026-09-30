@@ -39,6 +39,8 @@ export async function scanFeatureListing(port: WorkspacePort, options: FeatureDe
 	const rootDirs = await listDirs(port, root, signal, true);
 	const dirs: Record<string, { files: string[]; nested: Record<string, string[]> }> = {};
 	const deepDirs: string[] = [];
+	/** ★ 工单 16：真正**存在**的那两层目录（`gdd/UI` 这种），订阅变更时要逐个盯着它们 */
+	const nestedDirs: string[] = [];
 	for (const sub of rootDirs) {
 		const dirPath = root + "/" + sub;
 		const files = await listFiles(port, dirPath, signal, true);
@@ -46,12 +48,13 @@ export async function scanFeatureListing(port: WorkspacePort, options: FeatureDe
 		const nested: Record<string, string[]> = {};
 		for (const sd of subdirs) {
 			nested[sd] = await listFiles(port, dirPath + "/" + sd, signal, true);
+			nestedDirs.push(sub + "/" + sd);
 			const deeper = await listDirs(port, dirPath + "/" + sd, signal, true);
 			if (deeper.length) deepDirs.push(sub + "/" + sd + "（还有 " + deeper.length + " 个子目录）");
 		}
 		dirs[sub] = { files: files, nested: nested };
 	}
-	return { rootFiles: rootFiles, dirs: dirs, deepDirs: deepDirs };
+	return { rootFiles: rootFiles, dirs: dirs, nestedDirs: nestedDirs, deepDirs: deepDirs };
 }
 
 /**
@@ -113,6 +116,10 @@ export async function loadFeatureDetail(port: WorkspacePort, options: FeatureDet
 		stage: stageProgress(artifacts),
 		finalCheck: finalCheck,
 		checklist: checklist,
-		notes: notes
+		notes: notes,
+		// ★ 工单 16：功能根下**确实存在**的那两层的名字（订阅变更要逐个盯）——
+		//   0.2.0 的 `changes` 是目标定向 + depth 0，只订阅功能根看不见 `gdd\` 里的写入（实测）。
+		dirs: Object.keys(listing.dirs),
+		nestedDirs: listing.nestedDirs || []
 	};
 }

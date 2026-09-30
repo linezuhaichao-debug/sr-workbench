@@ -40,6 +40,7 @@ import {
 	indexTitleFor,
 	isArchivedId,
 	mergeRows,
+	normPath,
 	pickIndexSession,
 	pickWorkSession,
 	rowsFromList,
@@ -75,6 +76,27 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 //   （去缩进后 diff 只剩 `export` 一行），留着它只会让"新加四个入口"变成两份实现。
 import { INTAKE } from "./pure/intake.ts";
 import { loadBrainstorm } from "./load/brainstorm.ts";
+// ★ 工单 16 · 自动刷新与版本指纹 —— 判定全在 `src/pure/refresh.ts`（`test/pure-refresh.test.ts` 覆盖的就是它）：
+//   帧怎么认（`parseFrame`）· 盯哪些目标（`watchPlan`）· 这一帧要重读哪些部件（`planReload` / `unionParts`）
+//   · 自激防护（`acceptFrame`）· 指纹与"是不是最新"（`fingerprintOf` / `freshnessOf`）· 去抖合批（`shouldFlush`）
+//   · stat 兜底核对（`stalePaths` / `mergeApplied`）。
+//   组合根只做三件事：按 plan 去调官方通道、按 plan 去调加载器、把结果如实显示。
+//   ★ 通道的真实形状（0.2.0 实测）：**目标定向 OS 监视、depth 0、任何写入者都发帧** —— 见该文件头。
+import {
+	FLUSH_QUIET_MS,
+	RELOAD_PARTS,
+	acceptFrame,
+	fingerprintOf,
+	freshnessOf,
+	mergeApplied,
+	parseFrame,
+	planReload,
+	shortDigest,
+	shouldFlush,
+	stalePaths,
+	unionParts,
+	watchPlan
+} from "./pure/refresh.ts";
 
 		const h = React.createElement;
 
@@ -2730,6 +2752,71 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 		}
 
 		/**
+		 * ★ 工单 16 · 变更订阅条 + **版本指纹**（常显在最上面一行）。
+		 *
+		 * 一眼要看出三件事（这就是本票的验收口径）：
+		 *   ① 屏幕上这份内容的**版本指纹**（8 位十六进制，来自宿主的 `version`）；
+		 *   ② 它是不是最新的 —— `freshnessOf` 给的那一句话（已是最新 / 有 N 处新变化 / 不可用）；
+		 *   ③ 订阅实况（几个目标就绪 / 被跳过几帧 / 最近一帧原文），**降级时如实说**。
+		 *
+		 * ★ 「刷新」按钮**任何状态下都在**：通道不可用时它是唯一出路（工单 16 的"不许假装修好了"）。
+		 */
+		function LiveBar(props) {
+			const live = props.live || {};
+			const f = freshnessOf({ phase: live.phase, pending: live.pending, digest: live.digest, reason: live.reason });
+			const tone = f.state === "fresh" ? C.ok : f.state === "stale" ? C.warn : (f.state === "down" ? C.bad : C.muted);
+			const skipped = Number(live.skipped) || 0;
+			const changed = live.changed || [];
+			return h("div", {
+				"data-live": f.state,
+				"data-digest": live.digest || "",
+				"data-pending": String(live.pending || 0),
+				"data-ready": String(live.ready || 0) + "/" + String(live.total || 0),
+				"data-reloads": String(live.reloads || 0),
+				"data-skipped": String(skipped),
+				// 各部件"被点名重读"的次数（只增不减）—— 验收"只重读受影响的部分"看的就是它
+				"data-rev": ["detail", "ledger", "final", "ui"].map((p) => p + ":" + (((props.rev || {})[p]) || 0)).join(","),
+				style: {
+					display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap",
+					border: "1px solid " + C.faint, borderLeft: "3px solid " + tone,
+					borderRadius: "4px", padding: "5px 10px", marginBottom: "8px", background: "#fff",
+					fontSize: "11px"
+				}
+			}, [
+				h("span", { key: "fp", style: { fontFamily: "monospace", color: C.ink }, title: "内容指纹 = 详情清单里每个文件的宿主版本（不透明串）的有序哈希；变了就说明磁盘上那份内容变了" },
+					"内容指纹 " + shortDigest(live.digest)),
+				h("span", { key: "st", "data-live-text": f.text, style: { color: tone, fontWeight: 600 } }, f.text),
+				h("span", { key: "tgt", style: { color: C.muted } },
+					live.phase === "off" ? "" :
+						"订阅 " + (Number(live.ready) || 0) + "/" + (Number(live.total) || 0) + " 个目标" +
+						(skipped ? "　跳过 " + skipped + " 帧（不是新内容）" : "")),
+				props.onRefresh
+					? h("button", {
+						key: "rf", type: "button", "data-refresh": "manual",
+						onClick: () => props.onRefresh(),
+						title: "手动重读这个功能的全部数据（变更订阅不可用时的兜底）",
+						style: { font: "inherit", fontSize: "11px", padding: "2px 9px", border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer" }
+					}, "刷新")
+					: null,
+				changed.length
+					? h("span", { key: "ch", style: { color: C.muted } }, "刚重读：" + changed.map((x) => String(x).split(/[\\/]/).slice(-2).join("/")).join("、"))
+					: null,
+				live.reason ? h("span", { key: "rs", style: { color: C.muted } }, live.reason) : null,
+				// 原始帧留在这里：真机验收时"帧真的到了"要看得见，而不是只能听面板说
+				live.frame
+					? h("details", { key: "fr", style: { width: "100%" } }, [
+						h("summary", { key: "s", style: { cursor: "pointer", color: C.muted } },
+							"最近一帧（原始 JSON" + (live.at ? " · " + new Date(live.at).toLocaleTimeString() : "") + "）"),
+						h("pre", {
+							key: "p",
+							style: { margin: "4px 0 0", padding: "6px", background: C.bg, border: "1px solid " + C.faint, borderRadius: "3px", fontSize: "10.5px", overflowX: "auto", whiteSpace: "pre-wrap" }
+						}, live.frame)
+					])
+					: null
+			]);
+		}
+
+		/**
 		 * 功能详情 · 状态块：三阶段进度 + "现在能用吗" + V 校验清单。
 		 * 放在**所有页签之上**，所以切到哪一屏都能看到（工单 12 的"详情页要能看到阶段进度与定稿有效性"）。
 		 */
@@ -4534,8 +4621,6 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 			// ★ 工单 23：进功能先落在**第一个工作面**（头脑风暴）；`final` = 定稿修订工作面，其余是资料页签
 			const [dtab, setDtab] = React.useState(ENTRY_TAB);
 			const [ledger, setLedger] = React.useState(null);
-			// ★ 台账在**渲染期**从 ledger 派生（不是加载期冻结），见 ledgerOf 的注释
-			const designLedger = React.useMemo(() => ledgerOf(ledger), [ledger]);
 			const [iface, setIface] = React.useState(null);
 			const [finalDoc, setFinalDoc] = React.useState(null);
 			const [indexData, setIndexData] = React.useState(null);
@@ -4543,6 +4628,45 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 			const [detail, setDetail] = React.useState(null);
 			// ★ 工单 23：头脑风暴工作面的数据（已有的分析结论 + 两种新格式的解析结果）
 			const [brain, setBrain] = React.useState(null);
+			/**
+			 * ★ 工单 16：详情里每一份数据都盖一个"这是哪个功能的"戳（`__topic`），渲染时对不上
+			 *   当前功能就**不当数**。两个作用合在一起：
+			 *     ① 换功能时**不需要任何清空动作**（旧数据自动失效，不会闪一个上一个功能的内容）；
+			 *     ② 重读（自动刷新）时**保留屏幕上的旧数据** —— 不整屏重挂、不丢用户选中的条目。
+			 */
+			const ofTopic = (r) => (r && r.__topic !== undefined && r.__topic !== detailTopic ? null : r);
+			/** 盖上当前功能的戳（组合根该干的事：结果属于哪一次请求由调用方知道） */
+			const stamped = (r) => Object.assign({}, r, { __topic: detailTopic });
+			/** 详情数据中"属于当前功能的那一份"（下面所有渲染与判断都用它，不再直接用 detail） */
+			const dview = ofTopic(detail);
+			// ★ 台账在**渲染期**从 ledger 派生（不是加载期冻结），见 ledgerOf 的注释
+			const designLedger = React.useMemo(() => ledgerOf(ofTopic(ledger)), [ledger, detailTopic]);
+			// ════════════════════════════════════════════════════════════════
+			// ★ 工单 16 · 自动刷新与版本指纹
+			//   三个状态：`rev`（各部件重读计数，只增不减）· `live`（订阅与指纹，给人看的）
+			//   · 四个 ref（版本袋 / 已应用版本 / 待落批 / 定时器）。
+			//   判定全在 `src/pure/refresh.ts`；这里只负责"按它说的去调、把结果如实显示"。
+			// ════════════════════════════════════════════════════════════════
+			const [rev, setRev] = React.useState({ detail: 0, ledger: 0, final: 0, ui: 0 });
+			const [live, setLive] = React.useState({ phase: "off", reason: "", ready: 0, total: 0, digest: "", pending: 0, changed: [], frame: "", at: 0, reloads: 0, skipped: 0 });
+			/** 读文件时收下的版本袋（`portOf` 往里写）—— 指纹与自激防护的凭据 */
+			const bagRef = React.useRef({});
+			/** 已经"读进屏幕"的 路径 → version */
+			const appliedRef = React.useRef({});
+			/** stat 核对时"上次看见的目录版本"（目录版本只在这里记，见 `checkNow`） */
+			const dirSeenRef = React.useRef({});
+			/** 当前这一批待落的变更（去抖用） */
+			const batchRef = React.useRef(null);
+			const timerRef = React.useRef(null);
+			/** 渲染期把"最新一次的落盘实施"和"当前上下文"挂上，定时器回调不必重造闭包 */
+			const flushRef = React.useRef(null);
+			const ctxRef = React.useRef({});
+			/** 当前订阅计划（轮询核对要知道盯了哪些目录） */
+			const planRef = React.useRef(null);
+			/** 这一轮订阅已经 ready 了几个目标（判"帧永不 ready"的降级） */
+			const readyCountRef = React.useRef(0);
+			/** 订阅回调的**最新**一份（换一次渲染就换一个闭包，但不能因此重开订阅） */
+			const onLiveEventRef = React.useRef(null);
 			const loader = props.__loader;
 			const remoteOpen = props.__remoteOpen;
 			const ledgerLoader = props.__ledger;
@@ -4556,6 +4680,9 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 			const brainstormRunner = props.__sendBrainstorm;
 			const diagnose = props.__diagnose;
 			const probe = props.__probe;
+			// ★ 工单 16：变更订阅 / 批量 stat（都是官方通道，包在组合根里）
+			const watchRunner = props.__watch;
+			const statManyRunner = props.__statMany;
 
 			// ★ 看板要能看出「哪个功能在等你拍板」。
 			//   hooks 无条件调用；订阅整张 pending 表 + 工作会话缓存，在渲染体里算。
@@ -4673,10 +4800,319 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 				return () => { cancelled = true; ac.abort(); };
 			}, []);
 
+			// ════════════════════════════════════════════════════════════════
+			// ★ 工单 16 · 自动刷新：订阅 → 去抖合批 → **只重读受影响的那几处**
+			//
+			// 分工（照着 `src/pure/refresh.ts` 的文件头读）：
+			//   · 组合根（这里）只做三件事：按 `watchPlan` 去开订阅、按 `planReload` 去触发重读、
+			//     把 `freshnessOf` 那句话如实显示出来；
+			//   · 判定（帧怎么认 / 该重读什么 / 什么叫"同一份内容"）**全在纯函数层**，有测试；
+			//   · 重读**不整屏重挂**：给每个部件一个只增不减的重读计数（`rev`），
+			//     加载 effect 把它挂在依赖数组上 —— 只有被点名的那几个部件会重跑，
+			//     其余部件的状态（用户选中的条目、滚动位置、组件的 key）原样不动。
+			// ════════════════════════════════════════════════════════════════
+
+			/** 当前功能卡（看板数据里那一条）—— 功能根与"当前最终版"都从它来 */
+			const curFeature = React.useMemo(() => {
+				const d0 = state.phase === "ready" ? state.data : null;
+				if (!d0 || !detailTopic) return null;
+				return ((d0.features || []).filter((x) => x.topic === detailTopic)[0]) || null;
+			}, [state, detailTopic]);
+			const featureRoot = (curFeature && curFeature.root) || "";
+			/** 当前正在看的那一个文件（详情里的最终版）—— 窄订阅 + 低频轮询的对象 */
+			const openFinal = (curFeature && curFeature.openPath) || "";
+			const srWsOf = (state.phase === "ready" && state.data) ? (state.data.srWs || "") : "";
+
+			/** 渲染期把最新上下文挂上：定时器与订阅回调不在渲染闭包里，但读的必须是这一刻的值 */
+			ctxRef.current = {
+				view: view, dtab: dtab, topic: detailTopic,
+				root: featureRoot, srWs: srWsOf, openPath: openFinal
+			};
+
+			/** 详情清单 → 绝对路径数组（指纹与 stat 批核对都用它） */
+			const listingAbs = (detailData) => {
+				if (!detailData || detailData.error || !detailData.artifacts) return [];
+				const root = String(detailData.root || "").replace(/\\+$/, "");
+				if (root === "") return [];
+				return (detailData.artifacts.allPaths || []).map((rel) => root + "\\" + String(rel).replace(/\//g, "\\"));
+			};
+
+			/** 重读一个部件：把它的计数 +1（加载 effect 依赖它，于是只有它重跑） */
+			const bumpParts = (parts) => {
+				const bump = {};
+				for (const p of ["detail", "ledger", "final", "ui"]) if ((parts || []).indexOf(p) >= 0) bump[p] = 1;
+				if (Object.keys(bump).length === 0) return;
+				setRev((prev) => {
+					const next = Object.assign({}, prev);
+					for (const k of Object.keys(bump)) next[k] = (prev[k] || 0) + 1;
+					return next;
+				});
+			};
+
+			/**
+			 * 看板重读。**保留旧数据直到新数据到手**（不清空、不显示"正在读"）——
+			 * 否则每次后台变化都会把屏幕闪一下。
+			 */
+			const reloadBoard = () => {
+				if (typeof loader !== "function" || !sessionId || state.phase !== "ready") return;
+				const ac = new AbortController();
+				loader(sessionId, cwd, ac.signal, (idx && idx.extraPaths) || []).then(
+					(data) => setState((prev) => (prev.phase === "ready" ? Object.assign({}, prev, { data: data }) : prev)),
+					() => { /* 重读失败：保留旧数据，界面上"已是最新"那句话不会被编出来 */ }
+				);
+			};
+
+			/**
+			 * 落一次重读（自动与手动共用一个出口）。
+			 * @param parts 要重读的部件（`unionParts` 的结论，或手动刷新时给全集）
+			 */
+			const applyReload = (parts) => {
+				if ((parts || []).indexOf("board") >= 0) reloadBoard();
+				bumpParts(parts);
+				setLive((prev) => Object.assign({}, prev, { pending: 0, reloads: prev.reloads + 1 }));
+			};
+			flushRef.current = applyReload;
+
+			/**
+			 * 手动刷新（**永远保留的兜底**）：所有部件重读一遍。
+			 * ★ 通道不可用时（没有索引会话 / 宿主不支持 watch / 帧永不 ready）它就派上用场 ——
+			 *   所以这个按钮**任何状态下都在**，降级时界面上会明说"用「刷新」或 F5"。
+			 */
+			const onManualRefresh = () => applyReload(RELOAD_PARTS);
+
+			/** 版本袋 → "已应用"，并按当前清单刷新指纹 */
+			const commitBag = (detailData) => {
+				appliedRef.current = mergeApplied(appliedRef.current, bagRef.current);
+				const paths = listingAbs(detailData);
+				const fp = fingerprintOf(appliedRef.current, paths);
+				setLive((prev) => Object.assign({}, prev, { digest: fp.digest }));
+				return fp;
+			};
+
+			/**
+			 * 详情清单里每个文件 `stat` 一遍 —— 版本指纹的**完整**凭据。
+			 * ★ 为什么值得多花这一轮：`read` 只覆盖"面板真的读过的文件"（定稿头部、analysis 产物…），
+			 *   而清单里还有 24 个里没被读过的那些（图片、宣讲稿）。stat 只取元数据、不取内容，
+			 *   一次 20~40 个调用的代价换"指纹真的等于这个功能目录的当前状态"。
+			 * ★ 它也是**正确性底线**的落点：帧通道漏了（watch 不支持 / 更深一层）时，
+			 *   下一次重读会把真版本收回来 → `stalePaths` 能判出来。
+			 */
+			const sweepVersions = (detailData) => {
+				if (typeof statManyRunner !== "function" || !sessionId) return;
+				const paths = listingAbs(detailData);
+				if (paths.length === 0) return;
+				const ac = new AbortController();
+				statManyRunner(sessionId, paths, ac.signal).then(
+					(map) => {
+						appliedRef.current = mergeApplied(appliedRef.current, map);
+						const fp = fingerprintOf(appliedRef.current, paths);
+						setLive((prev) => Object.assign({}, prev, { digest: fp.digest }));
+					},
+					() => { /* stat 批失败：指纹留在上一份，界面照实显示旧指纹（不编新的） */ }
+				);
+			};
+
+			/** 去抖合批：静默 300ms 落一次；一直在写也不能超过 1.5s（判据在纯函数里） */
+			const scheduleFlush = () => {
+				if (timerRef.current) clearTimeout(timerRef.current);
+				const tick = () => {
+					const b = batchRef.current;
+					if (!b) { timerRef.current = null; return; }
+					if (!shouldFlush(b, Date.now())) { timerRef.current = setTimeout(tick, 120); return; }
+					timerRef.current = null;
+					batchRef.current = null;
+					const parts = unionParts(b.plans);
+					setLive((prev) => Object.assign({}, prev, { changed: b.why.slice(-8), at: Date.now() }));
+					if (flushRef.current) flushRef.current(parts);
+				};
+				timerRef.current = setTimeout(tick, FLUSH_QUIET_MS);
+			};
+
+			/** 把一条"该重读了"的路径塞进当前批（帧与 stat 核对共用） */
+			const enqueueChange = (path, version, reason) => {
+				// ★ 目录版本**当场记下**（唯一记它的地方）：核对时不再为同一个目录版本反复重读。
+				//   文件的版本不在这里记 —— 它要由重读（stat 批）收回来，这样重读失败时还能再被发现。
+				if (version && planRef.current && (planRef.current.dirs || []).some((d) => normPath(d) === normPath(path))) {
+					dirSeenRef.current = mergeApplied(dirSeenRef.current, { [path]: version });
+				}
+				const b = batchRef.current || (batchRef.current = { firstAt: Date.now(), lastAt: 0, plans: [], paths: {}, why: [] });
+				b.lastAt = Date.now();
+				b.paths[normPath(path)] = version || "";
+				b.plans.push(planReload({ path: path }, { root: ctxRef.current.root, srWs: ctxRef.current.srWs }));
+				b.why.push(path + (reason ? "（" + reason + "）" : ""));
+				setLive((prev) => Object.assign({}, prev, { phase: "on", pending: Object.keys(b.paths).length }));
+				scheduleFlush();
+			};
+
+			/** 收到一帧（或一条订阅状态）—— 组合根回调，可能在 React 之外 */
+			const onLiveEvent = (ev) => {
+				const e = ev || {};
+				if (e.kind === "ready") {
+					readyCountRef.current = Number(e.ready) || (readyCountRef.current + 1);
+					setLive((prev) => Object.assign({}, prev, { phase: "on", ready: readyCountRef.current, total: Number(e.total) || prev.total, reason: "" }));
+					return;
+				}
+				if (e.kind === "down") {
+					setLive((prev) => Object.assign({}, prev, { phase: "down", reason: e.reason || "订阅建立失败" }));
+					return;
+				}
+				if (e.kind === "error") {
+					setLive((prev) => Object.assign({}, prev, {
+						phase: prev.ready > 0 ? prev.phase : "down",
+						reason: "订阅报错：" + (e.error || "原因未知") + "（这个目标的自动跟随停了）"
+					}));
+					return;
+				}
+				if (e.kind === "end") {
+					setLive((prev) => Object.assign({}, prev, { phase: "down", reason: "订阅被宿主结束（目标可能被删了）" }));
+					return;
+				}
+				if (e.kind !== "frame") return;
+				const parsed = parseFrame(e.frame);
+				if (!parsed) {
+					setLive((prev) => Object.assign({}, prev, { skipped: prev.skipped + 1 }));
+					return;
+				}
+				if (parsed.kind === "ready") {
+					readyCountRef.current = readyCountRef.current + 1;
+					setLive((prev) => Object.assign({}, prev, { phase: "on", ready: readyCountRef.current }));
+					return;
+				}
+				const notice = parsed.change;
+				// ★ 自激防护：同一份内容（version 相同）不重读 —— 判定在 `acceptFrame` 里
+				const verdict = acceptFrame(notice, { applied: appliedRef.current, file: ctxRef.current.openPath });
+				if (!verdict.accept) {
+					setLive((prev) => Object.assign({}, prev, { skipped: prev.skipped + 1 }));
+					return;
+				}
+				setLive((prev) => Object.assign({}, prev, { frame: JSON.stringify(e.frame), at: Date.now() }));
+				enqueueChange(notice.path, notice.version, notice.absent ? "目标已不在" : "");
+			};
+			onLiveEventRef.current = onLiveEvent;
+
+			/**
+			 * stat 核对（切回面板 / 焦点回来 / 低频轮询）—— **正确性底线**。
+			 * 帧通道可能不可用或漏（更深一层、watch 不支持），这条不依赖帧：
+			 * 直接拿当前文件与被订阅目录的版本与"屏幕上那份"比，不一致就重读。
+			 *
+			 * ★ 两边的**记账不同**，这是为了不出现"每 15 秒重读一次"的慢自激：
+			 *   · **文件**：与 `applied` 比；不一致**不**在这里改 `applied` —— 真版本要由重读
+			 *     （stat 批）收回来。好处：重读失败时下一轮还会再发现（每 15 秒重试一次，不是死循环）。
+			 *   · **目录**：与 `dirSeen` 比；看见的版本由 `enqueueChange` 当场记下 ——
+			 *     重读只 stat 清单里的文件、**不 stat 目录**，不记的话同一个目录版本会被每一轮
+			 *     核对都判成"不一致"，于是每 15 秒白重读一次。
+			 */
+			const checkNow = () => {
+				if (typeof statManyRunner !== "function" || !sessionId || !ctxRef.current.root) return;
+				const dirs = ((planRef.current && planRef.current.dirs) || []).slice();
+				const files = ctxRef.current.openPath ? [ctxRef.current.openPath] : [];
+				if (dirs.length === 0 && files.length === 0) return;
+				const ac = new AbortController();
+				statManyRunner(sessionId, files.concat(dirs), ac.signal).then((map) => {
+					const dirKeys = {};
+					for (const d of dirs) dirKeys[normPath(d)] = true;
+					const fileMap = {}, dirMap = {};
+					for (const p of Object.keys(map)) {
+						if (dirKeys[normPath(p)]) dirMap[p] = map[p]; else fileMap[p] = map[p];
+					}
+					const staleFiles = stalePaths(appliedRef.current, fileMap);
+					const staleDirs = stalePaths(dirSeenRef.current, dirMap);
+					if (staleFiles.length === 0 && staleDirs.length === 0) return;
+					// 目录版本的记账在 `enqueueChange` 里（唯一一处）；这里只负责判与入队
+					for (const p of staleDirs.concat(staleFiles)) enqueueChange(p, map[p], "stat 核对发现不一致");
+				}, () => { /* stat 失败：这次核对放弃，绝不假装"已是最新" */ });
+			};
+
+			/**
+			 * ★ 进功能 / 在功能里换工作面时订阅变更（工单 16 的主刀）。
+			 *
+			 * 三个不许省的细节：
+			 *   ① 用**索引会话**的 id 订阅（`list` 与 `changes` 都锁在会话工作区内 —— 开发笔记坑 3），
+			 *      而功能目录在 SR 根之下，所以只有 cwd 覆盖 SR 根的索引会话看得见它；
+			 *   ② 目标要**逐个目录**给（0.2.0 的 watch 是 depth 0：只订阅功能根看不见 `gdd\` 里的写入）；
+			 *   ③ 离开功能 / 换工作面就 `abort`（信号）+ 释放订阅（`dispose`）—— 不留悬挂的流。
+			 */
+			const watchKey = (dview && !dview.error && String(dview.root || "") === String(featureRoot || "") && featureRoot !== "")
+				? "d:" + ((dview.dirs || []).join("|")) + "#n:" + ((dview.nestedDirs || []).join("|"))
+				: "";
+			React.useEffect(() => {
+				if (view !== "detail" || !detailTopic || !sessionId || state.phase !== "ready" || !featureRoot || watchKey === "") {
+					setLive((prev) => Object.assign({}, prev, { phase: "off", ready: 0, total: 0 }));
+					return;
+				}
+				if (typeof watchRunner !== "function") {
+					setLive((prev) => Object.assign({}, prev, { phase: "down", reason: "订阅器没挂上（__watch 缺失）" }));
+					return;
+				}
+				const plan = watchPlan({
+					root: featureRoot,
+					dirs: (dview && dview.dirs) || [],
+					nested: (dview && dview.nestedDirs) || [],
+					file: openFinal
+				});
+				planRef.current = plan;
+				readyCountRef.current = 0;
+				setLive((prev) => Object.assign({}, prev, {
+					phase: "connecting", ready: 0, total: plan.targets.length,
+					reason: plan.dropped.length ? "有 " + plan.dropped.length + " 个目标超出订阅上限（这些位置不会自动跟随）" : ""
+				}));
+				const ac = new AbortController();
+				const handle = watchRunner(sessionId, plan.targets, onLiveEventRef.current, ac.signal);
+				// 「帧永不 ready」也要如实降级：8 秒一条 ready 都没有 ⇒ 不说自己在跟随
+				const t = setTimeout(() => {
+					if (ac.signal.aborted || readyCountRef.current > 0) return;
+					setLive((prev) => Object.assign({}, prev, { phase: "down", reason: "订阅建起来了但一直没有就绪帧（宿主可能不支持 watch）" }));
+				}, 8000);
+				return () => {
+					ac.abort();
+					clearTimeout(t);
+					if (handle && typeof handle.dispose === "function") handle.dispose();
+				};
+			}, [view, detailTopic, sessionId, state.phase, featureRoot, watchKey, openFinal]);
+
+			/** 低频轮询 + 焦点回来核对：用户盯着改的就是"当前这一个文件" */
+			React.useEffect(() => {
+				if (view !== "detail" || !sessionId || state.phase !== "ready") return;
+				const id = setInterval(() => checkNow(), 15000);
+				const onFocus = () => {
+					try { if (typeof document !== "undefined" && document.hidden) return; } catch (e) { /* 无 document：照样核 */ }
+					checkNow();
+				};
+				try {
+					window.addEventListener("focus", onFocus);
+					document.addEventListener("visibilitychange", onFocus);
+				} catch (e) { /* 无 window/document：只留轮询 */ }
+				return () => {
+					clearInterval(id);
+					try {
+						window.removeEventListener("focus", onFocus);
+						document.removeEventListener("visibilitychange", onFocus);
+					} catch (e) { /* 同上 */ }
+				};
+			}, [view, detailTopic, sessionId, state.phase, openFinal]);
+
+			/** 换功能就把版本与订阅状态清干净（否则新功能的指纹会掺进上一个功能的文件） */
+			const topicSeenRef = React.useRef("");
+			React.useEffect(() => {
+				if (topicSeenRef.current === detailTopic) return;
+				topicSeenRef.current = detailTopic;
+				appliedRef.current = {};
+				dirSeenRef.current = {};
+				bagRef.current = {};
+				batchRef.current = null;
+				planRef.current = null;
+				setLive({ phase: "off", reason: "", ready: 0, total: 0, digest: "", pending: 0, changed: [], frame: "", at: 0, reloads: 0, skipped: 0 });
+			}, [detailTopic]);
+
 			/**
 			 * ★ 工单 12：进「功能详情」时读**产物清单 + 校验清单**。
 			 * 一次读，两个页签与状态块共用（不按页签重复扫盘）。
 			 * 与看板的边界：看板只给"卡片级"结论（finalCheck 等）；这里给详情级（逐文件、逐条校验）。
+			 *
+			 * ★ 工单 16 两处改动：
+			 *   ① 依赖里多了 `rev.detail` —— 变更订阅判定"该重读详情"时，**只有这一条 effect 重跑**；
+			 *   ② 不再在开头 `setDetail(null)`：重读期间**保留屏幕上的旧数据**（不清屏、不丢用户
+			 *      已展开的条目），换功能时的清空改由渲染期的 `detail.root === f.root` 守卫负责。
 			 */
 			React.useEffect(() => {
 				if (view !== "detail" || !detailTopic || !sessionId || state.phase !== "ready") { setDetail(null); return; }
@@ -4685,17 +5121,22 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 				if (!feat || !feat.root) { setDetail({ error: "拿不到功能根目录：详情读不了。" }); return; }
 				let cancelled = false;
 				const ac = new AbortController();
-				setDetail(null);
 				if (typeof detailLoader !== "function") {
 					setDetail({ error: "详情加载器没挂上（__detail 缺失）。" });
 					return () => { cancelled = true; ac.abort(); };
 				}
-				detailLoader(sessionId, feat.root, ac.signal).then(
-					(r) => { if (!cancelled) setDetail(r); },
-					(e) => { if (!cancelled) setDetail({ error: "读产物清单失败：" + String((e && e.message) || e) }); }
+				detailLoader(sessionId, feat.root, ac.signal, bagRef.current).then(
+					(r) => {
+						if (cancelled) return;
+						setDetail(stamped(r));
+						// 指纹：先按"读到了哪几个"给一个，再 stat 一遍清单把它补成完整的
+						commitBag(r);
+						sweepVersions(r);
+					},
+					(e) => { if (!cancelled) setDetail(stamped({ error: "读产物清单失败：" + String((e && e.message) || e) })); }
 				);
 				return () => { cancelled = true; ac.abort(); };
-			}, [view, detailTopic, sessionId, state.phase]);
+			}, [view, detailTopic, sessionId, state.phase, rev.detail]);
 
 			/**
 			 * ★ 工单 23：进「头脑风暴」工作面时读**已有的分析结论** + 两种新格式的解析。
@@ -4706,42 +5147,43 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 			 */
 			React.useEffect(() => {
 				if (view !== "detail" || dtab !== "brainstorm" || !sessionId || state.phase !== "ready") { setBrain(null); return; }
-				if (!detail || detail.error) { setBrain(null); return; }
+				const dready = ofTopic(detail);
+				if (!dready || dready.error) { setBrain(null); return; }
 				if (typeof brainstormLoader !== "function") {
 					setBrain({ error: "头脑风暴加载器没挂上（__brainstorm 缺失）。" });
 					return;
 				}
-				const root = detail.root || "";
+				const root = dready.root || "";
 				if (!root) { setBrain({ error: "拿不到功能根目录：头脑风暴读不了。" }); return; }
-				const group = ((detail.artifacts && detail.artifacts.groups) || []).filter((g) => g.key === "analysis")[0];
+				const group = ((dready.artifacts && dready.artifacts.groups) || []).filter((g) => g.key === "analysis")[0];
 				const files = (group && group.files) || [];
 				let cancelled = false;
 				const ac = new AbortController();
-				setBrain(null);
-				brainstormLoader(sessionId, { root: root, files: files, stage: detail.stage }, ac.signal).then(
-					(r) => { if (!cancelled) setBrain(r); },
-					(e) => { if (!cancelled) setBrain({ error: "读分析产物失败：" + String((e && e.message) || e) }); }
+				brainstormLoader(sessionId, { root: root, files: files, stage: dready.stage }, ac.signal, bagRef.current).then(
+					(r) => { if (!cancelled) setBrain(stamped(r)); },
+					(e) => { if (!cancelled) setBrain(stamped({ error: "读分析产物失败：" + String((e && e.message) || e) })); }
 				);
 				return () => { cancelled = true; ac.abort(); };
 			}, [view, dtab, detailTopic, sessionId, state.phase, detail]);
 
 			// 进「功能详情」时加载该功能的决策台账（§3.2：从**功能根目录**读）
+			// ★ 工单 16：依赖里多了 `rev.ledger` —— 只有 decisions/ 或 evidence/ 变了才会重读它
 			React.useEffect(() => {
 				if (view !== "detail" || !detailTopic || !sessionId) { setLedger(null); return; }
 				let cancelled = false;
 				const ac = new AbortController();
-				setLedger(null);
 				const d = state.phase === "ready" ? state.data : null;
 				const feat = ((d && d.features) || []).filter((x) => x.topic === detailTopic)[0];
 				if (!feat || !feat.root) { setLedger(null); return; }
-				ledgerLoader(sessionId, feat.root, d && d.skillsRoot, ac.signal).then(
-					(L) => { if (!cancelled) setLedger(L); },
-					(e) => { if (!cancelled) setLedger({ records: [], calibration: [], calFiles: [], schemaOk: false, error: String((e && e.message) || e) }); }
+				ledgerLoader(sessionId, feat.root, d && d.skillsRoot, ac.signal, bagRef.current).then(
+					(L) => { if (!cancelled) setLedger(stamped(L)); },
+					(e) => { if (!cancelled) setLedger(stamped({ records: [], calibration: [], calFiles: [], schemaOk: false, error: String((e && e.message) || e) })); }
 				);
 				return () => { cancelled = true; ac.abort(); };
-			}, [view, detailTopic, sessionId, state.phase]);
+			}, [view, detailTopic, sessionId, state.phase, rev.ledger]);
 
 			// 进「定稿」页签时读定稿全文并解析结构（§6.2）
+			// ★ 工单 16：依赖里多了 `rev.final` —— 只有 gdd/ 顶层变了才重读定稿全文
 			React.useEffect(() => {
 				if (view !== "detail" || dtab !== "final" || !sessionId || state.phase !== "ready") { setFinalDoc(null); return; }
 				const d0 = state.data;
@@ -4749,15 +5191,15 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 				if (!feat || !feat.openPath) { setFinalDoc({ empty: "本功能还没有定稿。" }); return; }
 				let cancelled = false;
 				const ac = new AbortController();
-				setFinalDoc(null);
-				finalLoader(sessionId, feat.openPath, ac.signal).then(
-					(g) => { if (!cancelled) setFinalDoc(g); },
-					(e) => { if (!cancelled) setFinalDoc({ error: "读定稿失败：" + String((e && e.message) || e) }); }
+				finalLoader(sessionId, feat.openPath, ac.signal, bagRef.current).then(
+					(g) => { if (!cancelled) setFinalDoc(stamped(g)); },
+					(e) => { if (!cancelled) setFinalDoc(stamped({ error: "读定稿失败：" + String((e && e.message) || e) })); }
 				);
 				return () => { cancelled = true; ac.abort(); };
-			}, [view, detailTopic, dtab, sessionId, state.phase]);
+			}, [view, detailTopic, dtab, sessionId, state.phase, rev.final]);
 
 			// 进「界面图」时读定稿的 §5
+			// ★ 工单 16：依赖里多了 `rev.ui` —— gdd/ 变了就重读界面图（改 png 也算）
 			React.useEffect(() => {
 				if (view !== "detail" || dtab !== "ui" || !sessionId || state.phase !== "ready") { setIface(null); return; }
 				const d0 = state.data;
@@ -4765,13 +5207,12 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 				if (!feat || !feat.openPath) { setIface({ empty: "本功能还没有定稿，界面图在定稿的 §5。" }); return; }
 				let cancelled = false;
 				const ac = new AbortController();
-				setIface(null);
-				interfaceLoader(sessionId, feat.openPath, ac.signal).then(
-					(r) => { if (!cancelled) setIface(r); },
-					(e) => { if (!cancelled) setIface({ error: "读取失败：" + String((e && e.message) || e) }); }
+				interfaceLoader(sessionId, feat.openPath, ac.signal, bagRef.current).then(
+					(r) => { if (!cancelled) setIface(stamped(r)); },
+					(e) => { if (!cancelled) setIface(stamped({ error: "读取失败：" + String((e && e.message) || e) })); }
 				);
 				return () => { cancelled = true; ac.abort(); };
-			}, [view, dtab, detailTopic, sessionId, state.phase]);
+			}, [view, dtab, detailTopic, sessionId, state.phase, rev.ui]);
 
 			// 进「设计资产」时读索引
 			React.useEffect(() => {
@@ -4832,6 +5273,11 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 			// ── 功能详情（二级视图）──────────────────────────────
 			if (view === "detail") {
 				const f = d.features.filter((x) => x.topic === detailTopic)[0];
+				// ★ 工单 16：只把**属于当前功能**的那几份数据交给下面的组件（`__topic` 的戳）
+				const brainV = ofTopic(brain);
+				const ledgerV = ofTopic(ledger);
+				const finalV = ofTopic(finalDoc);
+				const ifaceV = ofTopic(iface);
 				return shell([
 					head("功能详情 · " + detailTopic),
 					h("div", { key: "sub", style: { display: "flex", alignItems: "center", gap: "10px", marginBottom: "10px", flexWrap: "wrap" } }, [
@@ -4848,9 +5294,11 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 							style: { font: "inherit", fontSize: "11px", padding: "3px 9px", border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer" }
 						}, "打开最终版") : null
 					]),
+					// ★ 工单 16：**变更订阅与版本指纹**（放在最上面一行，一眼看出"屏幕上的是不是最新"）
+					h(LiveBar, { key: "live", live: live, rev: rev, onRefresh: onManualRefresh }),
 					h(NoticeBar, { key: "nt", notice: notice }),
 					// ★ 工单 12：状态块放在页签**之上** —— 切到哪一屏都能看到三阶段与"现在能用吗"
-					h(DetailStatus, { key: "st", detail: detail, feature: f, onOpenFix: () => { setDtab("final"); if (f && f.openPath) handleOpen(f); } }),
+					h(DetailStatus, { key: "st", detail: dview, feature: f, onOpenFix: () => { setDtab("final"); if (f && f.openPath) handleOpen(f); } }),
 					// ★ 工单 23：功能内部先分**工作面**（三阶段）与**资料页签**两组 ——
 					//   第一组是"这个功能该走哪一步"，第二组是"旁挂的过程/产物/界面图"（spec.md:30）。
 					h("div", { key: "stages", style: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" } }, [
@@ -4864,9 +5312,9 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 					dtab === "brainstorm"
 						? h(BrainstormWorkface, {
 							key: "bw",
-							data: brain,
+							data: brainV,
 							feature: f,
-							root: (detail && detail.root) || "",
+							root: (dview && dview.root) || "",
 							srWs: d.srWs,
 							onSend: typeof brainstormRunner === "function"
 								? (kind, input) => brainstormRunner(d && d.srWs, kind, input, {
@@ -4879,7 +5327,7 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 						})
 						: dtab === "ledger"
 						? h(DecisionLedger, {
-							key: "lg", ledger: ledger,
+							key: "lg", ledger: ledgerV,
 							// ★ 工单 17 的能力（字段覆盖检查）：结论来自 `buildLedger(...).fieldCheck`
 							//   —— 就是 `src/pure/fieldclass.ts` 的 `checkFieldCoverage` 的返回值本身，
 							//   面板只显示它，**不重跑一遍**（否则就是第二份实现）。
@@ -4895,25 +5343,25 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 							})
 							: dtab === "artifacts"
 								? h(ArtifactBuckets, {
-									key: "ab", feature: f, detail: detail,
+									key: "ab", feature: f, detail: dview,
 									srWs: d.srWs, configRoot: d.configRoot,
 									onOpen: (abs) => handleOpen(null, abs)
 								})
 								: dtab === "ui"
 									? h(InterfacePanel, {
-										key: "if", data: iface, srWs: d.srWs,
+										key: "if", data: ifaceV, srWs: d.srWs,
 										onOpen: (abs) => handleOpen(null, abs)
 									})
 									: dtab === "design"
 										? h(DesignLedger, { key: "dl", ledger: designLedger })
 										: dtab === "final"
 											? h(FinalDoc, {
-												key: "fd", doc: finalDoc,
+												key: "fd", doc: finalV,
 												// ★ 工单 15：三段式发给**该功能的专属工作会话**
 												//   （cwd = `features\<主题>\`；root 由功能详情给出，最权威）
-												featureRoot: (detail && detail.root) || "",
+												featureRoot: (dview && dview.root) || "",
 												onFix: (req) => fixRunner(d && d.srWs, req, {
-													root: (detail && detail.root) || "",
+													root: (dview && dview.root) || "",
 													// 会话候选：store 快照带着 cwd / running；空则由组合根补一次 session.list
 													rows: sessionRows
 												}),
@@ -4980,7 +5428,15 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 						}
 					}),
 					h("span", { key: "n", style: { fontSize: "11px", color: C.muted } },
-						filtered.length + " / " + d.features.length + " 个功能")
+						filtered.length + " / " + d.features.length + " 个功能"),
+					// ★ 工单 16：看板级别的「刷新」——看板不订阅变更（只在功能里订阅），
+					//   所以这个按钮是看板唯一的"重读一遍"入口，通道降级时照旧在。
+					h("button", {
+						key: "rf", type: "button", "data-refresh": "manual",
+						onClick: () => onManualRefresh(),
+						title: "重读工作区（看板 + 当前功能）",
+						style: { font: "inherit", fontSize: "11px", padding: "3px 9px", border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer" }
+					}, "刷新看板")
 				]),
 				// ② 打开结果提示（含失败时的通道诊断）
 				h(NoticeBar, { key: "nt", notice: notice }),
@@ -5009,7 +5465,10 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 					h("div", { key: "d" }, "索引会话：" + sessionSourceText(state.session) +
 						"　cwd " + (cwd || "(未解析)") +
 						(state.session && state.session.note && state.session.note.length
-							? "　｜　" + state.session.note.join("；") : ""))
+							? "　｜　" + state.session.note.join("；") : "")),
+					// ★ 工单 16：自动刷新的**承诺边界**写在看板上（能看见的话术 = 面板的诚实口径）
+					h("div", { key: "e" }, "自动刷新：进功能后订阅该功能的目录变更（宿主的目标级文件监视，" +
+						"写入者不限 —— agent 工具、脚本、外部编辑器都算）；看板不订阅，用「刷新看板」或 F5。")
 				])
 			]);
 		}
@@ -5062,28 +5521,151 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 			/** DSH 工作区根：会话要建在它下面，才会落进左侧对应的分组而不是「未分组」 */
 			const projectRoot = cfg.projectRoot || "";
 			const loader = (sid, cwd, signal, extraPaths) => loadDashboard(ctx, read, sid, cwd, configPath, signal, extraPaths);
-			const ledgerLoader = (sid, root, skillsRoot, signal) =>
-				loadLedger(ctx, read, sid, root, skillsRoot, signal);
-			const interfaceLoader = (sid, absPath, signal) =>
-				loadInterface(read, sid, absPath, signal);
+
+			/**
+			 * ★ 工单 16 · **版本袋**：给 `read` 包一层，凡成功读到文件就记下
+			 *   `绝对路径 → version`。这一袋就是"屏幕上那份内容到底读的是哪一版"的凭据：
+			 *   版本指纹由它算、"同一份内容不再重读"（自激防护）拿它比对。
+			 * ★ 收版本是**组合根**的事（载入层只吃 port、不认识 version），所以包在这里，
+			 *   而不是改四个加载器的签名。
+			 */
+			const readWith = (bag) => (bag
+				? (sid, p, range, signal) => read(sid, p, range, signal).then((r) => {
+					if (r && r.ok === true && r.value && typeof r.value.version === "string" && r.value.version !== "") {
+						bag[String(r.value.absolutePath || p)] = r.value.version;
+					}
+					return r;
+				})
+				: read);
+
+			const ledgerLoader = (sid, root, skillsRoot, signal, bag) =>
+				loadLedger(ctx, readWith(bag), sid, root, skillsRoot, signal);
+			const interfaceLoader = (sid, absPath, signal, bag) =>
+				loadInterface(readWith(bag), sid, absPath, signal);
 			/** 定稿工作面（§6.2）：收**绝对路径**（= 功能的 openPath） */
-			const finalLoader = (sid, absPath, signal) => loadFinal(read, sid, absPath, signal);
+			const finalLoader = (sid, absPath, signal, bag) => loadFinal(readWith(bag), sid, absPath, signal);
 			/**
 			 * ★ 工单 12 · 功能详情：产物清单（按桶）+ 三阶段 + 定稿有效性 + V 校验清单。
 			 * 收**功能根目录**（`features\<主题>\`）—— 功能 = 目录，所以不再需要 topicOf 过滤。
 			 * 这里只把 ctx 包成端口（`portOf`），实现全在 `src/load/feature.ts` + `src/pure/artifacts.ts`。
+			 * ★ 工单 16：`portOf` 的 `read` 换成 `readWith(bag)` —— 端口照旧只认 `{listDir, readText}`，
+			 *   版本收集发生在它下面一层。
 			 */
-			const detailLoader = (sid, root, signal) => loadFeatureDetail(portOf(ctx, sid, read), { root: root, signal: signal });
+			const detailLoader = (sid, root, signal, bag) =>
+				loadFeatureDetail(portOf(ctx, sid, readWith(bag)), { root: root, signal: signal });
 			/**
 			 * ★ 工单 23 · 头脑风暴工作面：把产物清单里 `analysis` 组交给加载器（只读那一个桶），
 			 *   出口判据那句话也是搬 `detail.stage`。这里只做编排，判据全在 `src/load/brainstorm.ts`
 			 *   + `src/pure/analysisdoc.ts`（有测试）。
 			 */
-			const brainstormLoader = (sid, opts, signal) =>
-				loadBrainstorm(portOf(ctx, sid, read), Object.assign({}, opts, { signal: signal }));
+			const brainstormLoader = (sid, opts, signal, bag) =>
+				loadBrainstorm(portOf(ctx, sid, readWith(bag)), Object.assign({}, opts, { signal: signal }));
 			const indexLoader = (sid, srWs, signal) => loadIndex(read, sid, srWs, signal);
 			/** 按绝对路径读文本（阅读器用） */
 			const readTextFile = (sid, abs) => readAllText(read, sid, abs, void 0, 4000);
+
+			// ════════════════════════════════════════════════════════════════
+			// ★ 工单 16 · 给面板用的两条**官方通道**（组合根是唯一知道 ctx 的地方）
+			//   · `stat`     —— 版本指纹 / 切回面板与低频轮询时的核对（正确性底线）
+			//   · `changes`  —— 变更订阅（自动刷新的增强）
+			// ════════════════════════════════════════════════════════════════
+
+			/** `remote.workspaceFiles` 命名空间（未注入/宿主没提供时返回 null，不抛） */
+			const workspaceFilesNs = () => {
+				try {
+					const ns = ctx.remote && ctx.remote.workspaceFiles;
+					return ns || null;
+				} catch (e) { return null; }
+			};
+
+			/**
+			 * 批量 `stat`：一条 `remote.workspaceFiles.stat(sessionId, path, signal)`
+			 * → `{absolutePath, version, bytes?}`（`version` 是**不透明**新鲜度串，只比对不解析）。
+			 *
+			 * 用来做两件事：① 版本指纹的**完整**凭据（清单里每个文件都要有版本）；
+			 * ② 切回面板 / 切功能 / 切页签 / 低频轮询时的核对 —— 这条**不依赖帧通道**，
+			 * 所以它是"我读到的是不是最新"的正确性底线。
+			 *
+			 * ★ 单个文件失败（刚好被删 / 读不到）**不拖垮整批**：它不进结果表，
+			 *   指纹那边会如实反映"这个文件拿不到版本"（`fingerprintOf` 的 `missing`）。
+			 */
+			const statMany = async (sid, paths, signal) => {
+				const out = {};
+				const ns = workspaceFilesNs();
+				if (!ns || typeof ns.stat !== "function") return out;
+				for (const p of (paths || [])) {
+					if (signal && signal.aborted) break;
+					try {
+						const r = await ns.stat(sid, p, signal);
+						if (r && r.ok === true && r.value && typeof r.value.version === "string" && r.value.version !== "") {
+							out[String(r.value.absolutePath || p)] = r.value.version;
+						}
+					} catch (e) { /* 单个失败不算整批失败 */ }
+				}
+				return out;
+			};
+
+			/**
+			 * ═══ 变更订阅：一个目标一条流（官方 `changes`）═══
+			 *
+			 * `remote.workspaceFiles.changes(sessionId, path, signal)` → `AsyncIterable`：
+			 *   `{kind:'ready'}` / `{kind:'change', change:{absolutePath, version}}`
+			 *   / `{kind:'change', change:{absolutePath, absent:true}}`。
+			 *
+			 * ★ 0.2.0 的实测口径（`_16-channel-evidence.txt`，宿主级探针跑的就是装在这台机器上的官方实现）：
+			 *   宿主侧 `WorkspaceChangeFeed.follow()` → `ctx.fs.watch()` 是**目标定向的 OS 监视**
+			 *   （`dsh-fs-local` 用 chokidar，`depth: 0`）⇒
+			 *     · **任何写入者都会发帧**（tool-fs 的 write/edit、会话里的 `pwsh`、外部编辑器保存、原子替换）；
+			 *     · 覆盖率 = 被订阅目标的**直接子项**（两层深的写入不发帧）⇒ 目录必须**逐个**订阅；
+			 *     · 一次原子替换会产生两条帧（目录一条、文件一条）⇒ 上层必须去抖合批。
+			 * ★ 失败**不吞**（四种都如实回调，界面据此降级成"用刷新按钮"）：
+			 *   ① 命名空间/方法不可用 ② 调用同步抛错或没返回可迭代 ③ 迭代中报错 ④ 流被宿主结束。
+			 *
+			 * @returns `{ dispose }` —— 面板离开功能/卸载时调它（外加 `signal.abort()`，双保险）
+			 */
+			const watchTargets = (sid, targets, onEvent, signal) => {
+				const iters = [];
+				const ns = workspaceFilesNs();
+				if (!ns || typeof ns.changes !== "function") {
+					onEvent({ kind: "down", reason: "remote.workspaceFiles.changes 不可用（没注入或宿主没提供）" });
+					return { dispose: () => {} };
+				}
+				for (const target of (targets || []).slice()) {
+					const run = async () => {
+						let iter = null;
+						try {
+							iter = ns.changes(sid, target, signal);
+							if (!iter || typeof iter[Symbol.asyncIterator] !== "function") {
+								onEvent({ kind: "down", reason: "changes 没有返回可迭代对象（宿主版本可能不匹配）" });
+								return;
+							}
+						} catch (e) {
+							onEvent({ kind: "down", reason: "调 changes 就抛错：" + String((e && e.message) || e) });
+							return;
+						}
+						iters.push(iter);
+						try {
+							for await (const frame of iter) {
+								if (signal && signal.aborted) break;
+								onEvent({ kind: "frame", target: target, frame: frame });
+							}
+							if (!signal || !signal.aborted) onEvent({ kind: "end", target: target });
+						} catch (e) {
+							if (signal && signal.aborted) return;
+							const err = (e && (e.code || e.message)) || e;
+							onEvent({ kind: "error", target: target, error: String(err) });
+						}
+					};
+					void run();
+				}
+				return {
+					dispose: () => {
+						for (const it of iters) {
+							try { if (it && typeof it.return === "function") void it.return(); } catch (e) { /* 已经关了 */ }
+						}
+					}
+				};
+			};
 
 			/**
 			 * 低层：在 `root` 这个目录上**建一条带可识别标题的会话**（工作区 → 会话 → 改名）。
@@ -6005,6 +6587,8 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 						__diagnose: diagnose, __probe: probe, __projectRoot: projectRoot,
 						__interfaces: interfaceLoader, __index: indexLoader, __detail: detailLoader,
 						__resolve: resolveIndexSession,
+						// ★ 工单 16：变更订阅 / 版本 stat（面板的自动刷新与指纹就靠这两个出口）
+						__watch: watchTargets, __statMany: statMany,
 						__refreshIndex: refreshIndex, __readText: readTextFile,
 						__pickDir: probe.pickDirectory,
 						__importDocs: importOldDocs, __addManual: addManualNote,

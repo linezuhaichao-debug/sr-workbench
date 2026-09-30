@@ -63,24 +63,27 @@ test("★ 验收：四个真实功能逐个 diff —— 面板会列出的产物
 		assert.equal(listed.length, disk.length, t + " 数量不一致");
 	}
 	// 四个功能的文件数之和（对账用；数字变了要有人来看一眼为什么）
+	// ★ 2026-09-30 漂移已看：联盟悬赏 24→25、神话宝库 38→39，各多一份
+	//   `analysis\human-note_*_20260930.md`（真机上面板「人工补充」入口真的用了一次写出来的）。
+	//   断言的口径**没变**（面板清单 == 磁盘实际），只是把数字对到今天的真实数据。
 	assert.equal(
 		report.join(" · "),
-		"神话宝库：面板 38 / 磁盘 38 · 联盟悬赏：面板 24 / 磁盘 24 · 英雄圣物：面板 5 / 磁盘 5 · 诸神降临：面板 2 / 磁盘 2"
+		"神话宝库：面板 39 / 磁盘 39 · 联盟悬赏：面板 25 / 磁盘 25 · 英雄圣物：面板 5 / 磁盘 5 · 诸神降临：面板 2 / 磁盘 2"
 	);
 });
 
-test("联盟悬赏：桶分组与含义（进 0 · 出 18 · 过程留痕 6）", async () => {
+test("联盟悬赏：桶分组与含义（进 0 · 出 19 · 过程留痕 6）", async () => {
 	const d = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "联盟悬赏"), signal });
 	const g = (k: string) => d.artifacts.groups.find((x: any) => x.key === k);
-	assert.equal(d.artifacts.total, 24);
-	assert.deepEqual(d.artifacts.counts, { in: 0, out: 18, trace: 6, other: 0 });
+	assert.equal(d.artifacts.total, 25);
+	assert.deepEqual(d.artifacts.counts, { in: 0, out: 19, trace: 6, other: 0 });
 	// 六个标准桶都在（空桶也显示 —— source 是 0，要说出来而不是消失）
 	assert.deepEqual(
 		d.artifacts.groups.map((x: any) => x.key),
 		["source", "analysis", "gdd", "delivery", "decisions", "evidence"]
 	);
 	assert.equal(g("source").count, 0);
-	assert.equal(g("analysis").count, 3);
+	assert.equal(g("analysis").count, 4);       // ★ 2026-09-30 漂移：3 → 4（多一份人工补充产物）
 	assert.equal(g("gdd").count, 13);          // 6 个文档 + 7 张 gdd\UI 图
 	assert.equal(g("delivery").count, 2);
 	assert.equal(g("decisions").count, 4);
@@ -120,7 +123,8 @@ test("规范名标注用已接的 mdSpecOf（只作标注、不作过滤）", as
 	assert.equal(byName("replication-spec_神话宝库_20260915.md").spec, "复刻规格");
 	// 认不出规范名的照样列出（spec 空串）—— 过滤就会变成"猜文件名"
 	assert.equal(byName("sr-gdd-handoff_神话宝库_20260915.json").spec, "");
-	assert.equal(analysis.count, 4);
+	// ★ 2026-09-30 数据漂移：神话宝库也多了 1 份人工补充产物（真机上面板跑出来的）⇒ 4 → 5
+	assert.equal(analysis.count, 5);
 	// 实测：mdSpecOf 的六种规范没有一种匹配 gdd\ 的文件（所以 gdd 细分不能靠它，得用 gddKindOf）
 	const lian = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "联盟悬赏"), signal });
 	const gdd = lian.artifacts.groups.find((x: any) => x.key === "gdd");

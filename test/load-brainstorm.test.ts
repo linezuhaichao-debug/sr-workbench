@@ -35,10 +35,14 @@ test("真数据：联盟悬赏的分析产物按四入口归类（真文件名 +
 	// 真数据：concept-triage + feature-concept + handoff（它的 source_skill = sr-concept）
 	assert.equal(got.groups.counts.concept, 3);
 	assert.equal(got.groups.counts.legacy, 0);
-	assert.equal(got.groups.counts.humannote, 0);
+	// ★ 2026-09-30 数据漂移：真机上面板「人工补充」入口真的用了一次 ⇒ 这个功能现在有 1 份 human-note
+	assert.equal(got.groups.counts.humannote, 1);
 	assert.equal(got.groups.total, analysis.count);
 	assert.deepEqual(got.legacy, []);
-	assert.deepEqual(got.humannote, []);
+	assert.equal(got.humannote.length, 1);
+	assert.equal(got.humannote[0].name, "human-note_去掉折算伤害，只保留真实伤害_20260930.md");
+	// 原话逐字（人工补充那份的关键口径：原话不许被摘要替代）
+	assert.ok(got.humannote[0].quote.text.includes("结算显示和排行榜都只以真实伤害为准"), "原话逐字带出来：" + got.humannote[0].quote.text);
 	assert.deepEqual(got.unreadable, []);
 	// 出口判据（analysis 非空）→ 那句提示不该出现
 	assert.deepEqual(got.notes, []);

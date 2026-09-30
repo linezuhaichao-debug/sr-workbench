@@ -108,8 +108,11 @@ test("★ 工单 12：功能详情的产物清单 + 三阶段 + 定稿有效性 
 	const port = testPort();
 	const d = await loadFeatureDetail(port, { root: FEATURE_ROOT, signal });
 	assert.equal(path.normalize(d.root), FEATURE_ROOT);
-	assert.equal(d.artifacts.total, 24, "联盟悬赏磁盘上 24 个文件（Get-ChildItem -Recurse 实测）");
-	assert.deepEqual(d.artifacts.counts, { in: 0, out: 18, trace: 6, other: 0 });
+	// ★ 2026-09-30 数据漂移：联盟悬赏的 analysis\ 多了一份人工补充产物
+	//   （`human-note_去掉折算伤害，只保留真实伤害_20260930.md`，是**真机上面板跑出来的**）。
+	//   24 → 25，出 · 产物 18 → 19。这条数字是"磁盘实际"，数据变了就该跟着变（不是放宽断言）。
+	assert.equal(d.artifacts.total, 25, "联盟悬赏磁盘上 25 个文件（Get-ChildItem -Recurse 实测）");
+	assert.deepEqual(d.artifacts.counts, { in: 0, out: 19, trace: 6, other: 0 });
 	assert.deepEqual(d.stage.stages.map((s: any) => [s.label, s.done]), [
 		["阶段一 · 头脑风暴", true], ["阶段二 · 文档生成", true], ["阶段三 · 定稿修订", true],
 	]);
