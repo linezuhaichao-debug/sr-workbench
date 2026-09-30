@@ -18,8 +18,9 @@ import * as React from "react";
 
 // ★ 工单 32 · 面板接线：`src/client.js` 不再保留内联副本，改为直接用 `src/pure/` 那份
 //   （测试覆盖的就是它）。接线是**一次一个模块**做的，每步都过 `npm run build:safe`。
-//   已接：path（toAbs）· sessionpick（索引会话选择，0.2.0 兼容）
+//   已接：path（toAbs）· topic（topicOf / isNoise / dateOf / PREFIXES / TAIL）· sessionpick（索引会话选择，0.2.0 兼容）
 import { toAbs } from "./pure/path.ts";
+import { topicOf, isNoise, dateOf } from "./pure/topic.ts";
 import {
 	configPathCandidates,
 	containsPath,
@@ -325,54 +326,11 @@ import {
 		const CONFIG_DIR = "planner/策划配置";
 
 		// ════════════════════════════════════════════════════════════════
-		// 一、文件名 → 功能主题（去重是这段的核心）
+		// 一、文件名 → 功能主题 —— **工单 32 起改为 import `./pure/topic.ts`**
+		//   （原内联的 PREFIXES / TAIL / topicOf / isNoise / dateOf 与模块那份逐字相同，
+		//     删掉的是纯重复；改主题派生规则请改 `src/pure/topic.ts`，那里有测试）
 		// ════════════════════════════════════════════════════════════════
 
-		const PREFIXES = [
-			"sr-gdd-handoff_", "concept-triage_", "feature-concept_", "experience-report_",
-			"issue-cards_", "replication-spec_", "evidence-index_", "calibration_",
-			"smoke_", "readback_", "decision_", "write_CS-"
-		];
-		/** 尾部噪音后缀（成对剥，直到剥不动） */
-		const TAIL = /[_\-\s]*(定稿_审查|定稿|审查|宣讲|修订点|UIUE|UI|md版本|人读版|设计稿)$/;
-
-		/**
-		 * 从文件名派生功能主题。目标：同一功能的不同阶段/版本**收敛到同一个键**。
-		 * `联盟悬赏_20260921_定稿.md` / `联盟悬赏（联盟boss）.txt` / `联盟悬赏-md版本.rar` → 联盟悬赏
-		 * `readback_A079_神话宝库_20260916.md` / `smoke_英雄圣物_20260923.png` → 神话宝库 / 英雄圣物
-		 */
-		function topicOf(name) {
-			// ① 去全部扩展名（.content.json 这类多段也要去干净）
-			let s = String(name).replace(/(\.[A-Za-z0-9]+)+$/, "");
-			// ② 去已知前缀
-			for (const p of PREFIXES) { if (s.startsWith(p)) { s = s.slice(p.length); break; } }
-			// ③ 去表号前缀 A079_ / B008-
-			s = s.replace(/^[AB]\d{3}[_\-]/, "");
-			// ④ 截到第一个日期之前
-			const d = s.search(/[_\-\s]\d{8}(?:[_\-\s.]|$)/);
-			if (d > 0) s = s.slice(0, d);
-			// ⑤ 去括号补充（（联盟boss）这类）
-			s = s.replace(/[（(][^）)]*[）)]/g, "");
-			// ⑥ 循环剥尾部噪音后缀
-			let prev;
-			do { prev = s; s = s.replace(TAIL, ""); } while (s !== prev);
-			return s.replace(/[_\-\s]+$/, "").trim();
-		}
-
-		/** 明显的噪音主题（脚本名、编号、过短）——不当作功能 */
-		function isNoise(t) {
-			if (!t || t.length <= 1) return true;
-			if (/^\d/.test(t)) return true;
-			if (/^(CS|DEC|EVD|ASM|EXP|GATE|WRUN|LRN|VOI|ISSUE)[-_]/i.test(t)) return true;
-			if (/^[A-Za-z]{1,2}$/.test(t)) return true;
-			return false;
-		}
-
-		/** 文件名里的日期 YYYYMMDD（没有则空串） */
-		function dateOf(name) {
-			const m = /(\d{8})/.exec(String(name));
-			return m ? m[1] : "";
-		}
 
 		// ── 产物分类（设计 §3.2：**功能 = 目录**）──────────────────────────
 		//   产物落在 `features\<主题>\` 的**子目录**里，所以分类就是"看子目录"——零猜测。
