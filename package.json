@@ -26,11 +26,15 @@
         "@deepseek-ai/dsh-api-session-controller"
       ],
       "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
     }
   },
   "files": [
     "lib/index.js",
-    "lib/client.js"
+    "lib/client.js",
+    "cordis.patch.yml"
   ],
   "scripts": {
     "build": "tsdown",
