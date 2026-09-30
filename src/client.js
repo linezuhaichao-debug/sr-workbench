@@ -69,6 +69,12 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 //   判定（该调哪几刀、哪个做不到）在这个纯函数里，逐条用例在 `test/pure-storemerge.test.ts`；
 //   组合根只负责按 steps 去调（`syncSidebarStores`）。**不要**在这里再造一套 store 写入。
 import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
+// ★ 工单 23 · 头脑风暴工作面：四入口的指令组装（`intake`）+ 分析产物归入口/两种新格式的解析（`analysisdoc`）
+//   + 该工作面的加载器（`load/brainstorm`）。
+//   ★ 这也是**收件箱内联副本的删除**：`INTAKE` 从这一票起就是模块那一份 —— 内联版与模块版逐行相同
+//   （去缩进后 diff 只剩 `export` 一行），留着它只会让"新加四个入口"变成两份实现。
+import { INTAKE } from "./pure/intake.ts";
+import { loadBrainstorm } from "./load/brainstorm.ts";
 
 		const h = React.createElement;
 
@@ -82,242 +88,14 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 		catch (e) { primitives = null; }
 
 		/**
-		 * 「收件箱」的纯逻辑（素材解析 / 主题派生 / 四种方式的指令组装）—— **内联版**。
+		 * 「收件箱 + 头脑风暴四入口」的纯逻辑（素材解析 / 主题派生 / 指令组装）。
 		 *
-		 * ★ 为什么内联而不是 import：实测 `/plugins/<pkg>/intake-parse.js` 返回 **404**，
-		 *   插件运行期只服务 `<pkg>/client.js` 这一个入口（`__ModuleLoader__` 也只有 load({id,factory})，
-		 *   没有"再注册一个模块"的口子）。所以跨文件复用在这个加载器下不成立。
-		 *
-		 * ★ 防漂移：`lib/intake-parse.js` 是同一份逻辑的 ESM 源（可被 node 直接跑回归 test-intake.mjs）。
-		 *   两份的**函数体指纹**由 `sync-intake.js` 比对，不一致就报错 —— 改一份忘改另一份会在自查里暴露。
+		 * ★ 工单 23 起这里是 **import**，不再是内联副本：
+		 *   —— 内联的那一份与 `src/pure/intake.ts` 逐行相同（去缩进后 diff 只剩 export 一行），
+		 *      而工单 23 要往组装器里加四个新入口，留着副本必然长出第二份实现（本仓库反复踩过的坑）。
+		 *   —— 早期"为什么内联"的理由（`/plugins/<pkg>/intake-parse.js` 404）针对的是**运行期再取一个模块**；
+		 *      tsdown 打包后这些都只是同一 bundle 内的静态 import，与其它已接线的 pure 模块没有区别。
 		 */
-		const INTAKE = (function () {
-			/** 文档类扩展名（导入时只复制这些，跳过图片/视频等大文件） */
-			const DOC_EXT = [
-				"md", "markdown", "txt", "json", "jsonc", "yaml", "yml", "csv", "tsv",
-				"html", "htm", "xml", "doc", "docx", "xls", "xlsx", "xlsm", "ppt", "pptx", "pdf"
-			];
-			/** 浏览器能直接读成文本的扩展名（拖进来即可内联，不需要 agent 再读盘） */
-			const TEXT_EXT = [
-				"md", "markdown", "txt", "json", "jsonc", "yaml", "yml", "csv", "tsv",
-				"html", "htm", "xml", "log", "ini", "conf", "css", "js", "svg"
-			];
-			/** 四种输入方式的元数据（UI 与测试共用一份口径） */
-			const INTAKE_KINDS = [
-				{ id: "analysis", label: "竞品分析", hint: "跑 sr-analysis", needs: "素材：目录 / 文件路径 / 链接（截图、录屏、PV、商店页）" },
-				{ id: "concept", label: "问答式访谈", hint: "跑 sr-concept", needs: "一句话创意（可附参考素材路径）" },
-				{ id: "import", label: "旧文档导入", hint: "只登记进收集箱", needs: "旧方案 / 旧文档的目录或文件路径" },
-				{ id: "manual", label: "人工补充", hint: "只登记进收集箱", needs: "标题 + 正文（想到什么写什么）" }
-			];
-
-			const isWinAbs = (p) => /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p) || /^[\\/]/.test(p);
-			const isHttp = (p) => /^https?:\/\//i.test(p);
-
-			/** 单个素材字符串 → [{ kind, path|text }] */
-			function parseMaterial(raw) {
-				const s = String(raw == null ? "" : raw).trim();
-				if (s === "") return [];
-				if (isHttp(s)) return [{ kind: "url", path: s }];
-				if (isWinAbs(s)) {
-					const bare = s.replace(/[\\/]+$/, "");
-					const isDir = /^[A-Za-z]:$/.test(bare) || /^\\\\[^\\]+$/.test(bare) || (!/\.[A-Za-z0-9]{1,8}$/.test(bare));
-					return [{ kind: isDir ? "dir" : "file", path: bare }];
-				}
-				return [{ kind: "text", text: s }];
-			}
-
-			/** 文本块 → 素材数组（按行拆：绝对路径/URL 逐行成项，其余并为 text） */
-			function parseMaterials(raw) {
-				const out = [];
-				const pending = [];
-				const flush = () => {
-					const t = pending.join("\n").trim();
-					if (t !== "") out.push({ kind: "text", text: t });
-					pending.length = 0;
-				};
-				for (const line of String(raw == null ? "" : raw).split(/\r?\n/)) {
-					const t = line.trim();
-					if (t !== "" && (isWinAbs(t) || isHttp(t))) {
-						flush();
-						for (const it of parseMaterial(t)) out.push(it);
-					} else {
-						pending.push(line);
-					}
-				}
-				flush();
-				return out;
-			}
-
-			/** 路径尾段 → 名字（两平台分隔符都认） */
-			function baseName(p) {
-				const s = String(p == null ? "" : p).replace(/[\\/]+$/, "");
-				const parts = s.split(/[\\/]/);
-				return parts[parts.length - 1] || s;
-			}
-
-			/** 扩展名（小写，无点；没有则空串） */
-			function extOf(name) {
-				const m = /\.([A-Za-z0-9]{1,8})$/.exec(String(name == null ? "" : name));
-				return m ? m[1].toLowerCase() : "";
-			}
-
-			/** 是不是文档类（导入时用它决定复制哪些） */
-			function isDoc(name) { return DOC_EXT.indexOf(extOf(name)) >= 0; }
-
-			/** 浏览器能否直接读成文本 */
-			function isTextExt(name) { return TEXT_EXT.indexOf(extOf(name)) >= 0; }
-
-			/** 从素材派生功能主题（去扩展名、去日期、去尾部噪音） */
-			function deriveTopic(materials) {
-				const list = materials || [];
-				const pick = list.filter((m) => m && (m.kind === "file" || m.kind === "dir"))[0]
-					|| list.filter((m) => m && m.kind === "url")[0]
-					|| list.filter((m) => m && m.kind === "text")[0];
-				if (!pick) return "";
-				let n;
-				if (pick.kind === "url") {
-					n = String(pick.path).replace(/^https?:\/\//i, "").split(/[/?#]/).filter((x) => x !== "")[0] || "";
-				} else if (pick.kind === "text") {
-					// ★ 文本素材没有 path —— 取 text（此前取 path，导致主题恒为空）
-					n = String(pick.text || "").split(/\r?\n/)[0];
-				} else {
-					n = baseName(pick.path || "");
-				}
-				if (pick.kind === "dir") return n;
-				n = n.replace(/\.[A-Za-z0-9]{1,8}$/, "");
-				n = n.replace(/[_\-\s]*\d{8}(?:[_\-\s.]|$)/, " ");
-				n = n.replace(/[_\-\s]*(定稿_审查|定稿|审查|宣讲|修订点|UIUE|UI|md版本|人读版|设计稿|初稿|草案)$/, "");
-				n = n.replace(/[_\-]+/g, " ").replace(/\s+/g, " ").trim();
-				return n;
-			}
-
-			/** 文件名/标题里的非法字符 → _（写盘用） */
-			function safeName(p, limit) {
-				const s = String(p == null ? "" : p)
-					.replace(/[\\/:*?"<>|]/g, "_")
-					.replace(/[\r\n\t]/g, " ")
-					.replace(/\s+/g, " ")
-					.trim();
-				const cap = limit || 60;
-				return s.length > cap ? s.slice(0, cap) : s;
-			}
-
-			/** 素材清单 → 中文可读列表 */
-			function describeMaterials(materials) {
-				const list = materials || [];
-				if (list.length === 0) return "（无）";
-				return list.map((m, i) => {
-					const no = i + 1;
-					if (m.kind === "dir") return no + ". 目录：" + m.path;
-					if (m.kind === "file") return no + ". 文件：" + m.path;
-					if (m.kind === "url") return no + ". 链接：" + m.path;
-					const one = String(m.text || "").replace(/\s+/g, " ");
-					return no + ". 文本：" + (one.length > 300 ? one.slice(0, 300) + "…" : one);
-				}).join("\n");
-			}
-
-			/** 素材清单里有没有可当"路径素材"的东西 */
-			function hasPathMaterial(materials) {
-				return (materials || []).some((m) => m && (m.kind === "file" || m.kind === "dir" || m.kind === "url"));
-			}
-
-			/** 组装四种输入方式各自发给 agent 的指令 */
-			function buildInstruction(kind, input) {
-				const inp = input || {};
-				const materials = inp.materials || [];
-				const topic = String(inp.topic || "").trim() || deriveTopic(materials);
-				const note = String(inp.note == null ? "" : inp.note).trim();
-				const root = String(inp.srWs || "").replace(/\//g, "\\").replace(/\\+$/, "");
-				const inbox = root + "\\inbox";
-				const NOT_A_SKILL = "注意：不要改动任何 sr skill；只登记为 inbox / needs_review，不提升为正式资产。";
-
-				if (kind === "analysis") {
-					if (!hasPathMaterial(materials)) {
-						return { instruction: "", blocked: "「竞品分析」需要一份素材：目录、文件路径或链接（截图、录屏、PV、商店页 / 视频链接）。" };
-					}
-					const lines = [
-						"【输入方式 1 · 竞品分析】请执行 `/sr-analysis`（走 `/sr-analysis <素材路径或链接>` 的正常调用，不要改动该 skill）。",
-						"素材：",
-						describeMaterials(materials),
-						"分析目标：" + (note || "（未指定——按 sr-analysis 第 1 步 VOI 门现场确认）")
-					];
-					if (topic) lines.push("功能主题（用于产出命名与归档）：" + topic);
-					lines.push("按 sr-analysis 的既有流程执行，在它的决策门停下来等我拍板。");
-					return { instruction: lines.join("\n"), blocked: "" };
-				}
-
-				if (kind === "concept") {
-					const seed = note || (materials.filter((m) => m.kind === "text")[0] || {}).text || "";
-					if (String(seed).trim() === "") {
-						return { instruction: "", blocked: "「问答式访谈」需要一句创意：在输入框里写下你想做的玩法或功能。" };
-					}
-					const pathMats = materials.filter((m) => m.kind !== "text");
-					const lines = [
-						"【输入方式 2 · 问答式访谈】请执行 `/sr-concept`（走 `/sr-concept <一句话创意>` 的正常调用，不要改动该 skill）。",
-						"创意：" + String(seed).replace(/\s+/g, " ").trim()
-					];
-					if (pathMats.length > 0) {
-						lines.push("已有材料（有就给路径）：");
-						lines.push(describeMaterials(pathMats));
-					} else {
-						lines.push("已有材料：没有。");
-					}
-					if (topic) lines.push("功能主题（用于产出命名与归档）：" + topic);
-					lines.push("定位：本项目（文明之跃）新功能/新玩法。");
-					lines.push("按 sr-concept 的既有流程执行，在它的决策门停下来等我拍板。");
-					return { instruction: lines.join("\n"), blocked: "" };
-				}
-
-				if (kind === "import") {
-					const pathMats = materials.filter((m) => m.kind === "file" || m.kind === "dir");
-					if (pathMats.length === 0) {
-						return { instruction: "", blocked: "「旧文档导入」需要至少一个目录或文件路径（可拖进来，也可直接粘贴）。" };
-					}
-					const lines = [
-						"【输入方式 3 · 旧文档导入】把下列资料作为**参考材料**导入工作区：",
-						describeMaterials(pathMats),
-						"步骤：",
-						"1) 逐条处理：" +
-							"目录 → 在 " + inbox + "\\imported\\ 下建一个以该目录名命名的子目录，递归复制其中的文档（只复制文档类文件：" +
-							DOC_EXT.join(" / ") + "；跳过图片、视频等大文件；不转换格式、不改内容）；" +
-							"文件 → 在 " + inbox + "\\imported\\<文件名（去扩展名）>\\ 下复制这一个文件。",
-						"2) 在 " + root + " 下运行 `python scripts/refresh_asset_index.py` 重新生成索引（相对路径以 " + root + " 为基准，不要依赖当前工作目录）。",
-						"3) 报告导入了哪些文件、索引新增了几条。"
-					];
-					if (note) lines.push("补充说明：" + note);
-					lines.push(NOT_A_SKILL);
-					return { instruction: lines.join("\n"), blocked: "" };
-				}
-
-				if (kind === "manual") {
-					const title = String(inp.title || "").trim() || topic;
-					if (title === "") return { instruction: "", blocked: "「人工补充」需要一个标题。" };
-					if (note === "") return { instruction: "", blocked: "「人工补充」需要正文。" };
-					const lines = [
-						"【输入方式 4 · 人工补充】在 " + inbox + "\\manual\\ 下新建 " + safeName(title) + ".md，内容如下：",
-						"---",
-						"title: " + title,
-						"source: human"
-					];
-					if (inp.upstream) lines.push("upstream_asset: " + String(inp.upstream));
-					lines.push("---", "", note, "");
-					lines.push("然后运行 `python scripts/refresh_asset_index.py` 重新生成索引，并报告新增条目。");
-					lines.push(NOT_A_SKILL);
-					return { instruction: lines.join("\n"), blocked: "" };
-				}
-
-				return { instruction: "", blocked: "未知的输入方式：" + String(kind) };
-			}
-
-			return {
-				INTAKE_KINDS: INTAKE_KINDS,
-				parseMaterial: parseMaterial, parseMaterials: parseMaterials,
-				baseName: baseName, extOf: extOf, isDoc: isDoc, isTextExt: isTextExt,
-				deriveTopic: deriveTopic, safeName: safeName,
-				describeMaterials: describeMaterials, hasPathMaterial: hasPathMaterial,
-				buildInstruction: buildInstruction
-			};
-		})();
 
 		/** 兼容旧命名：下面的组件与 handler 原本读 contract.*，统一指向内联实现 */
 		const contract = INTAKE;
@@ -1141,10 +919,26 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 			{ id: "config", label: "配置表与多语言", soon: true },
 			{ id: "knowledge", label: "知识库", soon: true }
 		];
-		/** 功能详情的二级导航 */
+		/**
+		 * 功能内部的**工作面**（设计 §4：三阶段）—— 与「资料页签」分两组显示。
+		 *
+		 * ★ 为什么不是"详情页的第七个页签"：规格说得很清楚 —— 点进一个功能，先按生命周期的三个阶段走
+		 *   （头脑风暴 → 文档生成 → 定稿修订），台账 / 产物 / 界面图是**旁挂的资料页**（spec.md:30）。
+		 *   把工作面混进同一排页签，等于把"阶段"与"资料"拉平，用户就看不出"现在该走哪一步"了。
+		 * ★ 头脑风暴是**第一个工作面**（本票）；定稿修订则是工单 13/14 已经做出来的那一屏（原来叫「定稿」页签，
+		 *   现在归进工作面组、名字改成「定稿修订」—— 语义没变，页签 label 里仍含「定稿」两字）。
+		 * ★ 文档生成（工单 24）还没做：**如实显示成未实现**，不假装有。
+		 */
+		const DETAIL_STAGES = [
+			{ id: "brainstorm", label: "头脑风暴" },      // ★ 工单 23：功能里的第一个工作面
+			{ id: "draft", label: "文档生成", soon: true }, // 工单 24
+			{ id: "final", label: "定稿修订" }            // ★ 工单 13/14（大纲 + 正文 + 定位卡）
+		];
+		/** 进功能时落在哪一屏 = **第一个工作面**（工单 23：功能内部先走阶段，再看资料） */
+		const ENTRY_TAB = "brainstorm";
+		/** 功能详情的**资料页签**（旁挂：过程 / 产物 / 界面图，不是阶段） */
 		const DETAIL_TABS = [
-			{ id: "design", label: "设计台账" },     // ★ §7：第一个页签（"读懂这个功能"的入口）
-			{ id: "final", label: "定稿" },          // ★ §6.2：定稿工作面（大纲 + 正文 + 定位）
+			{ id: "design", label: "设计台账" },
 			{ id: "ledger", label: "决策台账" },
 			{ id: "pipeline", label: "流水线" },
 			{ id: "artifacts", label: "产物" },
@@ -2540,6 +2334,399 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 			}
 			if (finalCheck.currentFrom === "date") return { text: "没有 active 定稿（按日期取最新：" + finalCheck.current + "）", tone: "warn" };
 			return { text: "可用：" + finalCheck.current + "（active）", tone: "ok" };
+		}
+
+		/** 今天（YYYYMMDD）—— 产出文件名里的日期由面板给定，纯函数那头不吃时钟 */
+		function todayYmd() {
+			const d = new Date();
+			const p = (n) => (n < 10 ? "0" : "") + n;
+			return "" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate());
+		}
+
+		/**
+		 * ═══ 阶段一 · 头脑风暴工作面（工单 23 · 设计 §4.1 / §4.2）═══
+		 *
+		 * 四种入口**同一层级平铺、不分主次**（四张动作卡并列，谁也不是谁的前置）；
+		 * 每张卡自己组装自己的指令（`INTAKE.buildBrainstormInstruction`，纯函数、有回归网），
+		 * 产出规范一致地落 `features\<主题>\analysis\`。
+		 *
+		 * ★ 面板**不重画流程**：发起之后界面只说"阶段交给了 skill，进度与提问都在那个会话里"，
+		 *   并给「跳到那个会话」——阶段内部怎么走由 skill 决定（工单 23 第 2 条）。
+		 * ★ 两种新格式就地渲染（设计 §4.2）：旧文档分析=四段固定章节；
+		 *   人工补充=**原话与结论并排** —— 一眼能看出 AI 有没有改动结论（工单 23 第 3 条 / 用户故事 10）。
+		 * ★ 缺前提不静默：`blocked` + `next` 两行都显示（工单 23 第 4 条）。
+		 */
+		function BrainstormWorkface(props) {
+			const data = props.data;
+			const f = props.feature || {};
+			const root = props.root || "";
+			const exits = (data && data.notes) || [];
+			const kinds = (INTAKE && INTAKE.BRAINSTORM_KINDS) || [];
+
+			const [kind, setKind] = React.useState("analysis");
+			const [mats, setMats] = React.useState("");
+			const [goal, setGoal] = React.useState("");
+			const [seed, setSeed] = React.useState("");
+			const [seedMats, setSeedMats] = React.useState("");
+			const [legacyPath, setLegacyPath] = React.useState("");
+			const [legacyName, setLegacyName] = React.useState("");
+			const [legacyNote, setLegacyNote] = React.useState("");
+			const [title, setTitle] = React.useState("");
+			const [quote, setQuote] = React.useState("");
+			const [bounds, setBounds] = React.useState("");
+			const [landing, setLanding] = React.useState("");
+			const [author, setAuthor] = React.useState("");
+			const [confidence, setConfidence] = React.useState("high");
+			const [sendMsg, setSendMsg] = React.useState(null);
+			const [opened, setOpened] = React.useState(null);
+
+			const e = kinds.filter((x) => x.id === kind)[0] || kinds[0] || { id: "", label: "", hint: "", needs: "", output: "", handoff: "" };
+			// ★ 四个入口各自的输入**各存一份**：换卡不会把上一张卡的内容带过去
+			//   （"每种入口各自组装自己的指令"——输入也各自独立，才不会出现"我明明没填却发出去了"）
+			const materials = (kind === "analysis")
+				? INTAKE.parseMaterials(mats)
+				: (kind === "legacy" ? INTAKE.parseMaterials(legacyPath) : (kind === "concept" ? INTAKE.parseMaterials(seedMats) : []));
+			// ★ 卡上显示的就是**要发出去的原文**（组装只有一份实现：`src/pure/intake.ts`）
+			const noteText = (kind === "concept") ? seed : (kind === "legacy" ? legacyNote : goal);
+			const built = (INTAKE && e.id)
+				? INTAKE.buildBrainstormInstruction(e.id, {
+					root: root, date: todayYmd(), topic: f.topic || "",
+					materials: materials, note: noteText,
+					name: legacyName, title: title, quote: quote,
+					bounds: bounds, landing: landing, author: author, confidence: confidence
+				})
+				: { instruction: "", blocked: "头脑风暴的组装器没加载上（intake 模块缺失）。", next: "" };
+
+			const send = () => {
+				if (built.blocked) {
+					// 缺前提：给出可读提示 + 下一步，**不发指令**（也不装成功）
+					setSendMsg({ kind: "blocked", text: built.blocked, next: built.next || "" });
+					return;
+				}
+				if (typeof props.onSend !== "function") {
+					setSendMsg({ kind: "err", text: "发送通道没挂上（onSend 缺失）。", next: "刷新页面；仍失败就把这条发给开发者。" });
+					return;
+				}
+				setSendMsg({ kind: "pending", text: "正在发给该功能的专属工作会话…" });
+				props.onSend(e.id, {
+					text: built.instruction,
+					materials: materials, note: noteText,
+					name: legacyName, title: title, quote: quote,
+					bounds: bounds, landing: landing, author: author, confidence: confidence,
+					root: root
+				}).then(
+					(r) => setSendMsg(r && r.ok
+						? { kind: "ok", text: "已交给工作会话。", sid: r.sid || "", target: r.target || null, healed: !!r.healed, queued: !!r.queued, note: r.note || "" }
+						: {
+							kind: "err",
+							text: (r && (r.message || r.blocked || r.note)) || "发送失败",
+							next: (r && r.next) || "再按一次；仍失败就把这条错误发给开发者。",
+							sid: (r && r.sid) || ""
+						}),
+					(err) => setSendMsg({ kind: "err", text: String((err && err.message) || err), next: "再按一次。" })
+				);
+			};
+			const jump = (sid) => {
+				if (!sid || typeof props.onOpenSession !== "function") {
+					setSendMsg((m) => Object.assign({}, m, { jumpErr: "面板拿不到「跳会话」的通道（onOpenSession 没挂上）。" }));
+					return;
+				}
+				const r = props.onOpenSession(sid);
+				if (r && r.ok === false) {
+					setSendMsg((m) => Object.assign({}, m, {
+						jumpErr: "跳转失败：" + ((r.error && (r.error.message || r.error.code)) || "未知原因") + "　—— 你可以在左侧列表里按标题找到它。"
+					}));
+				}
+			};
+
+			// ── 输入区（按入口不同的表单；四张卡本身是并列的，这个区是"选中那张卡的细节"）──
+			const IN = {
+				flex: "1 1 auto", font: "inherit", fontSize: "11.5px", padding: "5px 8px",
+				border: "1px solid " + C.soft, borderRadius: "4px", boxSizing: "border-box"
+			};
+			const LABEL = { fontSize: "10.5px", color: C.muted, marginBottom: "3px" };
+			const field = (key, label, value, set, placeholder, rows) => h("div", { key: key, style: { marginBottom: "7px" } }, [
+				h("div", { key: "l", style: LABEL }, label),
+				rows
+					? h("textarea", {
+						key: "i", value: value, placeholder: placeholder, rows: rows,
+						onChange: (ev) => set(ev.target.value),
+						style: Object.assign({}, IN, { width: "100%", resize: "vertical", fontFamily: "inherit" })
+					})
+					: h("input", {
+						key: "i", value: value, placeholder: placeholder,
+						onChange: (ev) => set(ev.target.value),
+						style: Object.assign({}, IN, { width: "100%" })
+					})
+			]);
+			const form = () => {
+				if (e.id === "analysis") return [
+					field("m", "素材（目录 / 文件路径 / 链接，可多行）", mats, setMats, "D:\\素材\\竞品_联盟 或 https://…", 2),
+					field("g", "分析目标（选填）", goal, setGoal, "比如：看它的奖池概率与保底怎么配", 2)
+				];
+				if (e.id === "concept") return [
+					field("s", "一句话创意（必填）", seed, setSeed, "比如：联盟成员一起打 BOSS，血量全盟共享", 2),
+					field("m", "参考素材（选填，路径 / 链接）", seedMats, setSeedMats, "D:\\素材\\参考.png", 2)
+				];
+				if (e.id === "legacy") return [
+					field("p", "旧文档路径（必填，目录或单个文件）", legacyPath, setLegacyPath, "D:\\旧案\\英雄改造v0.2.xlsx", 2),
+					field("n", "名称（选填，产出文件名用它）", legacyName, setLegacyName, "英雄改造 v0.2"),
+					field("g", "补充说明（选填）", legacyNote, setLegacyNote, "比如：只看改造消耗与失败返还", 2)
+				];
+				return [
+					field("t", "标题（必填）", title, setTitle, "BOSS 血量按联盟共享"),
+					field("q", "原话（必填 —— 逐字保留，AI 只整理格式）", quote, setQuote, "「BOSS 的血条应该是全盟共享的，一个人打全盟都能看到」", 3),
+					field("b", "边界（选填）", bounds, setBounds, "仅在活动期间成立；活动结束血条重置", 2),
+					field("l", "落点（选填，条目引用）", landing, setLanding, "§4 R2 · §5 UI-M1 UE2"),
+					h("div", { key: "row", style: { display: "flex", gap: "7px" } }, [
+						h("div", { key: "a", style: { flex: "1 1 auto" } }, field("au", "谁说的（选填）", author, setAuthor, "祖海潮")),
+						h("div", { key: "c", style: { flex: "0 0 130px" } }, [
+							h("div", { key: "cc", style: LABEL }, "可信度"),
+							h("select", {
+								key: "cs", value: confidence, onChange: (ev) => setConfidence(ev.target.value),
+								style: Object.assign({}, IN, { width: "100%" })
+							}, [
+								h("option", { key: "h", value: "high" }, "high（可直接当规则口径）"),
+								h("option", { key: "p", value: "pending" }, "pending（需补证据）")
+							])
+						])
+					])
+				];
+			};
+
+			// ── 卡（四张并列：同一层级的兄弟节点，没有主次）──
+			const card = (k) => {
+				const on = k.id === e.id;
+				return h("button", {
+					key: "card-" + k.id, type: "button", "data-card": k.id, "data-active": on ? "1" : "0",
+					onClick: () => { setKind(k.id); setSendMsg(null); },
+					style: {
+						flex: "1 1 168px", minWidth: "168px", textAlign: "left", font: "inherit", cursor: "pointer",
+						border: "1px solid " + (on ? C.ink : C.faint), borderTop: "3px solid " + (on ? C.ink : C.soft),
+						background: on ? "#fff" : C.bg, borderRadius: "4px", padding: "7px 9px"
+					}
+				}, [
+					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, color: C.ink } }, k.label),
+					h("div", { key: "h", style: { fontSize: "10px", color: C.link, fontFamily: "monospace", marginTop: "2px" } }, k.hint),
+					h("div", { key: "n", style: { fontSize: "10px", color: C.muted, marginTop: "4px", lineHeight: 1.65 } }, "前置：" + k.needs),
+					h("div", { key: "o", style: { fontSize: "10px", color: C.muted, marginTop: "3px", lineHeight: 1.65 } }, "产出：" + k.output)
+				]);
+			};
+
+			// ── 两种新格式的渲染（设计 §4.2）──
+			const secTitle = { fontSize: "11px", fontWeight: 600, color: C.ink, marginBottom: "2px" };
+			const secBody = {
+				fontSize: "11px", color: C.ink, whiteSpace: "pre-wrap", userSelect: "text", lineHeight: 1.7,
+				background: "#fff", border: "1px solid " + C.faint, borderRadius: "3px", padding: "5px 7px"
+			};
+			const legacyView = (doc) => h("div", { key: "lv", "data-doc": "legacy", "data-name": doc.name }, [
+				h("div", { key: "meta", style: { fontSize: "10.5px", color: C.muted, marginBottom: "6px", lineHeight: 1.7 } }, [
+					h("div", { key: "a" }, "原件：" + (doc.source || "(frontmatter 里没写 source)") + "　（原件存 source\\ —— 产出文档的身份信息指回原件）"),
+					h("div", { key: "b" }, "topic：" + (doc.topic || "(空)") + "　analyzed_at：" + (doc.analyzedAt || "(空)"))
+				]),
+				doc.missing && doc.missing.length
+					? h("div", { key: "miss", "data-missing": doc.missing.join("|"), style: { fontSize: "11px", color: C.warn, marginBottom: "6px" } },
+						"⚠ 缺 " + doc.missing.length + " 段固定章节：" + doc.missing.join(" / ") + " —— 这份产出不完整（四段一个都不能少）")
+					: null,
+				doc.sections.map((s, i) => h("div", { key: "s" + i, "data-sec": s.key, style: { marginBottom: "6px" } }, [
+					h("div", { key: "t", style: secTitle }, (s.present ? "## " : "##（缺）") + s.label),
+					s.key === "reuse" && s.present
+						? h("table", { key: "tb", style: { width: "100%", borderCollapse: "collapse", fontSize: "10.5px" } }, [
+							h("thead", { key: "h" }, h("tr", null, doc.reuse.header.map((c, j) => h("th", { key: j, style: TH }, c)))),
+							h("tbody", { key: "b" }, doc.reuse.rows.map((r, j) => h("tr", { key: j }, r.map((c, m) => h("td", { key: m, style: TD }, c)))))
+						])
+						: h("div", { key: "b", style: secBody }, s.present ? (s.body || "（空）") : "（这一段没有）")
+				])),
+				doc.extra && doc.extra.length
+					? h("div", { key: "ex", "data-extra": String(doc.extra.length), style: { fontSize: "10.5px", color: C.muted, marginTop: "4px" } },
+						"其他章节（不认识的标题也不丢）：" + doc.extra.map((x) => x.title).join(" / "))
+					: null
+			]);
+			/**
+			 * 人工补充：**原话与结论并排**。
+			 * 左列是原话那一行（逐字，`userSelect: text`），右列是 AI 整理的结论 —— 两列是同一个
+			 * flex 行里的兄弟节点，所以"一眼能看出有没有被改动"这件事在界面上是物理成立的。
+			 */
+			const noteView = (doc) => h("div", { key: "hn", "data-doc": "humannote", "data-name": doc.name }, [
+				h("div", { key: "meta", style: { fontSize: "10.5px", color: C.muted, marginBottom: "6px", lineHeight: 1.7 } }, [
+					h("div", { key: "a" }, "confidence：" + (doc.confidence || "(空)") + "　date：" + (doc.date || "(空)") + "　author：" + (doc.author || "(空)") +
+						"　（confidence 是唯一的可信度字段：high = 可直接当规则口径；pending = 下游引用要带标记）"),
+					h("div", { key: "b" }, "topic：" + (doc.topic || "(空)") + "　标题：" + (doc.title || "(空)"))
+				]),
+				doc.quote.found
+					? h("div", {
+						key: "pair", "data-pair": "quote|conclusion",
+						style: { display: "flex", gap: "10px", alignItems: "stretch", marginBottom: "7px" }
+					}, [
+						h("div", { key: "q", "data-side": "quote", style: { flex: "1 1 50%", minWidth: 0 } }, [
+							h("div", { key: "t", style: secTitle }, "我说的话（原话 · 逐字）"),
+							h("div", { key: "b", style: Object.assign({}, secBody, { borderLeft: "3px solid " + C.link }) }, doc.quote.raw)
+						]),
+						h("div", { key: "c", "data-side": "conclusion", style: { flex: "1 1 50%", minWidth: 0 } }, [
+							h("div", { key: "t", style: secTitle }, "AI 整理的结论（并排比对：有没有改动我的结论）"),
+							h("div", { key: "b", style: secBody }, doc.conclusion || "（这一段没有）")
+						])
+					])
+					: h("div", { key: "noq", "data-side": "quote-missing", style: { fontSize: "11px", color: C.warn, marginBottom: "6px" } },
+						"⚠ 这份产出里没有 `> 原话：…` 那一行 —— 按格式要求它必须逐字保留，否则看不出 AI 有没有改动结论。"),
+				doc.sections.filter((s) => s.key !== "conclusion").map((s, i) => h("div", { key: "s" + i, "data-sec": s.key, style: { marginBottom: "6px" } }, [
+					h("div", { key: "t", style: secTitle }, (s.present ? "## " : "##（缺）") + s.label),
+					h("div", { key: "b", style: secBody }, s.present ? (s.body || "（空）") : "（这一段没有）")
+				])),
+				doc.extra && doc.extra.length
+					? h("div", { key: "ex", "data-extra": String(doc.extra.length), style: { fontSize: "10.5px", color: C.muted, marginTop: "4px" } },
+						"其他章节（不丢）：" + doc.extra.map((x) => x.title).join(" / "))
+					: null
+			]);
+
+			const groups = (data && data.groups) || { entries: [], other: [], total: 0 };
+			const docById = (id, name) => {
+				const list = id === "legacy" ? ((data && data.legacy) || []) : ((data && data.humannote) || []);
+				return list.filter((x) => x.name === name)[0] || null;
+			};
+			const fileRow = (g, file, i) => {
+				const isNew = g.id === "legacy" || g.id === "humannote";
+				const open = opened && opened.id === g.id && opened.name === file.name;
+				return h("div", {
+					key: "f" + g.id + i, "data-file": file.name,
+					onClick: () => {
+						if (isNew) setOpened(open ? null : { id: g.id, name: file.name });
+						else if (props.onOpen) props.onOpen(root.replace(/\\+$/, "") + "\\" + String(file.rel || file.name).replace(/\//g, "\\"));
+					},
+					style: {
+						fontSize: "11px", padding: "2px 4px", borderRadius: "3px", cursor: "pointer",
+						background: open ? "#f0f7ff" : "transparent", color: C.ink
+					}
+				}, (isNew ? (open ? "▾ " : "▸ ") : "· ") + file.name + (isNew ? "　（新格式：点开看渲染）" : ""));
+			};
+
+			return h("div", { "data-workface": "brainstorm" }, [
+				// ① 出口判据（设计 §4.3）—— analysis 空而 source 有料 ⇒ 建议先跑一次分析
+				exits.length
+					? h("div", {
+						key: "exit", "data-exit": "note",
+						style: { fontSize: "11.5px", color: C.warn, border: "1px solid " + C.faint, borderLeft: "3px solid " + C.warn, background: "#fffdf7", borderRadius: "4px", padding: "7px 10px", marginBottom: "10px" }
+					}, exits.map((x, i) => h("div", { key: i }, "⚠ " + x)))
+					: null,
+
+				// ② 四张并列的动作卡（同一层级、不分主次）
+				h("div", { key: "row", "data-row": "entrances", style: { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px" } },
+					kinds.map(card)),
+
+				// ③ 选中那张卡的输入 + **要发出去的原文**（逐字）
+				h("div", {
+					key: "detail", "data-entrance": e.id,
+					style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "9px 11px", marginBottom: "10px" }
+				}, [
+					h("div", { key: "h", style: { fontSize: "12px", marginBottom: "6px" } }, [
+						h("b", { key: "b" }, e.label + "　"),
+						h("span", { key: "s", style: { color: C.muted, fontSize: "10.5px" } }, e.hint + "　前置：" + e.needs + "　产出：" + e.output)
+					]),
+					h("div", { key: "f" }, form()),
+					built.blocked
+						? h("div", {
+							key: "blk", "data-blocked": e.id,
+							style: { fontSize: "11.5px", color: C.bad, background: "#fef2f2", border: "1px solid " + C.faint, borderRadius: "3px", padding: "6px 8px", marginBottom: "7px", lineHeight: 1.75 }
+						}, [
+							h("div", { key: "a" }, "✗ " + built.blocked),
+							built.next ? h("div", { key: "b", style: { color: C.ink } }, "下一步：" + built.next) : null
+						])
+						: null,
+					built.instruction
+						? h("div", { key: "pv", style: { marginBottom: "7px" } }, [
+							h("div", { key: "t", style: LABEL }, "这条入口组装出来的指令 —— 下面这段就是发给工作会话的原文（卡上看到的 = 发出去的）："),
+							h("pre", {
+								key: "v", "data-kind": e.id,
+								style: {
+									margin: "3px 0 0", padding: "6px 8px", background: C.bg, border: "1px solid " + C.faint,
+									borderRadius: "3px", fontFamily: "monospace", fontSize: "10.5px", lineHeight: 1.6,
+									whiteSpace: "pre-wrap", color: C.ink, userSelect: "text", maxHeight: "26vh", overflow: "auto"
+								}
+							}, built.instruction)
+						])
+						: null,
+					h("div", { key: "act", style: { display: "flex", gap: "8px", alignItems: "center" } }, [
+						h("button", {
+							key: "go", type: "button", "data-send": e.id,
+							onClick: send,
+							style: {
+								font: "inherit", fontSize: "11.5px", padding: "5px 12px", borderRadius: "4px",
+								border: "1px solid " + (built.blocked ? C.soft : C.link),
+								background: built.blocked ? "#fff" : C.link, color: built.blocked ? C.muted : "#fff",
+								cursor: "pointer"
+							}
+						}, "发到工作会话"),
+						h("span", { key: "n", style: { fontSize: "10.5px", color: C.muted } }, "发到：本功能的专属工作会话" + (root ? "（cwd " + winPath(root) + "）" : "") + "　—— 不占用你自己的对话")
+					]),
+					// 发起之后：**面板不重画流程**，只交代"阶段交给了谁"
+					h("div", { key: "ho", "data-handoff": e.id, style: { fontSize: "10.5px", color: C.muted, marginTop: "5px", lineHeight: 1.7 } },
+						"发起后：" + e.handoff + " —— 面板只给「跳到那个会话」。"),
+					sendMsg ? h("div", {
+						key: "m",
+						style: { fontSize: "11px", marginTop: "6px", lineHeight: 1.75, color: sendMsg.kind === "err" || sendMsg.kind === "blocked" ? C.bad : (sendMsg.kind === "ok" ? C.ok : C.muted) }
+					}, [
+						h("div", { key: "t" }, (sendMsg.kind === "ok" ? "✓ " : (sendMsg.kind === "pending" ? "" : "✗ ")) + sendMsg.text),
+						sendMsg.kind === "ok" ? h("div", {
+							key: "d", "data-sent": "ok", style: { color: C.muted, userSelect: "text" }
+						}, [
+							// ★ 工单 23 第 2 条：这句话就是"面板不在会话里重画流程"的表达
+							h("div", { key: "s" }, "阶段交给了 skill，进度与提问都在那个会话里 —— 面板不重画流程，跑完回本页重进就能看到产物。"),
+							h("div", { key: "g" },
+								"目标：" + ((sendMsg.target && sendMsg.target.title) || "工作会话") +
+								(sendMsg.sid ? "　会话 " + String(sendMsg.sid).slice(0, 12) + "…" : "") +
+								(sendMsg.target && sendMsg.target.root ? "　cwd " + winPath(sendMsg.target.root) : "") +
+								"　（" + pickSourceText(sendMsg.target && sendMsg.target.source) + "）"),
+							sendMsg.healed ? h("div", { key: "h", style: { color: C.warn } }, "上一轮记的那条会话已经不在了 —— 已自动重建一条并重发。") : null,
+							sendMsg.queued ? h("div", { key: "q", style: { color: C.warn } }, "它正在跑别的活，这条指令排在队列里，等它跑完当前这一轮就会处理。") : null
+						]) : null,
+						sendMsg.kind === "err" || sendMsg.kind === "blocked"
+							? h("div", { key: "n", "data-sent": "fail", style: { color: C.ink } }, "下一步：" + (sendMsg.next || "再按一次。"))
+							: null,
+						sendMsg.sid && props.onOpenSession ? h("button", {
+							key: "j", type: "button", "data-jump": sendMsg.sid,
+							onClick: () => jump(sendMsg.sid),
+							style: {
+								font: "inherit", fontSize: "11px", padding: "2px 9px", marginTop: "3px",
+								border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer"
+							}
+						}, "跳到那个会话 ›") : null,
+						sendMsg.jumpErr ? h("div", { key: "je", style: { color: C.bad } }, sendMsg.jumpErr) : null
+					]) : null
+				]),
+
+				// ④ 已有的分析结论（按四入口分类 —— 四组恒在，空组 = 这一路还没走过）
+				h("div", { key: "have", style: { border: "1px solid " + C.faint, borderRadius: "4px", background: C.bg, padding: "8px 10px" } }, [
+					h("div", { key: "t", style: { fontSize: "11.5px", fontWeight: 600, marginBottom: "5px" } },
+						"已有的分析结论（" + (groups.total || 0) + " 件，按入口分）" +
+						(f && f.topic ? "　功能：" + f.topic : "")),
+					!data ? h("div", { key: "ld", style: { fontSize: "11px", color: C.muted } }, "正在读 analysis\\ 里的产物…") : null,
+					data && data.error ? h("div", { key: "er", style: { fontSize: "11px", color: C.bad } }, data.error) : null,
+					data && !data.error
+						? h("div", { key: "g" }, (groups.entries || []).map((g) => h("div", {
+							key: "e" + g.id, "data-group": g.id,
+							style: { marginBottom: "5px", borderTop: "1px solid " + C.faint, paddingTop: "5px" }
+						}, [
+							h("div", { key: "h", style: { fontSize: "11px" } }, [
+								h("b", { key: "b" }, g.label),
+								h("span", { key: "c", style: { color: C.muted } }, "　" + g.count + " 件" + (g.count === 0 ? "（这一路还没走过）" : ""))
+							]),
+							h("div", { key: "f" }, (g.files || []).map((file, i) => fileRow(g, file, i)))
+						])).concat((groups.other && groups.other.length) ? [h("div", {
+							key: "eother", "data-group": "other", style: { marginBottom: "5px", borderTop: "1px solid " + C.faint, paddingTop: "5px" }
+						}, [
+							h("div", { key: "h", style: { fontSize: "11px" } }, [h("b", { key: "b" }, "其他 / 来源未知"), h("span", { key: "c", style: { color: C.muted } }, "　" + groups.other.length + " 件（认不出属于哪一路，如实列出）")]),
+							h("div", { key: "f" }, groups.other.map((file, i) => fileRow({ id: "other" }, file, i)))
+						])] : []))
+						: null,
+					data && (data.unreadable || []).length
+						? h("div", { key: "un", style: { fontSize: "10.5px", color: C.warn, marginTop: "4px" } },
+							(data.unreadable || []).map((x, i) => h("div", { key: i }, "⚠ 读不动：" + x.name + "（" + x.why + "）")))
+						: null,
+					// 两种新格式的渲染（点上面的文件名展开）
+					opened && opened.id === "legacy" && docById("legacy", opened.name) ? legacyView(docById("legacy", opened.name)) : null,
+					opened && opened.id === "humannote" && docById("humannote", opened.name) ? noteView(docById("humannote", opened.name)) : null
+				])
+			]);
 		}
 
 		/**
@@ -4344,7 +4531,8 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 			const [notice, setNotice] = React.useState(null);
 			const [view, setView] = React.useState("dashboard");       // dashboard | detail | assets | config | knowledge
 			const [detailTopic, setDetailTopic] = React.useState(null);
-			const [dtab, setDtab] = React.useState("design");
+			// ★ 工单 23：进功能先落在**第一个工作面**（头脑风暴）；`final` = 定稿修订工作面，其余是资料页签
+			const [dtab, setDtab] = React.useState(ENTRY_TAB);
 			const [ledger, setLedger] = React.useState(null);
 			// ★ 台账在**渲染期**从 ledger 派生（不是加载期冻结），见 ledgerOf 的注释
 			const designLedger = React.useMemo(() => ledgerOf(ledger), [ledger]);
@@ -4353,6 +4541,8 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 			const [indexData, setIndexData] = React.useState(null);
 			// ★ 工单 12：功能详情的产物清单 / 三阶段 / 定稿有效性 / V 校验清单（进详情时读一次）
 			const [detail, setDetail] = React.useState(null);
+			// ★ 工单 23：头脑风暴工作面的数据（已有的分析结论 + 两种新格式的解析结果）
+			const [brain, setBrain] = React.useState(null);
 			const loader = props.__loader;
 			const remoteOpen = props.__remoteOpen;
 			const ledgerLoader = props.__ledger;
@@ -4361,6 +4551,9 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 			const interfaceLoader = props.__interfaces;
 			const indexLoader = props.__index;
 			const detailLoader = props.__detail;
+			// ★ 工单 23：头脑风暴工作面的加载器 + 四入口的发送出口（走**工单 15 那条链路**，不是新通道）
+			const brainstormLoader = props.__brainstorm;
+			const brainstormRunner = props.__sendBrainstorm;
 			const diagnose = props.__diagnose;
 			const probe = props.__probe;
 
@@ -4504,6 +4697,34 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 				return () => { cancelled = true; ac.abort(); };
 			}, [view, detailTopic, sessionId, state.phase]);
 
+			/**
+			 * ★ 工单 23：进「头脑风暴」工作面时读**已有的分析结论** + 两种新格式的解析。
+			 *
+			 * 依赖 `detail`：产物清单是工单 12 那份（**同一份来源**），这里只拿 `analysis` 组做事 ——
+			 * 不重新列目录，免得"面板列出的产物"与"工作面认出的结论"两处对不上。
+			 * 出口判据那一句话也是搬 `detail.stage.note`（在 `artifacts.ts` 里算的），这一层不重算。
+			 */
+			React.useEffect(() => {
+				if (view !== "detail" || dtab !== "brainstorm" || !sessionId || state.phase !== "ready") { setBrain(null); return; }
+				if (!detail || detail.error) { setBrain(null); return; }
+				if (typeof brainstormLoader !== "function") {
+					setBrain({ error: "头脑风暴加载器没挂上（__brainstorm 缺失）。" });
+					return;
+				}
+				const root = detail.root || "";
+				if (!root) { setBrain({ error: "拿不到功能根目录：头脑风暴读不了。" }); return; }
+				const group = ((detail.artifacts && detail.artifacts.groups) || []).filter((g) => g.key === "analysis")[0];
+				const files = (group && group.files) || [];
+				let cancelled = false;
+				const ac = new AbortController();
+				setBrain(null);
+				brainstormLoader(sessionId, { root: root, files: files, stage: detail.stage }, ac.signal).then(
+					(r) => { if (!cancelled) setBrain(r); },
+					(e) => { if (!cancelled) setBrain({ error: "读分析产物失败：" + String((e && e.message) || e) }); }
+				);
+				return () => { cancelled = true; ac.abort(); };
+			}, [view, dtab, detailTopic, sessionId, state.phase, detail]);
+
 			// 进「功能详情」时加载该功能的决策台账（§3.2：从**功能根目录**读）
 			React.useEffect(() => {
 				if (view !== "detail" || !detailTopic || !sessionId) { setLedger(null); return; }
@@ -4630,8 +4851,33 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 					h(NoticeBar, { key: "nt", notice: notice }),
 					// ★ 工单 12：状态块放在页签**之上** —— 切到哪一屏都能看到三阶段与"现在能用吗"
 					h(DetailStatus, { key: "st", detail: detail, feature: f, onOpenFix: () => { setDtab("final"); if (f && f.openPath) handleOpen(f); } }),
-					h(TabBar, { key: "dtabs", items: DETAIL_TABS, view: dtab, onPick: setDtab }),
-					dtab === "ledger"
+					// ★ 工单 23：功能内部先分**工作面**（三阶段）与**资料页签**两组 ——
+					//   第一组是"这个功能该走哪一步"，第二组是"旁挂的过程/产物/界面图"（spec.md:30）。
+					h("div", { key: "stages", style: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" } }, [
+						h("span", { key: "l", style: { fontSize: "10.5px", color: C.muted, flex: "0 0 auto" } }, "工作面"),
+						h(TabBar, { key: "b", items: DETAIL_STAGES, view: dtab, onPick: setDtab })
+					]),
+					h("div", { key: "mtabs", style: { display: "flex", alignItems: "center", gap: "8px" } }, [
+						h("span", { key: "l", style: { fontSize: "10.5px", color: C.muted, flex: "0 0 auto" } }, "资料"),
+						h(TabBar, { key: "b", items: DETAIL_TABS, view: dtab, onPick: setDtab })
+					]),
+					dtab === "brainstorm"
+						? h(BrainstormWorkface, {
+							key: "bw",
+							data: brain,
+							feature: f,
+							root: (detail && detail.root) || "",
+							srWs: d.srWs,
+							onSend: typeof brainstormRunner === "function"
+								? (kind, input) => brainstormRunner(d && d.srWs, kind, input, {
+									// 会话候选：store 快照带着 cwd / running；空则由组合根补一次 session.list
+									rows: sessionRows
+								})
+								: null,
+							onOpenSession: (sid) => probe.openSession(sid),
+							onOpen: (abs) => handleOpen(null, abs)
+						})
+						: dtab === "ledger"
 						? h(DecisionLedger, {
 							key: "lg", ledger: ledger,
 							// ★ 工单 17 的能力（字段覆盖检查）：结论来自 `buildLedger(...).fieldCheck`
@@ -4748,7 +4994,8 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 							feature: f,
 							attention: attentionOf(f.topic),
 							onOpen: handleOpen,
-							onDetail: (x) => { setDetailTopic(x.topic); setDtab("design"); setView("detail"); },
+							// ★ 工单 23：卡的「详情 ›」进的是**第一个工作面**（头脑风暴），不是资料页签
+							onDetail: (x) => { setDetailTopic(x.topic); setDtab(ENTRY_TAB); setView("detail"); },
 							onAttention: (x) => { setDetailTopic(x.topic); setDtab("pipeline"); setView("detail"); }
 						}))
 						: [h("div", { key: "none", style: { color: C.muted, fontSize: "12px" } }, "没有匹配的功能。")]),
@@ -4827,6 +5074,13 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 			 * 这里只把 ctx 包成端口（`portOf`），实现全在 `src/load/feature.ts` + `src/pure/artifacts.ts`。
 			 */
 			const detailLoader = (sid, root, signal) => loadFeatureDetail(portOf(ctx, sid, read), { root: root, signal: signal });
+			/**
+			 * ★ 工单 23 · 头脑风暴工作面：把产物清单里 `analysis` 组交给加载器（只读那一个桶），
+			 *   出口判据那句话也是搬 `detail.stage`。这里只做编排，判据全在 `src/load/brainstorm.ts`
+			 *   + `src/pure/analysisdoc.ts`（有测试）。
+			 */
+			const brainstormLoader = (sid, opts, signal) =>
+				loadBrainstorm(portOf(ctx, sid, read), Object.assign({}, opts, { signal: signal }));
 			const indexLoader = (sid, srWs, signal) => loadIndex(read, sid, srWs, signal);
 			/** 按绝对路径读文本（阅读器用） */
 			const readTextFile = (sid, abs) => readAllText(read, sid, abs, void 0, 4000);
@@ -4972,45 +5226,27 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 			};
 
 			/**
-			 * 「就地改这条」（设计 §6.3 条目引用 + §6.4.1 影响范围）。
+			 * ═══ 面板唯一的「发进该功能的专属工作会话」链路（工单 15 立的，工单 23 复用的就是这一条）═══
 			 *
-			 * ★ 面板不写文件 —— 它只把「改哪儿、改成什么」说到 agent 不用再找的程度：
-			 *   带**条目引用**（§5 UI-M1 UE3）+ **现状原文**（行号会漂，原文不会）
-			 *   + **面板扫出的结构引用**（让 agent 少一步搜索）。
-			 * ★ 语义影响仍然交给 sr-gdd-fix 的 D11 影响面闭合 —— 面板不越界（文本里写着）。
-			 * ★ 文本由 `buildFixInstruction`（`src/pure/instruction.ts`）拼 —— 与定位卡上
-			 *   **给用户看的那段逐字相同**（工单 14：先看后发，看到的就是要发的）。
-			 * ★ 发到**该功能的专属工作会话**（cwd = `features\<主题>\`，工单 15）：
-			 *   认领 → （会话没了就）自愈重建 → 重发一次；失败一律给「可读错误 + 下一步」。
+			 *   认领 → （会话没了就）自愈重建 → **重发一次**；失败一律给「可读错误 + 下一步」。
+			 *   `fixRunner`（就地改这条）与 `brainstormRunner`（头脑风暴四入口）**共用这一段** ——
+			 *   两条路发出的东西除正文外一模一样（同一会话、同一 mode、同一自愈、同一错误话术），
+			 *   也**不会各自长出一个发送通道**（工单 23 的硬要求）。
 			 *
-			 * @param srWs  SR 工作区根（拿不到功能根时的最后兜底）
-			 * @param req   `{ path, ref, before, intent, impact }`
-			 * @param extra `{ root }` 功能根（详情页给的更权威）· `{ rows }` 会话候选
+			 * @param root 功能根（cwd = `features\<主题>\`）
+			 * @param text 要发的正文（调用方用纯函数组装，卡上显示的就是它）
+			 * @param c    `{ rows }` 会话候选 · `{ signal }`
 			 * @returns `{ ok, sid, sent, healed, queued, target, message?, next?, note? }`
 			 */
-			const fixRunner = async (srWs, req, extra) => {
-				const c = extra || {};
-				if (!req || !req.path || !req.ref) return { ok: false, note: "缺少定稿路径或条目引用。" };
-				const text = buildFixInstruction({
-					path: req.path, ref: req.ref, before: req.before, intent: req.intent, impact: req.impact
-				});
-				// 功能根：详情页给的更权威；否则从 `features\<主题>\gdd\…` 反推
-				const root = c.root || featureRootOf(req.path) || srWs || "";
+			const sendFeatureInstruction = async (root, text, c) => {
+				const cc = c || {};
 				const targetOf = (got) => ({
 					root: root, title: (got && got.title) || workTitleFor(root),
 					source: (got && got.source) || "", running: !!(got && got.running)
 				});
-				if (!root) {
-					return {
-						ok: false, sent: text,
-						message: "算不出这条定稿属于哪个功能目录。",
-						next: "从「功能详情 › 定稿」页签进来再发一次（工作会话要建在 `features\\<主题>\\` 下）。",
-						note: "算不出这条定稿属于哪个功能目录。"
-					};
-				}
 				const attempt = async (fresh, exclude) => {
-					const got = await ensureFeatureWorkSession(root, c.rows, {
-						fresh: fresh, exclude: exclude, signal: c.signal
+					const got = await ensureFeatureWorkSession(root, cc.rows, {
+						fresh: fresh, exclude: exclude, signal: cc.signal
 					});
 					if (!got.ok) return { got: got, r: null };
 					const r = await probe.prompt(got.sid, text);
@@ -5046,6 +5282,75 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 					note: "已交给工作会话。" + (a.got.running ? "它正在跑别的活，这条指令排在队列里。" : "") +
 						(a.got.note && a.got.note.length ? "　" + a.got.note.join("；") : "")
 				};
+			};
+
+			/**
+			 * 「就地改这条」（设计 §6.3 条目引用 + §6.4.1 影响范围）。
+			 *
+			 * ★ 面板不写文件 —— 它只把「改哪儿、改成什么」说到 agent 不用再找的程度：
+			 *   带**条目引用**（§5 UI-M1 UE3）+ **现状原文**（行号会漂，原文不会）
+			 *   + **面板扫出的结构引用**（让 agent 少一步搜索）。
+			 * ★ 语义影响仍然交给 sr-gdd-fix 的 D11 影响面闭合 —— 面板不越界（文本里写着）。
+			 * ★ 文本由 `buildFixInstruction`（`src/pure/instruction.ts`）拼 —— 与定位卡上
+			 *   **给用户看的那段逐字相同**（工单 14：先看后发，看到的就是要发的）。
+			 * ★ 发到**该功能的专属工作会话**（cwd = `features\<主题>\`，工单 15）——
+			 *   发送本身走 `sendFeatureInstruction`（工单 23 抽出的那一段，两条路共用）。
+			 *
+			 * @param srWs  SR 工作区根（拿不到功能根时的最后兜底）
+			 * @param req   `{ path, ref, before, intent, impact }`
+			 * @param extra `{ root }` 功能根（详情页给的更权威）· `{ rows }` 会话候选
+			 * @returns `{ ok, sid, sent, healed, queued, target, message?, next?, note? }`
+			 */
+			const fixRunner = async (srWs, req, extra) => {
+				const c = extra || {};
+				if (!req || !req.path || !req.ref) return { ok: false, note: "缺少定稿路径或条目引用。" };
+				const text = buildFixInstruction({
+					path: req.path, ref: req.ref, before: req.before, intent: req.intent, impact: req.impact
+				});
+				// 功能根：详情页给的更权威；否则从 `features\<主题>\gdd\…` 反推
+				const root = c.root || featureRootOf(req.path) || srWs || "";
+				if (!root) {
+					return {
+						ok: false, sent: text,
+						message: "算不出这条定稿属于哪个功能目录。",
+						next: "从「功能详情 › 定稿」页签进来再发一次（工作会话要建在 `features\\<主题>\\` 下）。",
+						note: "算不出这条定稿属于哪个功能目录。"
+					};
+				}
+				return sendFeatureInstruction(root, text, c);
+			};
+
+			/**
+			 * ★ 工单 23 · 头脑风暴四入口的出口：**复用**上面那条链路，只是正文由四入口各自的
+			 *   组装器给出（`INTAKE.buildBrainstormInstruction`，与卡上预览逐字相同）。
+			 *
+			 * ★ 缺前提**不发**（也不静默）：把 `blocked` + `next` 原样回给界面 —— 界面显示的
+			 *   与这里判定的是同一份（判定只在纯函数里）。
+			 * ★ 指令正文由界面传进来（`input.text`）—— 这样"卡上看到的 = 发出去的"是**同一段字符串**，
+			 *   不存在"再组装一次、拼出第二份"的可能（工单 15 的验收口径，这里照做）。
+			 *
+			 * @returns `{ ok, sid, sent, healed, queued, target, message?, next?, note? }` 或
+			 *          `{ ok:false, blocked, next, sent:"" }`（缺前提）
+			 */
+			const brainstormRunner = async (srWs, kind, input, extra) => {
+				const c = extra || {};
+				const inp = input || {};
+				const root = String(inp.root || c.root || "").replace(/\\+$/, "");
+				if (!root) {
+					return {
+						ok: false, sent: "",
+						blocked: "拿不到这个功能的功能目录（`features\\<主题>\\`）。",
+						next: "从「功能详情 › 头脑风暴」进来再发一次 —— 指令要发给该功能的专属工作会话（cwd = 功能目录）。"
+					};
+				}
+				// 正文以界面传的那一段为准（逐字）；万一是别的调用方，退回自己组装一次
+				let text = String(inp.text || "");
+				if (text === "") {
+					const built = INTAKE.buildBrainstormInstruction(kind, Object.assign({}, inp, { root: root }));
+					if (built.blocked) return { ok: false, sent: "", blocked: built.blocked, next: built.next || "" };
+					text = built.instruction;
+				}
+				return sendFeatureInstruction(root, text, c);
 			};
 
 			const runInWorkSession = async (instruction) => {
@@ -5694,6 +5999,9 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 					h(Panel, Object.assign({}, props, {
 						__loader: loader, __remoteOpen: remoteOpen, __ledger: ledgerLoader, __final: finalLoader,
 						__fix: fixRunner,
+						// ★ 工单 23：头脑风暴工作面（数据 + 发送出口；发送复用 `sendFeatureInstruction`）
+						__brainstorm: brainstormLoader,
+						__sendBrainstorm: brainstormRunner,
 						__diagnose: diagnose, __probe: probe, __projectRoot: projectRoot,
 						__interfaces: interfaceLoader, __index: indexLoader, __detail: detailLoader,
 						__resolve: resolveIndexSession,
