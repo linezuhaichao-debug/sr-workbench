@@ -60,6 +60,11 @@ import { EDGE_LEGEND, buildRefGraph, edgeLabelOf, impactOf } from "./pure/refgra
 import { splitSpecial } from "./pure/split.ts";
 // 三段式（改哪儿 / 现状原文 / 影响范围）只有一份实现：面板上先给用户看，发出去的就是同一段
 import { buildFixInstruction } from "./pure/instruction.ts";
+// ★ 缺陷修复（2026-09-30「侧边栏要按 F5 才看得见」）：建完会话之后要补调**官方那条客户端入口**
+//   （`workspaces.create` 把工作区行并进 store / `sessions.refresh` 重拉会话基线）。
+//   判定（该调哪几刀、哪个做不到）在这个纯函数里，逐条用例在 `test/pure-storemerge.test.ts`；
+//   组合根只负责按 steps 去调（`syncSidebarStores`）。**不要**在这里再造一套 store 写入。
+import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 
 		const h = React.createElement;
 
@@ -4110,9 +4115,17 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 				//   退而用配置的 projectRoot 按路径查；都没有才用 cwd 兜底。
 				const createInProject = () => {
 					const info = probe.workspaceInfo();
+					// ★ 建完一律补一次「并进客户端 store」（侧边栏立刻看得见，不用 F5）——
+					//   判定与理由见组合根的 `syncSidebarStores`（这里经 `probe.syncSidebar` 调它）；
+					//   结果（`cr`）原样返回，下面那条链一字不动。
+					const createdIn = (path, p) => Promise.resolve(p).then(
+						(cr) => (cr && cr.ok && typeof probe.syncSidebar === "function"
+							? probe.syncSidebar(path || "").then(() => cr)
+							: cr)
+					);
 					if (info && info.id) {
 						setWsNote("当前会话的工作区：「" + (info.title || info.id) + "」（" + (info.path || "?") + "）");
-						return probe.create(info.id, "", presetId);
+						return createdIn(info.path, probe.create(info.id, "", presetId));
 					}
 					if (projectRoot) {
 						return probe.ensureWorkspace(projectRoot).then((wr) => {
@@ -4126,12 +4139,12 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 								return { ok: false, error: { message: "工作区已登记但没拿到 workspaceId" } };
 							}
 							setWsNote("按 projectRoot " + (wr.value.created ? "新建" : "匹配到") + "工作区「" + w.title + "」");
-							return probe.create(w.workspaceId, "", presetId);
+							return createdIn(projectRoot, probe.create(w.workspaceId, "", presetId));
 						});
 					}
 					setWsNote("未识别当前会话的工作区 —— 会话可能落进「未分组」" +
 						(info && info.error ? "（读取异常：" + info.error + "）" : ""));
-					return probe.create("", cwd, presetId);
+					return createdIn(cwd, probe.create("", cwd, presetId));
 				};
 
 				const ensure = workSid
@@ -4832,6 +4845,10 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 					const rn = await probe.renameSession(sid, title);
 					if (!rn.ok) note.push("会话建好了但改名失败（下次按缓存认回来）：" + humanError(rn));
 				}
+				// ★ 建完补一次「并进客户端 store」（官方那两刀）——不补的话侧边栏要按 F5 才看得见
+				//   （2026-09-30 实测缺陷；判定与理由见 `syncSidebarStores` 的注释）。
+				const sync = await syncSidebarStores(root);
+				for (const n of sync.notes) note.push(n);
 				return { sid: sid, error: "", outcome: cr, note: note, title: title || "" };
 			};
 
@@ -4920,6 +4937,8 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 						const sid = idText(cr.value && cr.value.sessionId);
 						if (!sid) return { sid: "", error: "会话已创建，但拿不到 sessionId。" };
 						setWorkSession(key, sid);
+						// ★ 建完补一次「并进客户端 store」（侧边栏立刻看得见；见 syncSidebarStores）
+						await syncSidebarStores((info && info.path) || srWs || "");
 						return { sid: sid, error: "" };
 					}
 					const made = await createSessionAt(srWs || "", "", "sr-workbench");
@@ -5001,7 +5020,10 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 				return {
 					ok: true, sid: a.got.sid, sent: text, healed: healed,
 					queued: !!a.got.running, target: targetOf(a.got),
-					note: "已交给工作会话。" + (a.got.running ? "它正在跑别的活，这条指令排在队列里。" : "")
+					// ★ 建完的降级说明（例如"取不到官方 workspaces 客户端服务 ⇒ 这次要刷新页面才看得见"）
+					//   一并显示 —— 缺陷修复的诚实口径：**不许装成"侧边栏已经刷新了"**。
+					note: "已交给工作会话。" + (a.got.running ? "它正在跑别的活，这条指令排在队列里。" : "") +
+						(a.got.note && a.got.note.length ? "　" + a.got.note.join("；") : "")
 				};
 			};
 
@@ -5010,6 +5032,7 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 					const info = workspaceInfo();
 					const key = workKey("sr-workbench", "__assets__");
 					let sid = WORK_SESSIONS.get(key) || "";
+					let syncNotes = [];
 					if (!sid) {
 						const cr = info && info.id
 							? await probe.create(info.id, "", "sr-workbench")
@@ -5018,10 +5041,14 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 						sid = idText(cr.value && cr.value.sessionId);
 						if (!sid) return "会话已创建，但拿不到 sessionId。";
 						setWorkSession(key, sid);
+						// ★ 建完补一次「并进客户端 store」（侧边栏立刻看得见；见 syncSidebarStores）
+						const sync = await syncSidebarStores((info && info.path) || "");
+						syncNotes = sync.notes;
 					}
 					const r = await probe.prompt(sid, instruction);
 					if (!r.ok) return "指令发送失败：" + humanError(r);
-					return "已交给工作会话。跑完后回本页重进即可看到新索引。";
+					return "已交给工作会话。跑完后回本页重进即可看到新索引。" +
+						(syncNotes.length ? "　" + syncNotes.join("；") : "");
 				} catch (e) {
 					return "失败：" + String((e && e.message) || e);
 				}
@@ -5293,7 +5320,76 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 				}
 			};
 
+			/**
+			 * ═══ 建完就把新工作区 / 新会话并进**客户端 store**（侧边栏立刻看得见）═══
+			 *
+			 * 缺陷（2026-09-30 实测）：面板建完工作区 + 会话之后，侧边栏**要按 F5 才出现**
+			 * 那个工作区分组与新会话行。根因：面板走的是**裸 Remote**
+			 * （`remote.workspace.create` / `remote.session.create` / `remote.session.rename`），
+			 * 只把结果返回给调用方，**没人把它并进客户端 store** —— 而侧边栏读的正是那两个 store。
+			 * 官方「新会话」按钮之所以建完立刻看得见，是因为它走的是**官方客户端服务**那条路
+			 * （`dsh-client-ui-workspace/lib/client.js:846 startSession` → `:808 sessions.create`）。
+			 *
+			 * 所以这里照抄官方那两刀（**不自己写 store 写入**）：
+			 *   ① `workspaces.create({path})`
+			 *      —— `dsh-api-workspace-controller/lib/client.js:393 create` →
+			 *         `:51 ClientWorkspaceModel.create` → `:53 upsert(result.value.workspace)`。
+			 *         官方的「新增工作区」也是调它（`dsh-client-ui-workspace/lib/client.js:4282`）。
+			 *         按路径查是**幂等**的：已存在就返回当前视图（连 `sessionIds` 一起，所以新会话
+			 *         会被这个分组认领，不再落进「未分组」）。
+			 *   ② `sessions.refresh()`
+			 *      —— `dsh-api-session-controller/lib/client.js:3258 refresh` →
+			 *         `:2603 SessionManager.refreshList`（`session.list` 拉一次基线，
+			 *         连 `projections.values.title` 一起装上 —— 就是我们刚 `rename` 的那个标题）。
+			 *         客户端**重连时官方自己**也是这么重建基线的（同文件 `:2923 handleConnected`）。
+			 *
+			 * ★ 为什么不直接用官方的 `sessions.create`（它自带 placeholder 合并）：它**丢 `agentPreset`**
+			 *   （同文件 `:2680-2686` 的 payload 只带 workspaceId/sessionId 或 cwd/sessionId，
+			 *   而 `SessionCreateRequest.agentPreset` 是 host 支持的字段，见该包 `types.d.ts:283`）。
+			 *   工作台的工作会话必须带 `sr-workbench` 这个预设，所以创建仍旧走裸 Remote，
+			 *   建完再用官方这两刀把 store 补齐 —— 这是**正规口子**（官方自己的"重拉基线"入口）。
+			 *
+			 * ★ 探服务用 `ctx.get`（不是 inject）：这两个服务任何一个没被提供时，写进 inject
+			 *   会让**整个插件不激活**；探不到就按 `planSidebarSync` 如实降级并说清"要刷新页面"。
+			 *
+			 * @param path 这次会话建在哪个目录（工作区分组按它认领）；`""` = 无归属（未分组）
+			 * @returns `{ plan, notes }` —— notes 是**给人看**的降级说明（空数组 = 都做到了）
+			 */
+			const syncSidebarStores = async (path) => {
+				let workspacesSvc = null;
+				let sessionsSvc = null;
+				try { workspacesSvc = svc(ctx, "workspaces"); } catch (e) { workspacesSvc = null; }
+				try { sessionsSvc = svc(ctx, "sessions"); } catch (e) { sessionsSvc = null; }
+				const plan = planSidebarSync({
+					path: path || "",
+					services: {
+						workspaces: !!(workspacesSvc && typeof workspacesSvc.create === "function"),
+						sessions: !!(sessionsSvc && typeof sessionsSvc.refresh === "function")
+					}
+				});
+				const notes = plan.notes.slice();
+				if (!sidebarSyncNeeded(plan)) return { plan: plan, notes: notes };
+				// ★ 官方客户端服务**直接返回值 / 直接抛错**（不是 Remote 的 `{ok,value,error}` 形状），
+				//   所以不能过 `safeCall`（它会把这些返回值判成 ok:false）—— 这里另包一层。
+				const tryCall = async (name, fn) => {
+					try { return { name: name, ok: true, value: await fn() }; }
+					catch (e) { return { name: name, ok: false, error: { message: String((e && e.message) || e) } }; }
+				};
+				for (const step of plan.steps) {
+					if (step === "workspaces.create") {
+						const r = await tryCall("workspaces.create", () => workspacesSvc.create({ path: plan.resolvePath }));
+						if (!r.ok) notes.push("工作区分组没能即时并进侧边栏（" + humanError(r) + "）。");
+					} else {
+						const r = await tryCall("sessions.refresh", () => sessionsSvc.refresh());
+						if (!r.ok) notes.push("会话行没能即时并进侧边栏（" + humanError(r) + "）。");
+					}
+				}
+				return { plan: plan, notes: notes };
+			};
+
 			const probe = {
+				/** 建完补一次「并进客户端 store」（侧边栏立刻看得见）—— 唯一实现在组合根，组件只调它 */
+				syncSidebar: (path) => syncSidebarStores(path),
 				presets: () => safeCall("agentPresets.list", () => ctx.remote.agentPresets.list()),
 				commands: (sid) => safeCall("commands.list", () => ctx.remote.commands.list(sid)),
 				/**
@@ -5499,6 +5595,9 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 				const rn = await probe.renameSession(sid, title);
 				if (!rn.ok) note.push("索引会话建好了但改名失败（下次按 cwd 认回来）：" + humanError(rn));
 				cacheWrite(root, sid);
+				// ★ 索引会话也是"新工作区 + 新会话"，同样要补一刀（不然侧边栏要 F5 才出现）
+				const sync = await syncSidebarStores(root);
+				for (const n of sync.notes) note.push(n);
 				return {
 					ok: true, sid: sid, cwd: root, root: root, srWs: srWs,
 					source: "created", sessionTitle: rn.ok ? title : "",
