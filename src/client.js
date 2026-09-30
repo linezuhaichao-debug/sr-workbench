@@ -18,8 +18,17 @@ import * as React from "react";
 
 // ★ 工单 32 · 面板接线：`src/client.js` 不再保留内联副本，改为直接用 `src/pure/` 那份
 //   （测试覆盖的就是它）。接线是**一次一个模块**做的，每步都过 `npm run build:safe`。
-//   已接：path（toAbs）
+//   已接：path（toAbs）· sessionpick（索引会话选择，0.2.0 兼容）
 import { toAbs } from "./pure/path.ts";
+import {
+	configPathCandidates,
+	containsPath,
+	indexCacheKey,
+	indexTitleFor,
+	pickIndexSession,
+	rowsFromList,
+	rowsFromStore
+} from "./pure/sessionpick.ts";
 
 		const h = React.createElement;
 
@@ -864,10 +873,14 @@ import { toAbs } from "./pure/path.ts";
 		 * 从 sr 本地配置读**绝对路径锚点**。
 		 * ★ 不能硬编码相对路径让面板跟着"当前会话的工作区"走——你切到别的工作区的会话时就会读不到。
 		 *   `read` 允许读工作区外路径（只有目录列举受限），所以这一步任何会话都能做。
+		 * ★ `extraPaths`：**绝对**候选（组合根按"候选根"拼出来的，见 resolveIndexSession）。
+		 *   浏览器半侧收不到插件 config（开发笔记坑 7），所以 `configPath` 在浏览器里是空的，
+		 *   绝对路径只能由调用方补进来；末尾的相对候选留作最后兜底。
 		 */
-		async function loadSrPaths(read, sid, configPath, signal) {
+		async function loadSrPaths(read, sid, configPath, signal, extraPaths) {
 			const cands = [];
 			if (configPath) cands.push(configPath);
+			for (const extra of (extraPaths || [])) if (extra) cands.push(extra);
 			cands.push(".agents/skills/sr-askme/config.local.json");
 			for (const p of cands) {
 				const text = await readAllText(read, sid, p, signal, 200);
@@ -1109,9 +1122,9 @@ import { toAbs } from "./pure/path.ts";
 		}
 
 		/** 扫工作区 → 功能列表 */
-		async function loadDashboard(ctx, read, sid, cwd, configPath, signal) {
+		async function loadDashboard(ctx, read, sid, cwd, configPath, signal, extraPaths) {
 			// ★ 先从 sr 配置拿**绝对路径**，不跟着当前会话的工作区走
-			const P = await loadSrPaths(read, sid, configPath, signal);
+			const P = await loadSrPaths(read, sid, configPath, signal, extraPaths);
 			const srWs = P.srWs || SR_WS;
 			const cfgDir = P.configRoot || CONFIG_DIR;
 			if (!P.srWs) {
@@ -4308,17 +4321,47 @@ import { toAbs } from "./pure/path.ts";
 			]);
 		}
 
+		/**
+		 * 索引会话的来源（面板要**如实说出**"这条会话是怎么来的" —— 排障全靠它）。
+		 * 与 pure 层 `SessionPick.source` 一一对应，外加组合根自己的 "created"。
+		 */
+		function sessionSourceText(s) {
+			if (!s) return "(未解析)";
+			const map = {
+				cache: "上次那条（本地缓存）",
+				title: "按标题「策划工作台·索引」认回",
+				cwd: "按 cwd 覆盖 sr 工作区根匹配",
+				main: "用户当前选中的那条（兜底）",
+				recent: "最近更新的那条（兜底）",
+				created: "新建（已登记工作区并命名）"
+			};
+			const tag = map[s.source] || String(s.source || "?");
+			const sid = s.sid ? "：" + String(s.sid).slice(0, 14) + "…" : "";
+			return tag + sid + (s.sessionTitle ? "「" + s.sessionTitle + "」" : "");
+		}
+
 		/** 全局面板：A1 功能看板 */
 		function Panel(props) {
+			// ★ 工单 32（0.2.0 兼容）：面板**不再读"用户当前选中的会话"**。
+			//   0.1.5 时这里读 `sessions.current`，而 0.2.0 的会话快照里没有 `current` 了
+			//   （"当前会话"改由 `byId[id].retainedBy.mainView > 0` 表达）⇒ sessionId 恒为 undefined
+			//   ⇒ 面板永远显示「先在左侧选一个会话…」，点会话也没用。
+			//   现在：store 快照只当**候选线索**，真正的会话由 `resolveIndexSession` 解析
+			//   （标题认领 → 缓存 → cwd 覆盖 sr 根 → 新建），见 apply 里的注释。
 			const useSessions = props.useSessions;
-			// ★ hooks 必须无条件调用：两次 useSessions 都留在顶层，条件移进 selector
-			const sessionId = useSessions ? useSessions((s) => s.current) : void 0;
-			const cwd = useSessions ? useSessions((s) => {
-				const id = s.current;
-				if (!id) return void 0;
-				const row = s.byId[id];
-				return row ? row.cwd : void 0;
-			}) : void 0;
+			const useWorkspaces = props.useWorkspaces;
+			// ★ hooks 必须无条件调用：条件只放在"这个 hook 存不存在"上（跨渲染稳定）
+			const sessionsSnap = useSessions ? useSessions((s) => s) : null;
+			const wsSnap = useWorkspaces ? useWorkspaces((s) => s) : null;
+			const sessionRows = React.useMemo(() => rowsFromStore(sessionsSnap), [sessionsSnap]);
+			const wsPaths = React.useMemo(
+				() => ((wsSnap && wsSnap.items) || []).map((w) => w && w.path).filter(Boolean),
+				[wsSnap]
+			);
+			// 索引会话解析结果：`{ sid, cwd, root, srWs, source, ... }`
+			const [idx, setIdx] = React.useState(null);
+			const sessionId = idx && idx.sid ? idx.sid : void 0;
+			const cwd = idx && idx.cwd ? idx.cwd : void 0;
 			const [state, setState] = React.useState({ phase: "idle" });
 			const [q, setQ] = React.useState("");
 			const [notice, setNotice] = React.useState(null);
@@ -4419,17 +4462,43 @@ import { toAbs } from "./pure/path.ts";
 				next(0);
 			};
 
+			/**
+			 * ① 解析索引会话 → ② 扫看板。
+			 * ★ 依赖数组是空的：解析在**面板挂载时做一次**（结果进 localStorage 缓存，
+			 *   下次直接认回来）。跟着会话快照重算会让看板每次有会话更新就重扫一遍。
+			 */
 			React.useEffect(() => {
-				if (!sessionId) { setState({ phase: "nosession" }); return; }
 				let cancelled = false;
 				const ac = new AbortController();
 				setState({ phase: "loading" });
-				loader(sessionId, cwd, ac.signal).then(
-					(data) => { if (!cancelled) setState({ phase: "ready", data }); },
-					(err) => { if (!cancelled) setState({ phase: "error", error: String((err && err.message) || err) }); }
-				);
+				const resolve = props.__resolve;
+				if (typeof resolve !== "function") {
+					setState({ phase: "error", error: "索引会话解析器没挂上（__resolve 缺失）。" });
+					return () => { cancelled = true; ac.abort(); };
+				}
+				Promise.resolve()
+					.then(() => resolve({ rows: sessionRows, wsPaths: wsPaths, signal: ac.signal }))
+					.then((res) => {
+						if (cancelled) return;
+						if (!res || res.ok !== true || !res.sid) {
+							setState({
+								phase: "nosession",
+								error: (res && res.error) || "",
+								note: (res && res.note) || []
+							});
+							return;
+						}
+						setIdx(res);
+						return loader(res.sid, res.cwd, ac.signal, res.extraPaths).then(
+							(data) => { if (!cancelled) setState({ phase: "ready", data: data, session: res }); },
+							(err) => { if (!cancelled) setState({ phase: "error", error: String((err && err.message) || err), session: res }); }
+						);
+					})
+					.then(void 0, (err) => {
+						if (!cancelled) setState({ phase: "error", error: "解析索引会话失败：" + String((err && err.message) || err) });
+					});
 				return () => { cancelled = true; ac.abort(); };
-			}, [sessionId, cwd]);
+			}, []);
 
 			// 进「功能详情」时加载该功能的决策台账（§3.2：从**功能根目录**读）
 			React.useEffect(() => {
@@ -4516,16 +4585,22 @@ import { toAbs } from "./pure/path.ts";
 			]);
 
 			if (state.phase === "nosession") return shell([head("功能看板 · A1"),
-				h("p", { key: "p", style: { color: C.muted } }, "先在左侧选一个会话，工作台才能读到它的工作区。")]);
+				h("p", { key: "p", style: { color: C.bad } }, "工作台没能拿到可用会话（索引会话没解析出来）。"),
+				h("div", { key: "e", style: { color: C.muted, fontSize: "12px", lineHeight: 1.9, marginTop: "8px" } },
+					(state.error ? ["原因：" + state.error] : []).concat(state.note || [])),
+				h("div", { key: "h", style: { color: C.muted, fontSize: "12px", lineHeight: 1.95, marginTop: "10px" } }, [
+					h("div", { key: "a" }, "① 索引会话的取法：缓存 → 标题「策划工作台·索引」→ cwd 覆盖 sr 根 → 新建；都不成才会到这里。"),
+					h("div", { key: "b" }, "② 目录列举限定在会话工作区内（文件读取不受限）——所以索引会话的 cwd 必须覆盖 sr 工作区根。")
+				])]);
 			if (state.phase === "idle" || state.phase === "loading") return shell([head("功能看板 · A1"),
-				h("p", { key: "p", style: { color: C.muted } }, "正在读工作区…")]);
+				h("p", { key: "p", style: { color: C.muted } }, "正在解析索引会话并读工作区…")]);
 			if (state.phase === "error") return shell([head("功能看板 · A1"),
 				h("p", { key: "p", style: { color: C.bad } }, "读取失败：" + state.error),
 				h("div", { key: "h", style: { color: C.muted, fontSize: "12px", lineHeight: 1.95, marginTop: "10px" } }, [
-					h("div", { key: "a" }, "① 面板锚定方式：读 sr 配置的 sr_workspace 字段（绝对路径），不跟当前会话走。"),
-					h("div", { key: "b" }, "② 当前会话工作区：cwd = " + (cwd || "(未解析)")),
-					h("div", { key: "c" }, "③ 常见原因：sr 配置没读到（当前会话工作区里没有 .agents/skills/…），或目标目录不在当前会话工作区内。"),
-					h("div", { key: "d" }, "④ 目录列举限定在工作区内；文件读取不受限。可在 profile 的 cordis.patch.yml 给本插件加 config.configPath 指定绝对配置路径。")
+					h("div", { key: "a" }, "① 面板锚定方式：读 sr 配置的 sr_workspace 字段（绝对路径），不跟当前选中会话走。"),
+					h("div", { key: "b" }, "② 索引会话：" + sessionSourceText(state.session) + "　cwd = " + (cwd || "(未解析)")),
+					h("div", { key: "c" }, "③ 常见原因：sr 配置没读到（候选根里没有 .agents\\skills\\sr-askme\\config.local.json），或锚点不在索引会话的工作区内。"),
+					h("div", { key: "d" }, "④ 目录列举限定在工作区内；文件读取不受限。")
 				])]);
 
 			const d = state.data;
@@ -4661,7 +4736,11 @@ import { toAbs } from "./pure/path.ts";
 					h("div", { key: "b" }, "扫描：" + (d.srWs || SR_WS) + "\\features\\ → **" + d.counts.features + " 个功能**" +
 					" · 配置表 " + d.counts.configs +
 					(d.legacyLeft ? "　｜　旧结构还剩 " + d.legacyLeft + " 个文件（素材，确认后可删）" : "")),
-					h("div", { key: "c" }, "状态派生自定稿头部 doc_type/status，工作台不另存状态；底部 📄 链接打开最终版。")
+					h("div", { key: "c" }, "状态派生自定稿头部 doc_type/status，工作台不另存状态；底部 📄 链接打开最终版。"),
+					h("div", { key: "d" }, "索引会话：" + sessionSourceText(state.session) +
+						"　cwd " + (cwd || "(未解析)") +
+						(state.session && state.session.note && state.session.note.length
+							? "　｜　" + state.session.note.join("；") : ""))
 				])
 			]);
 		}
@@ -4713,7 +4792,7 @@ import { toAbs } from "./pure/path.ts";
 			const configPath = cfg.configPath || cfg.srConfigPath || "";
 			/** DSH 工作区根：会话要建在它下面，才会落进左侧对应的分组而不是「未分组」 */
 			const projectRoot = cfg.projectRoot || "";
-			const loader = (sid, cwd, signal) => loadDashboard(ctx, read, sid, cwd, configPath, signal);
+			const loader = (sid, cwd, signal, extraPaths) => loadDashboard(ctx, read, sid, cwd, configPath, signal, extraPaths);
 			const ledgerLoader = (sid, root, skillsRoot, signal) =>
 				loadLedger(ctx, read, sid, root, skillsRoot, signal);
 			const interfaceLoader = (sid, absPath, signal) =>
@@ -5015,21 +5094,51 @@ import { toAbs } from "./pure/path.ts";
 			 * 的结果原样报出来。**先确认通道，再搭界面。**
 			 */
 			/**
-			 * 当前会话所属的工作区 —— 与 DSH「新会话」按钮同源的逻辑：
-			 *   `workspace.items.find(item => item.sessionIds.includes(sessions.current))?.workspaceId`
-			 * 工作台建的会话必须落进这个工作区，否则会进左侧「未分组」。
+			 * 取「列表型」服务的 snapshot store —— **两个版本都认**：
+			 *   · 0.1.5：服务名 `sessions` / `workspaces`
+			 *   · 0.2.0：同一批服务还在（`dsh-api-*-controller` 的客户端半侧），
+			 *     另外多了 UI 域服务 `uiSession` / `uiWorkspace`（面板 slot 侧用它拿 hook）。
+			 * 两个版本都返回 `{ getSnapshot, subscribe }`，所以判据是"有 list.getSnapshot"。
 			 */
+			const storeOf = (svcName, ownerName) => {
+				const direct = svc(ctx, svcName);
+				if (direct && direct.list && typeof direct.list.getSnapshot === "function") return direct.list;
+				const owner = svc(ctx, ownerName);
+				const inner = owner && owner[svcName];
+				if (inner && inner.list && typeof inner.list.getSnapshot === "function") return inner.list;
+				return null;
+			};
+
+			/**
+			 * 「用户当前选中的会话」。
+			 * ★ **0.2.0 没有 `state.current` 了** —— 官方 `dsh-client-ui-layout` 与
+			 *   `dsh-client-ui-workspace` 一律用 `byId[id].retainedBy.mainView > 0` 算"当前会话"。
+			 *   0.1.5 时代面板读的 `sessions.current` 在 0.2.0 恒为 undefined —— 这正是
+			 *   「面板永远显示'先在左侧选一个会话'」的直接原因（看板自己已不再依赖它，
+			 *   见 `resolveIndexSession`；这里只服务于"工作会话落进哪个工作区分组"）。
+			 */
+			const currentSessionId = () => {
+				const store = storeOf("sessions", "uiSession");
+				if (!store) return "";
+				let snap = null;
+				try { snap = store.getSnapshot(); } catch (e) { return ""; }
+				if (!snap) return "";
+				if (typeof snap.current === "string" && snap.current) return snap.current;   // 0.1.5
+				const byId = snap.byId || {};
+				for (const id of Object.keys(byId)) {
+					const row = byId[id];
+					if (row && row.retainedBy && Number(row.retainedBy.mainView) > 0) return id;
+				}
+				return "";
+			};
+
 			const workspaceInfo = () => {
 				try {
-					const wsvc = svc(ctx, "workspaces");
-					const ssvc = svc(ctx, "sessions");
-					if (!wsvc || !ssvc || !wsvc.list || !ssvc.list) {
-						return { id: "", title: "", path: "", error: "workspaces/sessions 服务不可用" };
-					}
-					const ws = wsvc.list.getSnapshot();
-					const ss = ssvc.list.getSnapshot();
-					const cur = ss && ss.current;
-					if (cur === void 0 || cur === null) return { id: "", title: "", path: "" };
+					const store = storeOf("workspaces", "uiWorkspace");
+					if (!store) return { id: "", title: "", path: "", error: "workspaces 服务不可用" };
+					const ws = store.getSnapshot();
+					const cur = currentSessionId();
+					if (!cur) return { id: "", title: "", path: "" };
 					const hit = (ws.items || []).filter(
 						(it) => it && Array.isArray(it.sessionIds) && it.sessionIds.indexOf(cur) >= 0
 					)[0];
@@ -5044,6 +5153,16 @@ import { toAbs } from "./pure/path.ts";
 			const probe = {
 				presets: () => safeCall("agentPresets.list", () => ctx.remote.agentPresets.list()),
 				commands: (sid) => safeCall("commands.list", () => ctx.remote.commands.list(sid)),
+				/**
+				 * 列会话（0.2.0 仍有 `session/list`；`SessionListRequest` 现在只有可选的 `cursor`）。
+				 * ★ 返回的 `items[].projections.values.title` 就是持久标题（host 把 `title`
+				 *   注册成投影后随列表一起下发）。0.1.5 的 `title` 在行上。
+				 */
+				listSessions: (signal) => safeCall("session.list",
+					() => ctx.remote.session.list({}, signal)),
+				/** 给会话改名 —— 索引会话的「可识别标题」凭据（`{ sessionId, title }`） */
+				renameSession: (sid, title) => safeCall("session.rename",
+					() => ctx.remote.session.rename({ sessionId: sid, title: title })),
 				/** 按路径查/建工作区 —— 已存在时返回 created:false 并给出 workspaceId */
 				ensureWorkspace: (path) => safeCall("workspace.create",
 					() => ctx.remote.workspace.create({ path: path })),
@@ -5086,6 +5205,143 @@ import { toAbs } from "./pure/path.ts";
 				}
 			};
 
+			// ════════════════════════════════════════════════════════════════
+			// 索引会话（工单 32 · 0.2.0 兼容）
+			// ════════════════════════════════════════════════════════════════
+
+			/**
+			 * 本机兜底工作区根。
+			 * ★ 浏览器半侧**收不到**插件 config（开发笔记坑 7），所以 `configPath` / `projectRoot`
+			 *   在浏览器里都是空的 —— 绝对路径只能自己推。候选根（见下）来自
+			 *   ① 工作区列表 ② 每个会话的 cwd ③ 这个兜底。
+			 */
+			const DEFAULT_ROOT = "D:\\TimeMachine";
+			/** 索引会话用的预设（随包分发，见 cordis.patch.yml 的 sr-workbench 行） */
+			const INDEX_PRESET = "sr-workbench";
+
+			/** 上一次用的索引会话（按 sr 根记；隐私模式/无 localStorage 时静默降级成"每次都重新认"）。 */
+			const cacheRead = () => {
+				try {
+					if (typeof localStorage === "undefined" || !localStorage) return null;
+					const raw = localStorage.getItem(indexCacheKey());
+					if (!raw) return null;
+					const v = JSON.parse(raw);
+					return v && typeof v.sid === "string" && v.sid ? v : null;
+				} catch (e) { return null; }
+			};
+			const cacheWrite = (srWs, sid) => {
+				try {
+					if (typeof localStorage === "undefined" || !localStorage) return;
+					localStorage.setItem(indexCacheKey(), JSON.stringify({ srWs: srWs || "", sid: sid }));
+				} catch (e) { /* 无缓存也能用 */ }
+			};
+
+			/** 从配置路径反推 skills 根（形状：`<X>/.agents/skills`） */
+			const skillsRootOf = (p) => String(p).replace(/[\\/]sr-askme[\\/]config\.local\.json$/i, "");
+
+			/**
+			 * 解析「索引会话」—— 面板**不再依赖"用户当前选中的会话"**（ADR 0005 / 工单 07）。
+			 *
+			 * 顺序（每步都有理由，别简化）：
+			 *   1. 先挑一条**任何可用**的会话：只为读 sr 配置 —— `read` 不受工作区限制（坑 3）。
+			 *   2. 按候选根读 `config.local.json`（绝对值优先）→ 拿到绝对锚点 `sr_workspace`。
+			 *   3. 索引会话必须**能列 root 下的目录** —— `workspaceFiles.list` 限定在会话的工作区内（坑 3），
+			 *      所以只从"cwd 覆盖 root"的那几条里认领：缓存 → 标题前缀 → cwd 覆盖 → 当前选中；
+			 *      一条都没有才**新建**（`workspace/create` 幂等 → `session.create({workspaceId})`
+			 *      → `session.rename` 起可识别标题，下次按标题认回来，不会每次刷新都新建）。
+			 *
+			 * 返回：`{ ok, sid, cwd, root, srWs, source, extraPaths, configFile, skillsRoot, configRoot, note }`
+			 */
+			const resolveIndexSession = async (opts) => {
+				const o = opts || {};
+				const signal = o.signal;
+				const note = [];
+				let rows = (o.rows || []).filter((r) => r && r.id);
+				const cached = cacheRead();
+				const storeRowCount = rows.length;
+
+				// 候选根：显式提示 → 工作区列表 → 会话 cwd → 本机兜底
+				const roots = [];
+				if (o.rootHint) roots.push(o.rootHint);
+				for (const p of (o.wsPaths || [])) roots.push(p);
+				for (const r of rows) if (r.cwd) roots.push(r.cwd);
+				roots.push(DEFAULT_ROOT);
+
+				// 0) 客户端 store 空时补一次远程列表（0.2.0 仍有 session/list）
+				let listOk = rows.length > 0;
+				if (rows.length === 0) {
+					const L = await probe.listSessions(signal);
+					if (L.ok) { rows = rowsFromList(L.value); listOk = true; }
+					else note.push("会话列表读取失败：" + humanError(L));
+				}
+
+				// 1) 读配置只需要"一条能读文件的会话"
+				const boot = pickIndexSession(rows, "", { cachedId: cached && cached.sid, allowForeign: true });
+
+				// 2) 读 sr 配置 → 绝对锚点
+				const cands = configPathCandidates(roots);
+				let cfgPath = "";
+				let cfg = null;
+				if (boot) {
+					for (const p of cands) {
+						const text = await readAllText(read, boot.id, p, signal, 200);
+						if (!text) continue;
+						try {
+							const parsed = JSON.parse(text);
+							if (parsed && parsed.sr_workspace) { cfg = parsed; cfgPath = p; break; }
+						} catch (e) { /* 换下一个候选 */ }
+					}
+				}
+				const srWs = cfg ? String(cfg.sr_workspace).replace(/[\\/]+$/, "") : "";
+				const root = srWs || o.rootHint || DEFAULT_ROOT;
+				if (!cfg) note.push("没读到 sr 配置（试过 " + cands.length + " 个候选路径），锚点退回 " + root);
+				if (storeRowCount === 0) note.push("客户端会话快照为空，已走 remote.session.list。");
+
+				// 3) 索引会话：必须是"cwd 覆盖 root"的那一类
+				const able = rows.filter((r) => containsPath(r.cwd, root));
+				const hit = pickIndexSession(able, root, { cachedId: cached && cached.sid });
+				if (hit) {
+					cacheWrite(root, hit.id);
+					return {
+						ok: true, sid: hit.id,
+						cwd: hit.row.cwd || root, root: root, srWs: srWs,
+						source: hit.source, sessionTitle: hit.row.title || "",
+						extraPaths: cfgPath ? [cfgPath] : [],
+						configFile: cfgPath, skillsRoot: cfgPath ? skillsRootOf(cfgPath) : "",
+						configRoot: cfg ? String(cfg.config_root || "").replace(/[\\/]+$/, "") : "",
+						note: note
+					};
+				}
+
+				// 一条都没有 → 新建。★ 列表本身就读不到时**不许建**（不然会攒出一堆空会话）
+				if (!listOk) {
+					return { ok: false, sid: "", error: "读不到会话列表：" + note.join("；"), note: note };
+				}
+				const ws = await probe.ensureWorkspace(root);
+				const wsId = ws.ok && ws.value && ws.value.workspace ? ws.value.workspace.workspaceId : "";
+				if (!ws.ok) note.push("按路径登记工作区失败（改用 cwd 建会话）：" + humanError(ws));
+				// ★ workspaceId 与 cwd **互斥**（host 明确拒绝两者同时给）—— probe.create 内部已分流
+				const cr = await probe.create(wsId, root, INDEX_PRESET);
+				if (!cr.ok) {
+					return { ok: false, sid: "", error: "无法创建索引会话：" + humanError(cr), note: note };
+				}
+				const sid = idText(cr.value && cr.value.sessionId);
+				if (!sid) return { ok: false, sid: "", error: "会话已创建，但拿不到 sessionId。", note: note };
+				const title = indexTitleFor(root);
+				const rn = await probe.renameSession(sid, title);
+				if (!rn.ok) note.push("索引会话建好了但改名失败（下次按 cwd 认回来）：" + humanError(rn));
+				cacheWrite(root, sid);
+				return {
+					ok: true, sid: sid, cwd: root, root: root, srWs: srWs,
+					source: "created", sessionTitle: rn.ok ? title : "",
+					extraPaths: cfgPath ? [cfgPath] : [],
+					configFile: cfgPath, skillsRoot: cfgPath ? skillsRootOf(cfgPath) : "",
+					configRoot: cfg ? String(cfg.config_root || "").replace(/[\\/]+$/, "") : "",
+					note: note,
+					createdWorkspace: !!(ws.ok && ws.value && ws.value.created)
+				};
+			};
+
 			function PanelBound(props) {
 				return h(PanelErrorBoundary, null,
 					h(Panel, Object.assign({}, props, {
@@ -5093,6 +5349,7 @@ import { toAbs } from "./pure/path.ts";
 						__fix: fixRunner,
 						__diagnose: diagnose, __probe: probe, __projectRoot: projectRoot,
 						__interfaces: interfaceLoader, __index: indexLoader,
+						__resolve: resolveIndexSession,
 						__refreshIndex: refreshIndex, __readText: readTextFile,
 						__pickDir: probe.pickDirectory,
 						__importDocs: importOldDocs, __addManual: addManualNote,
