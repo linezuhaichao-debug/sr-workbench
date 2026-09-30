@@ -11,9 +11,11 @@ import path from "node:path";
 import test from "node:test";
 
 import { CONFIG_DIR, loadDashboard, SR_WS } from "../src/load/dashboard.ts";
+import { loadFeatureDetail } from "../src/load/feature.ts";
 import { loadFinal, loadIndex, loadInterface } from "../src/load/final.ts";
 import { loadLedger } from "../src/load/ledger.ts";
 import { readAllText, readHead } from "../src/load/read.ts";
+import { ledgerOf } from "../src/pure/ledger.ts";
 import { FEATURE_ROOT, FINAL_GDD, SKILLS_ROOT, SR_CONFIG, WORKSPACE, requireRealData, testPort } from "./paths.ts";
 
 requireRealData();
@@ -73,6 +75,59 @@ test("决策台账：真实功能根上的 4 份决策 + 8 行校准 + 1 份交�
 	assert.equal(L.records[0].file, "decision_联盟悬赏_20260929.json");
 	assert.equal(L.records[0].issues.length, 0);
 	assert.equal(L.records[1].issues.length, 3, "这份真实记录确实不合规（多出 schema 未声明字段）");
+});
+
+test("★ 工单 17 的能力进面板：真实功能的字段覆盖 = 79 个键 / 悬空 0（决策页签显示的就是它）", async () => {
+	const port = testPort();
+	const L = await loadLedger(port, { root: FEATURE_ROOT, skillsRoot: SKILLS_ROOT, signal });
+	// ★ 覆盖检查**不在加载层做**：它是派生期的事（`buildLedger` 组装台账时顺手跑，
+	//   源就在那条链上），结论挂在 `fieldCheck`。面板的"决策"页签显示的就是它。
+	const dl = ledgerOf(L)!;
+	const cov = dl.fieldCheck!;
+	assert.ok(cov, "设计台账派生必须带上 fieldCheck");
+	assert.equal(cov.distinct, 79);
+	assert.equal(cov.checked, 211);
+	assert.deepEqual(cov.dangling, []);
+	assert.deepEqual(cov.pending, []);
+	assert.equal(cov.ok, true);
+	assert.deepEqual(cov.issues, []);
+	// 报错时要能指回**哪个文件**里的哪个键（注入一个上游新字段）
+	const doc = JSON.parse(JSON.stringify(L.records[3].doc));
+	doc.decision_result.brand_new_field_from_upstream = "上游新增的一类决定";
+	const cov2 = ledgerOf({
+		records: L.records.slice(0, 3).concat([{ file: L.records[3].file, doc: doc, issues: [] }]),
+		calibration: L.calibration, handoffs: L.handoffs,
+	})!.fieldCheck!;
+	assert.equal(cov2.ok, false);
+	assert.deepEqual(cov2.dangling, [{ key: "decision_result.brand_new_field_from_upstream", where: "decisions/" + L.records[3].file }]);
+	assert.equal(cov2.issues[0].level, "error");
+	assert.ok(cov2.issues[0].msg.includes("fieldclass.ts"), "报错要指出该去哪儿补归类表");
+});
+
+test("★ 工单 12：功能详情的产物清单 + 三阶段 + 定稿有效性 + V 校验清单（真实数据）", async () => {
+	const port = testPort();
+	const d = await loadFeatureDetail(port, { root: FEATURE_ROOT, signal });
+	assert.equal(path.normalize(d.root), FEATURE_ROOT);
+	assert.equal(d.artifacts.total, 24, "联盟悬赏磁盘上 24 个文件（Get-ChildItem -Recurse 实测）");
+	assert.deepEqual(d.artifacts.counts, { in: 0, out: 18, trace: 6, other: 0 });
+	assert.deepEqual(d.stage.stages.map((s: any) => [s.label, s.done]), [
+		["阶段一 · 头脑风暴", true], ["阶段二 · 文档生成", true], ["阶段三 · 定稿修订", true],
+	]);
+	// "现在能用吗"：两份 active 并存 ⇒ V1 error
+	assert.equal(d.finalCheck.current, "联盟悬赏_20260923_定稿.md");
+	assert.equal(d.finalCheck.actives.length, 2);
+	assert.deepEqual(d.finalCheck.issues.map((i: any) => i.code), ["V1"]);
+	// V 校验清单（工单 30 的能力首次进面板）
+	assert.deepEqual(d.checklist.issues.map((i: any) => [i.code, i.level]), [
+		["V1", "error"], ["V3", "error"], ["V11", "warn"], ["V5", "info"],
+	]);
+	// 降级如实声明（DSH 的列举通道不给 mtime ⇒ V11 只判一半）
+	assert.ok(d.notes.some((n: string) => /V11 降级/.test(n)));
+	// 没有定稿的功能不假装有结论
+	const none = await loadFeatureDetail(testPort(), { root: path.join(WORKSPACE, "features", "英雄圣物"), signal });
+	assert.equal(none.finalCheck.current, null);
+	assert.deepEqual(none.checklist.issues, []);
+	assert.equal(none.artifacts.total, 5);
 });
 
 test("定稿：读真实定稿并附上路径/目录/文件名；缺文件给可读错误", async () => {

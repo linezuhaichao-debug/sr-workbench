@@ -18,11 +18,18 @@ import * as React from "react";
 
 // ★ 工单 32 · 面板接线：`src/client.js` 不再保留内联副本，改为直接用 `src/pure/` 那份
 //   （测试覆盖的就是它）。接线是**一次一个模块**做的，每步都过 `npm run build:safe`。
-//   已接：path（toAbs）· topic（topicOf / isNoise / dateOf）· mdspec（parseMdSections / classifyHeading / mdSpecOf）· sessionpick（索引会话选择，0.2.0 兼容）
+//   已接：path（toAbs）· topic（topicOf / isNoise / dateOf）· mdspec（parseMdSections / classifyHeading / mdSpecOf）· sessionpick（索引会话选择，0.2.0 兼容）· ledger（ledgerOf：设计台账派生 + 工单 17 的字段覆盖检查，工单 12 同批接线）
 import { toAbs } from "./pure/path.ts";
 import { topicOf, isNoise, dateOf } from "./pure/topic.ts";
 // mdspec：这一刀**带行为修复**——模块版 mdSpecOf 认 Windows 反斜杠（内联版只按 / 切）
 import { parseMdSections, classifyHeading, mdSpecOf } from "./pure/mdspec.ts";
+// 工单 12：功能详情的产物清单 / 三阶段 / 定稿有效性 / V 校验清单 —— 加载器走 `src/load/`（只吃 port），
+//   桶分组与三阶段在 `src/pure/artifacts.ts`（测试覆盖的就是它，**这里不写副本**）。
+import { loadFeatureDetail } from "./load/feature.ts";
+// ★ 工单 32（接线）：设计台账派生（含工单 17 的**字段覆盖检查** `fieldCheck`）改用模块那一份。
+//   原内联副本与模块版的差异**只有工单 17 加的那几行**（covSources / fieldCheck / notes），
+//   于是面板上的 `fieldCheck` 一直是 undefined —— "悬空即报错"在面板里根本看不见。
+import { ledgerOf } from "./pure/ledger.ts";
 import {
 	configPathCandidates,
 	containsPath,
@@ -445,185 +452,11 @@ import {
 			};
 		}
 
-		// ── 设计台账派生（设计 §7）──────────────────────────────────────
-		//   从**已有的结构化源**派生可读台账 —— 不新增文件、零 skill 改动：
-		//     · decision_result.calibrations[]     Gate 前迭代的权威汇总（含事后补录）
-		//     · decision_result.post_gate_fixes[]  定稿门之后的修改
-		//     · decision_result.diagram_swap       图替换
-		//     · decision_result.conditions_completed / remaining_items
-		//     · evidence/calibration_*.jsonl       实时留痕
-		//   ★ 实测教训：两个源**都不能少** —— decision_联盟悬赏_20260921.json 汇总了
-		//     round 12–17、19，**唯独漏了 18**；round 18 只在 calibration jsonl 里。
-		//     只读 decision 就会丢掉那一次"改回"的结论（收口条款并非万无一失）。
-		//   纯函数：输入已读到的文本，输出台账条目，不碰 IO。
-		function stageOfGate(gate) {
-			const g = String(gate || "");
-			if (/设计核|交接门|概念|设计稿迭代/.test(g)) return 1;
-			if (/gdd-fix|修订门|定稿修订|定稿门后/i.test(g)) return 3;
-			if (/成稿门|定稿门|成稿|定稿/.test(g)) return 2;
-			return 2;
-		}
-		/** 没有 gate 字段时，用 decision_type 判阶段 */
-		function stageOfDecision(dt) {
-			const t = String(dt || "");
-			// ★ 阶段一（头脑风暴）：设计核 / 概念 / 信息类，**外加 sr-analysis 的两道门** ——
-			//   `validation`（报告门）与 `scope_gate`（范围门）。实测这两个原来被错归到阶段二，
-			//   于是神话宝库、诸神降临的头脑风暴阶段全空。
-			if (/concept|prototype|idea|information|validation|scope_gate/.test(t)) return 1;
-			return 2;
-		}
-		const LEDGER_STAGES = ["阶段一 · 头脑风暴", "阶段二 · 文档生成", "阶段三 · 定稿修订"];
-
-		function buildLedger(inputs) {
-			const decs = (inputs && inputs.decisions) || [];
-			const cals = (inputs && inputs.calibrations) || [];
-			const hoffs = (inputs && inputs.handoffs) || [];
-			const items = [];
-			const notes = [];
-			const d8 = (s) => String(s || "").slice(0, 10).replace(/-/g, "");
-
-			// ⓪ 交接 JSON（`analysis\sr-gdd-handoff_*.json`）—— **头脑风暴结论的主要载体**
-			//   ★ 2026-09-29 实测漏项：原实现只读 `decisions\`，整个 `analysis\` 没读，
-			//     于是 `calibrated_facts`（活动周期 / 出刀配额 / 奖励结构 / 退盟边界…）
-			//     这些**已经确认下来的设计口径**一条都没进台账，头脑风暴阶段显得极空。
-			for (const h of hoffs) {
-				if (!h) continue;
-				let j = h.doc || null;
-				if (!j && h.text) { try { j = JSON.parse(h.text); } catch (e) { continue; } }
-				if (!j) continue;
-				const date = d8(j.created_at);
-				const ts = String(j.created_at || "");
-				const src = h.name + " · 交接";
-				const cn = j.chosen_nucleus;
-				if (cn && cn.statement) {
-					items.push({ stage: 1, date: date, ts: ts, src: src, text: "设计核：" + cn.statement });
-				}
-				for (const f of (j.calibrated_facts || [])) {
-					if (f) items.push({ stage: 1, date: date, ts: ts, src: src, text: String(f) });
-				}
-				const al = j.assumption_ledger;
-				if (al && Array.isArray(al.closed) && al.closed.length) {
-					items.push({
-						stage: 1, date: date, ts: ts, src: src,
-						text: "已确认假设（" + al.closed.length + " 项）：" + al.closed.join(" / ")
-					});
-				}
-			}
-
-			// ① 决策记录
-			//   ★ 2026-09-29 用户澄清后的取舍 —— **只记"拍板的设计结论"**：
-			//     台账的用途是"让写文档的思考过程可追溯"，**不是"记录所有改动"**。
-			//     所以每条决策只取**一行结论**（决策标题 / 设计核组合）+ **用户迭代时的拍板要点**；
-			//     而 changes[]（agent 的技术改动清单）、post_gate_fix*（改动汇总）、
-			//     conditions_completed / remaining_items / diagram_swap（执行细节）
-			//     **一律不进台账** —— 它们属于审计面，去「决策台账」页签看。
-			for (const d of decs) {
-				if (!d) continue;
-				let j = d.doc || null;                    // 面板路径：调用方已 parse
-				if (!j && d.text) {                       // 离线/测试路径：原始 JSON 文本
-					try { j = JSON.parse(d.text); } catch (e) { notes.push("决策记录解析失败：" + d.name); continue; }
-				}
-				if (!j) continue;
-				const r = (j && j.decision_result) || {};
-				const date = d8(j.updated_at || j.created_at);
-				const ts = String(j.created_at || j.updated_at || "");
-				const stage = r.gate ? stageOfGate(r.gate) : stageOfDecision(j.decision_type);
-
-				// 结论一行：有设计核组合就用它；否则用决策标题（标题本身就是完整一句话）
-				const line = r.combination ? ("选定设计核：" + r.combination) : String(j.title || "").trim();
-				if (line) items.push({ stage: stage, date: date, ts: ts, src: d.name, text: line });
-
-				// ★ 逐条拍板的选择（`settled_choices`）—— **"人拍板结论"最直接的一种形态**。
-				//   2026-09-29 实测漏项：诸神降临的 T1–T7 七条**一条都没进台账**，
-				//   而那正是这个功能最关键的设计口径（命名、奖励角色、概率逻辑归属…）。
-				const sc = r.settled_choices;
-				if (sc && typeof sc === "object") {
-					for (const k in sc) {
-						let v = sc[k];
-						if (v && typeof v === "object") v = v.text || v.note || v.value || "";   // 防 [object Object]
-						if (!v) continue;
-						items.push({ stage: stage, date: date, ts: ts, src: d.name, text: String(v).trim() });
-					}
-				}
-
-				// ★ 门的结果（成稿门 / 交接门）—— "什么时候过了哪道门、走向哪"是思考过程的一部分
-				for (const gk of ["gdd_draft_gate", "handoff_gate"]) {
-					const g = r[gk];
-					if (!g || typeof g !== "object") continue;
-					const label = (gk === "gdd_draft_gate") ? "成稿门" : "交接门";
-					const what = String(g.chosen || g.result || "").trim();
-					const to = g.handoff_target ? (" → " + String(g.handoff_target).trim()) : "";
-					const why = g.note ? ("（" + String(g.note).trim() + "）") : "";
-					if (what || to || why) {
-						items.push({ stage: stage, date: date, ts: ts, src: d.name, text: label + "：" + what + to + why });
-					}
-				}
-
-				// ★ 决策记录自己的 note（交代"为什么这么选"，如"报告门选 accept_diagnosis 后随即 enter_dissection"）
-				if (typeof r.note === "string" && r.note.trim()) {
-					items.push({ stage: stage, date: date, ts: ts, src: d.name, text: r.note.trim() });
-				}
-
-				// ★ 设计核的证伪条件（属设计约束，不是待办）
-				if (typeof r.kill_signal === "string" && r.kill_signal.trim()) {
-					items.push({ stage: 1, date: date, ts: ts, src: d.name, text: "证伪条件：" + r.kill_signal.trim() });
-				}
-
-				// 门内迭代：用户每一次拍板的要点（"思考过程"的主体）
-				for (const c of (r.calibrations || [])) {
-					if (!c || !c.input) continue;
-					items.push({
-						stage: stageOfGate(c.gate), date: d8(c.ts), ts: String(c.ts || ""),
-						src: d.name + " · 迭代", round: c.round, text: c.input
-					});
-				}
-			}
-
-			// ② 校准 jsonl（补 decision 漏汇总的轮次；同 round 以 decision 汇总为准）
-			const seen = new Set(items.filter((i) => i.round !== undefined && i.round !== null).map((i) => String(i.round)));
-			let fromJsonl = 0;
-			for (const c of cals) {
-				let rows = (c && c.rows) || null;         // 面板路径：调用方已 parse
-				if (!rows) {                              // 离线/测试路径：jsonl 原文
-					rows = [];
-					for (const ln of String((c && c.text) || "").split(/\r?\n/)) {
-						const s = ln.trim();
-						if (!s || s.charAt(0) !== "{") continue;
-						try { rows.push(JSON.parse(s)); } catch (e) { /* 跳过坏行 */ }
-					}
-				}
-				for (const o of rows) {
-					if (!o || !o.input) continue;
-					const rk = String(o.round);
-					if (seen.has(rk)) continue;
-					seen.add(rk);
-					fromJsonl++;
-					items.push({
-						stage: stageOfGate(o.gate), date: d8(o.ts), ts: String(o.ts || ""),
-						src: c.name, round: o.round, text: o.input
-					});
-				}
-			}
-
-			// ③ 组装：阶段 → 日期（阶段内按时间升序）
-			const stages = [];
-			for (let s = 1; s <= 3; s++) {
-				const mine = items.filter((i) => i.stage === s).sort((a, b) => (String(a.ts) < String(b.ts) ? -1 : 1));
-				const byDate = new Map();
-				for (const it of mine) {
-					if (!byDate.has(it.date)) byDate.set(it.date, []);
-					byDate.get(it.date).push(it);
-				}
-				stages.push({
-					id: s, name: LEDGER_STAGES[s - 1], count: mine.length,
-					days: Array.from(byDate.entries()).map((kv) => ({ date: kv[0], items: kv[1] }))
-				});
-			}
-			return {
-				stages: stages, total: items.length, notes: notes,
-				stats: { fromDecision: items.length - fromJsonl, fromJsonl: fromJsonl }
-			};
-		}
+		// ── 设计台账派生（设计 §7）：**实现已接到 `src/pure/ledger.ts`**（工单 32 方向）─────
+		//   这里原来有一份内联副本（stageOfGate / stageOfDecision / buildLedger）；
+		//   实测它与模块版的差异**只有工单 17 加的那几行**（covSources / fieldCheck / notes），
+		//   于是面板上的 `fieldCheck` 一直是 undefined —— 字段覆盖检查在面板里根本看不见。
+		//   现在改为 import 模块那一份：面板跑的就是 `npm test` 覆盖的实现。
 
 		// ── 定稿结构解析（设计 §6.2 大纲树 / §6.3 条目引用的基础）──────────
 		//   纯函数。产出：章 → 组 → 条目行，**每个都带 1-based 行号**（与编辑器一致），
@@ -902,6 +735,59 @@ import {
 		}
 
 		/**
+		 * 列一层目录的**原始条目**（文件与子目录都要）。
+		 * ★ 工单 12 新增：产物清单必须同时看到"文件"与"子目录"（`gdd\UI\`、`evidence\frames\`），
+		 *   而 listDir / listDirs 各自只取一半。条目形状照 `WorkspacePort` 的 `ListResult`。
+		 */
+		async function listEntries(ctx, sid, absPath, signal) {
+			const ns = (ctx && ctx.remote) || {};
+			const norm = (v) => {
+				const e = (v && (v.entries || v.children || v.items)) || [];
+				return {
+					entries: e.map((x) => {
+						const k = x && (x.type || x.kind);
+						return { name: x && x.name, type: k === "directory" ? "directory" : (k === undefined ? "unknown" : k) };
+					}).filter((x) => typeof x.name === "string" && x.name.length > 0),
+					truncated: !!(v && v.truncated)
+				};
+			};
+			if (ns.workspaceFiles && typeof ns.workspaceFiles.list === "function") {
+				try {
+					const r = await ns.workspaceFiles.list(sid, absPath, signal);
+					if (r && r.ok === true) return norm(r.value);
+				} catch (e) { /* 落到通道② */ }
+			}
+			if (ns.workspace && typeof ns.workspace.list === "function") {
+				try {
+					const r = await ns.workspace.list(absPath, signal);
+					if (r && r.ok === true) return norm(r.value);
+				} catch (e) { /* 继续 */ }
+			}
+			// ★ 不吞错：载入层的 `optional` 列举会自己接住它（功能目录缺桶是常态）
+			throw new Error("无法列举目录：" + absPath);
+		}
+
+		/**
+		 * 组合根适配：把 ctx 的远程通道包成载入层要的 `WorkspacePort` **文件侧**形状。
+		 * ★ 这是组合根该干的事（`src/client.js` 是唯一知道 ctx 的地方）；载入层因此能
+		 *   与测试用同一个端口跑同一份实现（工单 32 的方向）。
+		 *   指令侧五个方法**不包**：面板的指令出口仍是 `probe` / `remoteOpen`。
+		 */
+		function portOf(ctx, sid, read) {
+			return {
+				listDir: (absPath, signal) => listEntries(ctx, sid, absPath, signal),
+				readText: async (path, range, signal) => {
+					const r = await read(sid, path, range, signal);
+					if (!r || r.ok !== true) {
+						const e = r && r.error;
+						throw new Error("读不到文件：" + ((e && (e.message || e.code)) || path));
+					}
+					return r.value;
+				}
+			};
+		}
+
+		/**
 		 * 目录列举：两条通道都试。
 		 *   ① workspaceFiles.list(sessionId, path) —— 会话端口，**仅当该目录在会话工作区内**才可列
 		 *   ② workspace.list(path) —— 工作区无关端口（若部署提供）
@@ -1048,6 +934,10 @@ import {
 				if (text) handoffs.push({ name: n, text: text });
 			}
 
+			// ★ 字段覆盖检查（工单 17）**不在这一层做**：它是**派生期**的事 ——
+			//   `ledgerOf(L)` → `buildLedger(...)` 组装台账时顺手跑（源就在那条链上），
+			//   结论在 `buildLedger(...).fieldCheck`（= `checkFieldCoverage` 的返回值本身）。
+			//   ★ 这里再跑一遍就是第二份实现；工单 32 的方向正相反（面板跑被测试覆盖的那一份）。
 			return {
 				records: records, schema: schema, schemaOk: !!schema,
 				calibration: calibration, calFiles: calFiles,
@@ -1055,31 +945,7 @@ import {
 			};
 		}
 
-		/**
-		 * 从 loadLedger 的产物派生设计台账（设计 §7）。
-		 *
-		 * ★ 刻意放在**渲染期**算，而不是加载期：
-		 *   ① 加载期算的话，`ledger` 这坨 state 就把"当时的派生结果"冻住了——
-		 *      代码热更新后，state 还是旧结构（没有新字段），于是界面上明明有数据却显示"台账为空"；
-		 *   ② 渲染期算则数据一变就重算，不依赖"加载那一刻的代码版本"。
-		 *   纯函数、零 IO，代价可忽略。
-		 */
-		function ledgerOf(L) {
-			if (!L || !L.records) return null;
-			if (L.error) {
-				return { error: L.error, stages: [], total: 0, notes: [], stats: { fromDecision: 0, fromJsonl: 0 } };
-			}
-			const calByFile = new Map();
-			for (const c of (L.calibration || [])) {
-				if (!calByFile.has(c.file)) calByFile.set(c.file, []);
-				calByFile.get(c.file).push(c.row);
-			}
-			return buildLedger({
-				decisions: L.records.map((r) => ({ name: r.file, doc: r.doc })),
-				calibrations: Array.from(calByFile.entries()).map((kv) => ({ name: kv[0], rows: kv[1] })),
-				handoffs: L.handoffs || []
-			});
-		}
+		/** 从 loadLedger 的产物派生设计台账 —— 实现与理由见 `src/pure/ledger.ts` 的 `ledgerOf`（工单 32 接线） */
 
 		/** 扫工作区 → 功能列表 */
 		async function loadDashboard(ctx, read, sid, cwd, configPath, signal, extraPaths) {
@@ -1513,7 +1379,7 @@ import {
 						color: soon ? "#c0c0c0" : (on ? "#fff" : C.ink),
 						borderRadius: "4px", cursor: soon ? "default" : "pointer"
 					}
-				}, it.label + (soon ? " · 待做" : ""));
+				}, it.label + (soon ? " · 未实现" : ""));
 			}));
 		}
 
@@ -2156,8 +2022,37 @@ import {
 			const bad = L.records.filter((r) => r.issues.length > 0 || r.parseErr);
 			const sel = open === null ? null : L.records[open];
 			const d = sel && sel.doc;
+			const cov = props.coverage || null;
 
 			return h("div", null, [
+				// ⓪ ★ 工单 17：字段覆盖检查（"上游新增字段时不会漏掉一类决定"）
+				//   —— 归类表在 `src/pure/fieldclass.ts`（85 行数据），这里只显示它的结论。
+				cov ? h("div", {
+					key: "cov",
+					style: {
+						border: "1px solid " + C.faint,
+						borderLeft: "3px solid " + (cov.ok ? C.ok : C.bad),
+						background: cov.ok ? "#f0fdf4" : "#fef2f2",
+						borderRadius: "4px", padding: "10px 12px", marginBottom: "12px"
+					}
+				}, [
+					h("div", { key: "t", style: { fontSize: "12px" } }, [
+						h("b", { key: "a" }, "字段覆盖检查"),
+						h("span", { key: "b", style: { color: C.muted } },
+							"　" + L.records.length + " 份决策 + " + L.calibration.length + " 行校准 + " + L.handoffs.length + " 份交接" +
+							"　检查 " + cov.checked + " 个键实例 / " + cov.distinct + " 个不同键" +
+							"　悬空 " + cov.dangling.length + " · 待判定 " + cov.pending.length)
+					]),
+					cov.ok
+						? h("div", { key: "ok", style: { fontSize: "11px", color: C.ok, marginTop: "4px" } },
+							"每个键都已显式归类（收 / 不收 / 容器）—— 上游新增字段而没归类时会在这里**报 error**并指出是哪个文件。")
+						: h("div", { key: "bad", style: { marginTop: "6px" } }, cov.issues.map((it, i) => h("div", {
+							key: i, style: { fontSize: "11px", color: C.bad }
+						}, "[" + it.code + "/" + it.level + "] " + it.msg + (it.files && it.files.length ? "　→ " + it.files.join("、") : "")))),
+					h("div", { key: "cls", style: { fontSize: "10px", color: C.muted, fontFamily: "monospace", marginTop: "4px" } },
+						"归类分布 " + Object.keys(cov.classes).sort().map((k) => k + " " + cov.classes[k]).join(" · "))
+				]) : null,
+
 				// ① 契约校验
 				h("div", {
 					key: "v",
@@ -2665,6 +2560,239 @@ import {
 				h("div", { key: "foot", style: { marginTop: "12px", fontSize: "11px", color: C.muted, lineHeight: 1.85 } }, [
 					h("div", { key: "a" }, "产物来自工作区实时读取；类型由文件名派生，不另存索引。"),
 					h("div", { key: "b" }, "点文件名用系统默认程序打开。")
+				])
+			]);
+		}
+
+		// ════════════════════════════════════════════════════════════════
+		// 工单 12 · 功能详情：产物按**桶**分组（进 / 出 / 过程留痕）+ 三阶段 + "现在能用吗"
+		//   ★ 分组、gdd 细分、三阶段都由 `src/pure/artifacts.ts` 算好（测试覆盖的就是它）。
+		//     这里只渲染，**不在这里判"什么文件属于哪个桶"**。
+		// ════════════════════════════════════════════════════════════════
+
+		/** 定稿有效性 / V 校验清单的严重程度 → 颜色与词 */
+		const CHECK_TONE = { error: { c: C.bad, t: "error" }, warn: { c: C.warn, t: "warn" }, info: { c: C.muted, t: "info" } };
+
+		/** 定稿有效性的**一句话结论**（"现在能用吗"） */
+		function finalVerdict(finalCheck) {
+			if (!finalCheck) return { text: "（还没读）", tone: null };
+			if (!finalCheck.all || !finalCheck.all.length) return { text: "没有定稿 —— 这个功能还交不了程序", tone: "warn" };
+			if ((finalCheck.issues || []).some((i) => i.level === "error")) {
+				return { text: "有阻断问题：" + finalCheck.issues.filter((i) => i.level === "error").map((i) => i.code).join(" / "), tone: "bad" };
+			}
+			if (finalCheck.currentFrom === "date") return { text: "没有 active 定稿（按日期取最新：" + finalCheck.current + "）", tone: "warn" };
+			return { text: "可用：" + finalCheck.current + "（active）", tone: "ok" };
+		}
+
+		/**
+		 * 功能详情 · 状态块：三阶段进度 + "现在能用吗" + V 校验清单。
+		 * 放在**所有页签之上**，所以切到哪一屏都能看到（工单 12 的"详情页要能看到阶段进度与定稿有效性"）。
+		 */
+		function DetailStatus(props) {
+			const d = props.detail;
+			const onOpenFix = props.onOpenFix;
+			if (!d) return h("div", { style: { fontSize: "12px", color: C.muted, marginBottom: "10px" } }, "正在读产物清单与校验清单…");
+			if (d.error) return h("div", {
+				style: {
+					fontSize: "12px", color: C.bad, marginBottom: "10px", padding: "8px 11px",
+					border: "1px solid " + C.faint, borderLeft: "3px solid " + C.bad, background: "#fef2f2", borderRadius: "4px"
+				}
+			}, d.error);
+
+			const art = d.artifacts || { counts: {}, total: 0 };
+			const cl = d.checklist || { issues: [], counts: {} };
+			const v = finalVerdict(d.finalCheck);
+			const tone = v.tone === "bad" ? C.bad : v.tone === "warn" ? C.warn : v.tone === "ok" ? C.ok : C.muted;
+
+			return h("div", { style: { marginBottom: "12px" } }, [
+				// ① 三阶段进度
+				h("div", {
+					key: "stage",
+					style: { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "9px" }
+				}, (d.stage ? d.stage.stages : []).map((s) => h("div", {
+					key: s.key,
+					style: {
+						border: "1px solid " + (s.done ? C.ok : C.soft), borderLeft: "3px solid " + (s.done ? C.ok : C.soft),
+						background: s.done ? "#f0fdf4" : "#fff", borderRadius: "4px", padding: "5px 10px", minWidth: "150px"
+					}
+				}, [
+					h("div", { key: "l", style: { fontSize: "11px", fontWeight: 600, color: s.done ? C.ok : C.muted } }, (s.done ? "✔ " : "○ ") + s.label),
+					h("div", { key: "e", style: { fontSize: "10px", color: C.muted, fontFamily: "monospace" } }, s.evidence)
+				]))),
+				// 产物一览（进 / 出 / 过程留痕）—— 明细在「产物」页签
+				h("div", { key: "sum", style: { fontSize: "11px", color: C.muted, marginBottom: "9px" } },
+					"产物 " + (art.total || 0) + " 个　" + (art.meanings || []).map((m) => m.label + " " + ((art.counts || {})[m.key] || 0)).join("　")),
+
+				// ② "现在能用吗"（定稿有效性）—— V1 的原始结论
+				h("div", {
+					key: "usable",
+					style: {
+						border: "1px solid " + C.faint, borderLeft: "3px solid " + tone,
+						background: v.tone === "bad" ? "#fef2f2" : v.tone === "ok" ? "#f0fdf4" : "#fffdf7",
+						borderRadius: "4px", padding: "8px 11px", fontSize: "12px", marginBottom: "8px"
+					}
+				}, [
+					h("div", { key: "t" }, [
+						h("b", { key: "a" }, "现在能用吗："),
+						h("span", { key: "b", style: { color: tone, fontWeight: 600 } }, v.text),
+						h("span", { key: "c", style: { color: C.muted } },
+							"　（按" + (d.finalCheck && d.finalCheck.currentFrom === "active" ? "active 标记" : "文件名日期") + "判定）")
+					]),
+					// V1 的三条原始 issue（多份 active / 旧稿未归档 / 无 active）
+					((d.finalCheck && d.finalCheck.issues) || []).map((it, i) => h("div", {
+						key: "i" + i, style: { fontSize: "11px", color: it.level === "error" ? C.bad : C.warn, marginTop: "3px" }
+					}, "[" + it.code + "/" + it.level + "] " + it.msg + (it.files && it.files.length ? "　→ " + it.files.join("、") : "")))
+				]),
+
+				// ③ V 校验清单（工单 30 的能力：V1+V3+V5+V6+V8+V11，带行号）
+				h("div", {
+					key: "checks",
+					style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", overflow: "hidden", marginBottom: "8px" }
+				}, h(Fold, {
+					title: "只读校验清单　error " + ((cl.counts || {}).error || 0) + " · warn " + ((cl.counts || {}).warn || 0) + " · info " + ((cl.counts || {}).info || 0) +
+						"　（V1+V3+V5+V6+V8+V11；V5 是待办计数、V6/V8 干净时不出现在这里）",
+					defaultOpen: !!(cl.counts && (cl.counts.error || cl.counts.warn)),
+					children: h("div", null, (cl.issues || []).length
+						? (cl.issues || []).map((it, i) => {
+							const tt = CHECK_TONE[it.level] || CHECK_TONE.info;
+							return h("div", {
+								key: "ck" + i,
+								style: { display: "flex", gap: "8px", fontSize: "11px", padding: "4px 0", borderTop: i ? "1px solid " + C.faint : "none", alignItems: "baseline" }
+							}, [
+								h("span", {
+									key: "b",
+									style: { fontFamily: "monospace", whiteSpace: "nowrap", border: "1px solid " + C.soft, borderRadius: "3px", padding: "0 5px", color: tt.c }
+								}, it.code + " · " + tt.t),
+								h("span", { key: "m", style: { flex: "1 1 auto", color: it.level === "info" ? C.muted : C.ink } }, it.msg),
+								// 行号：能定位到定稿原文（点它打开定稿）
+								(it.lines && it.lines.length)
+									? h("button", {
+										key: "l", type: "button", onClick: () => onOpenFix && onOpenFix(),
+										title: "点开定稿，按这些行号定位",
+										style: {
+											font: "inherit", fontSize: "10px", fontFamily: "monospace", whiteSpace: "nowrap",
+											border: "1px solid " + C.soft, background: "#fff", borderRadius: "3px",
+											padding: "0 5px", cursor: "pointer", color: C.link
+										}
+									}, "L" + it.lines.join(" · L"))
+									: null
+							]);
+						})
+						: h("div", { style: { fontSize: "11px", color: C.ok } }, "六条校验都没有问题（真实数据上 V6/V8 干净时就是这个样子）。"))
+				}))
+			]);
+		}
+
+		/**
+		 * 功能详情 · 产物（**按桶分组**：进 / 出 / 过程留痕）。
+		 * 每条：细分标签（gdd 内才有）+ 文件名（点开用系统默认程序）+ 规范名 + 定稿结论 + 日期。
+		 * ★ 清单来自 `detail.artifacts`（`src/pure/artifacts.ts` 算的），**与磁盘逐条对得上**。
+		 */
+		function ArtifactBuckets(props) {
+			const f = props.feature;
+			const d = props.detail;
+			const srWs = props.srWs || "";
+			const configRoot = props.configRoot || "";
+			const onOpen = props.onOpen;
+			const [fold, setFold] = React.useState({});
+			if (!d) return h("div", { style: { color: C.muted, fontSize: "12px" } }, "正在读产物清单…");
+			if (d.error) return h("div", { style: { color: C.bad, fontSize: "12px" } }, d.error);
+
+			const art = d.artifacts || {};
+			const groups = art.groups || [];
+			const meanings = art.meanings || [];
+			const configs = (f && f.configs) || [];
+			const absOf = (file) => (f && f.root ? f.root : srWs) + "/" + file.rel;
+
+			const rowOf = (file, i, clickAbs) => h("div", {
+				key: "f" + i,
+				style: { display: "flex", alignItems: "center", gap: "8px", padding: "5px 11px", borderTop: i ? "1px solid " + C.faint : "none" }
+			}, [
+				file.kindLabel
+					? h("span", {
+						key: "b",
+						style: {
+							fontSize: "10px", fontFamily: "monospace", padding: "0 5px", whiteSpace: "nowrap",
+							border: "1px solid " + C.soft, borderRadius: "3px",
+							color: file.kind === "final" ? C.ok : C.muted
+						}
+					}, file.kindLabel)
+					: null,
+				h("button", {
+					key: "n", type: "button",
+					onClick: () => onOpen(clickAbs),
+					title: "点击打开：" + clickAbs,
+					style: {
+						font: "inherit", fontSize: "12px", fontFamily: "monospace", padding: 0, border: "none",
+						background: "none", color: "#3b6ea5", cursor: "pointer", textAlign: "left",
+						overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "1 1 auto"
+					}
+				}, file.rel),
+				file.spec ? h("span", { key: "s", style: { fontSize: "10px", color: C.muted } }, "规范：" + file.spec) : null,
+				file.note ? h("span", {
+					key: "nt", whiteSpace: "nowrap",
+					style: { fontSize: "10px", color: /当前有效/.test(file.note) ? C.ok : C.warn, fontFamily: "monospace" }
+				}, file.note) : null,
+				fmtNameDate(file.name) ? h("span", { key: "d", style: { fontSize: "10px", color: C.muted, fontFamily: "monospace", whiteSpace: "nowrap" } }, fmtNameDate(file.name)) : null
+			]);
+
+			const groupBox = (g) => h("div", {
+				key: g.key,
+				style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", marginBottom: "9px", overflow: "hidden" }
+			}, [
+				h("div", {
+					key: "h",
+					onClick: () => setFold((s) => { const o = {}; for (const k in s) o[k] = s[k]; o[g.key] = !s[g.key]; return o; }),
+					style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 11px", background: C.bg, cursor: "pointer", borderBottom: fold[g.key] ? "none" : "1px solid " + C.faint }
+				}, [
+					h("span", { key: "l", style: { fontSize: "12px", fontWeight: 600 } }, [
+						g.label + "（" + g.count + "）",
+						h("span", { key: "d", style: { fontWeight: 400, fontSize: "11px", color: C.muted, fontFamily: "monospace" } }, g.dir ? "　" + g.dir + "/" : "")
+					]),
+					h("span", { key: "t", style: { fontSize: "10px", color: C.muted, maxWidth: "58%", textAlign: "right" } }, g.note + (fold[g.key] ? "　展开 ▸" : "　收起 ▾"))
+				]),
+				fold[g.key] ? null : (g.count
+					? h("div", { key: "b", style: { padding: "4px 0" } }, g.files.map((x, i) => rowOf(x, i, absOf(x))))
+					: h("div", { key: "e", style: { padding: "7px 11px", fontSize: "11px", color: C.muted } }, "（空）"))
+			]);
+
+			return h("div", null, [
+				h("div", { key: "sum", style: { fontSize: "12px", color: C.muted, marginBottom: "10px" } },
+					"共 " + (art.total || 0) + " 个产物　" + meanings.map((m) => m.label + " " + ((art.counts || {})[m.key] || 0)).join("　")),
+				(art.notes || []).map((t, i) => h("div", {
+					key: "n" + i,
+					style: { border: "1px solid " + C.faint, borderLeft: "3px solid " + C.warn, background: "#fffdf7", borderRadius: "4px", padding: "7px 11px", fontSize: "11px", marginBottom: "8px" }
+				}, "⚠ " + t)),
+				h("div", { key: "hint", style: { fontSize: "11px", color: C.muted, marginBottom: "9px" } },
+					"分组按**子目录**判（桶就是答案）；只有 gdd\\ 内部按文件名再细分一次。清单与磁盘逐条一致 —— 不是白名单过滤出来的。"),
+				...meanings.map((m) => {
+					const mine = groups.filter((g) => g.meaning === m.key);
+					if (!mine.length) return null;
+					return h("div", { key: "sec" + m.key, style: { marginBottom: "12px" } }, [
+						h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, marginBottom: "6px" } }, m.label +
+							h("span", { key: "c", style: { fontWeight: 400, color: C.muted } }, "　" + mine.reduce((n, g) => n + g.count, 0) + " 个")),
+						...mine.map(groupBox)
+					]);
+				}),
+				// 配置表：**不在功能目录里**（按主题挂靠）—— 单独一格，别混进上面的清单
+				configs.length ? h("div", {
+					key: "cfg",
+					style: { border: "1px solid " + C.faint, borderLeft: "3px solid " + C.soft, borderRadius: "4px", background: "#fff", padding: "8px 11px", marginBottom: "9px" }
+				}, [
+					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, marginBottom: "4px" } }, "配置表（" + configs.length + "）　按主题挂靠，不在功能目录内"),
+					...configs.map((n, i) => h("div", { key: i, style: { padding: "2px 0" } }, h("button", {
+						type: "button",
+						onClick: () => onOpen((configRoot || srWs) + "/" + n),
+						style: { font: "inherit", fontSize: "12px", fontFamily: "monospace", padding: 0, border: "none", background: "none", color: "#3b6ea5", cursor: "pointer" }
+					}, n)))
+				]) : null,
+				h("div", { key: "old", style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", overflow: "hidden" } }, h(Fold, {
+					title: "按阶段看（旧的读法：概念 / 成稿 / 定稿 / 审查 / 宣讲 / 证据 / 决策）",
+					children: h(ArtifactList, { feature: f, srWs: srWs, configRoot: configRoot, onOpen: onOpen })
+				})),
+				h("div", { key: "foot", style: { marginTop: "12px", fontSize: "11px", color: C.muted, lineHeight: 1.85 } }, [
+					h("div", { key: "a" }, "产物来自工作区实时读取（列目录，不读索引文件）。"),
+					h("div", { key: "b" }, "点一行用系统默认程序打开；失败会依次试「DSH 内置 openFile → 默认应用 → 文件管理器 reveal」并给出诊断。")
 				])
 			]);
 		}
@@ -4234,6 +4362,8 @@ import {
 			const [iface, setIface] = React.useState(null);
 			const [finalDoc, setFinalDoc] = React.useState(null);
 			const [indexData, setIndexData] = React.useState(null);
+			// ★ 工单 12：功能详情的产物清单 / 三阶段 / 定稿有效性 / V 校验清单（进详情时读一次）
+			const [detail, setDetail] = React.useState(null);
 			const loader = props.__loader;
 			const remoteOpen = props.__remoteOpen;
 			const ledgerLoader = props.__ledger;
@@ -4241,6 +4371,7 @@ import {
 			const fixRunner = props.__fix;
 			const interfaceLoader = props.__interfaces;
 			const indexLoader = props.__index;
+			const detailLoader = props.__detail;
 			const diagnose = props.__diagnose;
 			const probe = props.__probe;
 
@@ -4359,6 +4490,30 @@ import {
 					});
 				return () => { cancelled = true; ac.abort(); };
 			}, []);
+
+			/**
+			 * ★ 工单 12：进「功能详情」时读**产物清单 + 校验清单**。
+			 * 一次读，两个页签与状态块共用（不按页签重复扫盘）。
+			 * 与看板的边界：看板只给"卡片级"结论（finalCheck 等）；这里给详情级（逐文件、逐条校验）。
+			 */
+			React.useEffect(() => {
+				if (view !== "detail" || !detailTopic || !sessionId || state.phase !== "ready") { setDetail(null); return; }
+				const d0 = state.data;
+				const feat = (d0.features || []).filter((x) => x.topic === detailTopic)[0];
+				if (!feat || !feat.root) { setDetail({ error: "拿不到功能根目录：详情读不了。" }); return; }
+				let cancelled = false;
+				const ac = new AbortController();
+				setDetail(null);
+				if (typeof detailLoader !== "function") {
+					setDetail({ error: "详情加载器没挂上（__detail 缺失）。" });
+					return () => { cancelled = true; ac.abort(); };
+				}
+				detailLoader(sessionId, feat.root, ac.signal).then(
+					(r) => { if (!cancelled) setDetail(r); },
+					(e) => { if (!cancelled) setDetail({ error: "读产物清单失败：" + String((e && e.message) || e) }); }
+				);
+				return () => { cancelled = true; ac.abort(); };
+			}, [view, detailTopic, sessionId, state.phase]);
 
 			// 进「功能详情」时加载该功能的决策台账（§3.2：从**功能根目录**读）
 			React.useEffect(() => {
@@ -4484,9 +4639,17 @@ import {
 						}, "打开最终版") : null
 					]),
 					h(NoticeBar, { key: "nt", notice: notice }),
+					// ★ 工单 12：状态块放在页签**之上** —— 切到哪一屏都能看到三阶段与"现在能用吗"
+					h(DetailStatus, { key: "st", detail: detail, feature: f, onOpenFix: () => { setDtab("final"); if (f && f.openPath) handleOpen(f); } }),
 					h(TabBar, { key: "dtabs", items: DETAIL_TABS, view: dtab, onPick: setDtab }),
 					dtab === "ledger"
-						? h(DecisionLedger, { key: "lg", ledger: ledger })
+						? h(DecisionLedger, {
+							key: "lg", ledger: ledger,
+							// ★ 工单 17 的能力（字段覆盖检查）：结论来自 `buildLedger(...).fieldCheck`
+							//   —— 就是 `src/pure/fieldclass.ts` 的 `checkFieldCoverage` 的返回值本身，
+							//   面板只显示它，**不重跑一遍**（否则就是第二份实现）。
+							coverage: designLedger ? designLedger.fieldCheck : null
+						})
 						: dtab === "pipeline"
 							? h(PipelinePanel, {
 								key: "pp-" + (f ? f.topic : ""),
@@ -4496,8 +4659,8 @@ import {
 								useSessionPendingInteraction: props.useSessionPendingInteraction
 							})
 							: dtab === "artifacts"
-								? h(ArtifactList, {
-									key: "al", feature: f,
+								? h(ArtifactBuckets, {
+									key: "ab", feature: f, detail: detail,
 									srWs: d.srWs, configRoot: d.configRoot,
 									onOpen: (abs) => handleOpen(null, abs)
 								})
@@ -4659,6 +4822,12 @@ import {
 				loadInterface(read, sid, absPath, signal);
 			/** 定稿工作面（§6.2）：收**绝对路径**（= 功能的 openPath） */
 			const finalLoader = (sid, absPath, signal) => loadFinal(read, sid, absPath, signal);
+			/**
+			 * ★ 工单 12 · 功能详情：产物清单（按桶）+ 三阶段 + 定稿有效性 + V 校验清单。
+			 * 收**功能根目录**（`features\<主题>\`）—— 功能 = 目录，所以不再需要 topicOf 过滤。
+			 * 这里只把 ctx 包成端口（`portOf`），实现全在 `src/load/feature.ts` + `src/pure/artifacts.ts`。
+			 */
+			const detailLoader = (sid, root, signal) => loadFeatureDetail(portOf(ctx, sid, read), { root: root, signal: signal });
 			const indexLoader = (sid, srWs, signal) => loadIndex(read, sid, srWs, signal);
 			/** 按绝对路径读文本（阅读器用） */
 			const readTextFile = (sid, abs) => readAllText(read, sid, abs, void 0, 4000);
@@ -5208,7 +5377,7 @@ import {
 						__loader: loader, __remoteOpen: remoteOpen, __ledger: ledgerLoader, __final: finalLoader,
 						__fix: fixRunner,
 						__diagnose: diagnose, __probe: probe, __projectRoot: projectRoot,
-						__interfaces: interfaceLoader, __index: indexLoader,
+						__interfaces: interfaceLoader, __index: indexLoader, __detail: detailLoader,
 						__resolve: resolveIndexSession,
 						__refreshIndex: refreshIndex, __readText: readTextFile,
 						__pickDir: probe.pickDirectory,

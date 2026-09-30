@@ -70,6 +70,10 @@ export async function loadLedger(port: WorkspacePort, options: LedgerLoadOptions
 		if (text) handoffs.push({ name: n, text: text });
 	}
 
+	// ★ 字段覆盖检查（工单 17）**不在这里做**：它是**派生期**的事，由 `../pure/ledger.ts` 的
+	//   `buildLedger` 在组装台账时顺手跑（`covSources` 就在那条链上，见 pure/ledger.ts:52-197），
+	//   结论挂在 `buildLedger(...).fieldCheck`。这里再做一遍就是**第二份实现**——
+	//   工单 32 要消掉的就是这种东西。
 	return {
 		records: records, schema: schema, schemaOk: !!schema,
 		calibration: calibration, calFiles: calFiles,

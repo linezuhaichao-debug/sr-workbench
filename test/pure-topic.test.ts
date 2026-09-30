@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { artifactBucket, BUCKET_FIELD, DIR_BUCKET } from "../src/pure/buckets.ts";
+import { artifactBucket, BUCKET_FIELD, DIR_BUCKET, GDD_KIND_LABEL, gddKindOf } from "../src/pure/buckets.ts";
 import { dateOf, isNoise, topicOf } from "../src/pure/topic.ts";
 import { WORKSPACE, requireRealData } from "./paths.ts";
 
@@ -77,10 +77,33 @@ test("产物分类：旧结构（文件名前缀）与 gdd\\ 内部细分", () =
 		["联盟悬赏_20260918.md", "draft"],
 		["联盟悬赏_宣讲_20260923.html", "speech"],
 		["联盟悬赏_宣讲_20260923.content.json", "speechSrc"],
+		// ★ 工单 12：定稿的**派生 HTML** 原来是 others（面板上根本看不见），现在有自己的一档
+		["联盟悬赏_20260923_定稿.html", "finalHtml"],
 		["write_CS-20260920-001.py", "others"],
 	];
 	for (const [name, want] of cases) assert.equal(artifactBucket(name), want, name);
 	assert.equal(artifactBucket(""), "others");
+});
+
+test("gdd\\ 细分：gddKindOf 是唯一判据（artifactBucket 与它同源）", () => {
+	// 工单 12 要求的五档：成稿 / 定稿 / 审查 / 修订点 / 定稿 HTML
+	const cases: [string, string][] = [
+		["联盟悬赏_20260918.md", "draft"],
+		["联盟悬赏_20260923_定稿.md", "final"],
+		["联盟悬赏_20260921_定稿_审查.md", "review"],
+		["联盟悬赏_20260921_审查.md", "review"],
+		["联盟悬赏_20260924_修订点.md", "fixpoints"],
+		["联盟悬赏_20260923_定稿.html", "finalHtml"],
+		["联盟悬赏_20260923_定稿.htm", "finalHtml"],
+		["联盟悬赏_宣讲_20260923.html", "speech"],
+		["联盟悬赏_宣讲_20260923.content.json", "speechSrc"],
+		["随便一个.html", "others"],
+		["", "others"],
+	];
+	for (const [name, want] of cases) assert.equal(gddKindOf(name), want, name);
+	// 同源：revised points 在旧的"桶"口径里仍并入 drafts（BUCKET_FIELD.gdd = drafts）
+	assert.equal(artifactBucket("联盟悬赏_20260924_修订点.md"), "gdd");
+	assert.equal(GDD_KIND_LABEL.finalHtml, "定稿 HTML");
 });
 
 test("六个标准子目录 → 桶；桶 → byTopic 字段名", () => {

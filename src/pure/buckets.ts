@@ -46,18 +46,52 @@ const PREFIX_BUCKET = [
 	["readback_", "evidence"], ["decision_", "decisions"],
 	["smoke_", "others"], ["write_CS-", "others"]
 ];
-/** 文件名 → 产物桶。**旧结构用**；新结构的 gdd\ 子目录里也要再细分，所以也会用到 */
-function artifactBucket(name) {
+/**
+ * `gdd\` 内部的细分（工单 12：「gdd\ 内部再按文件名细分一次」）。
+ *
+ * 判据全在**文件名**上——这是**唯一**允许按文件名分的地方，因为 `gdd\` 是一个
+ * 混装目录（成稿 / 定稿 / 审查 / 修订点 / 定稿派生的 HTML）。别的桶一律按目录归类。
+ *
+ * 返回值 → 显示标签：
+ *   final 定稿 · finalHtml 定稿 HTML · review 审查 · fixpoints 修订点 · draft 成稿 · others 其它
+ */
+function gddKindOf(name) {
 	const n = String(name || "");
 	if (!n) return "others";
-	if (/_定稿\.md$/i.test(n)) return "final";
 	if (/_定稿_审查\.md$/i.test(n) || /_审查\.md$/i.test(n)) return "review";
+	if (/_定稿\.md$/i.test(n)) return "final";
+	// ★ 定稿的**派生 HTML**（sr-gdd-html 的产物）：与宣讲 HTML 不是一类，单独一档。
+	//   原实现在这里落到 `others`（面板上根本看不见它）——2026-09-30 实测缺口。
+	if (/_定稿\.html?$/i.test(n)) return "finalHtml";
+	if (/_修订点\.md$/i.test(n)) return "fixpoints";
 	if (/_宣讲_.*\.html$/i.test(n)) return "speech";
 	if (/_宣讲_.*\.content\.json$/i.test(n)) return "speechSrc";   // 派生件，不单独显示
-	if (/_修订点\.md$/i.test(n)) return "gdd";
-	for (const pk of PREFIX_BUCKET) if (n.indexOf(pk[0]) === 0) return pk[1];
 	if (/\.md$/i.test(n)) return "draft";
 	return "others";
 }
 
-export { DIR_BUCKET, BUCKET_FIELD, PREFIX_BUCKET, artifactBucket };
+/** gdd 细分 kind → 面板上的短标签 */
+const GDD_KIND_LABEL = {
+	final: "定稿", finalHtml: "定稿 HTML", review: "审查",
+	fixpoints: "修订点", draft: "成稿", speech: "宣讲", speechSrc: "宣讲源", others: "其它"
+};
+
+/**
+ * 文件名 → 产物桶。**旧结构用**（也用于 gdd\ 内部的细分）。
+ * ★ 与 `gddKindOf` **同源**：先按 gdd 细分判，剩下的才走文件名前缀表 ——
+ *   这样"定稿/审查/宣讲/修订点"的判据全仓库只有一份，不会两处各自漂移。
+ */
+function artifactBucket(name) {
+	const n = String(name || "");
+	if (!n) return "others";
+	const k = gddKindOf(n);
+	if (k === "draft" || k === "others") {
+		for (const pk of PREFIX_BUCKET) if (n.indexOf(pk[0]) === 0) return pk[1];
+		return k;
+	}
+	// 修订点在旧字段口径里并入 drafts（BUCKET_FIELD.gdd = "drafts"）——保持迁移前行为不变
+	if (k === "fixpoints") return "gdd";
+	return k;
+}
+
+export { DIR_BUCKET, BUCKET_FIELD, PREFIX_BUCKET, GDD_KIND_LABEL, artifactBucket, gddKindOf };
