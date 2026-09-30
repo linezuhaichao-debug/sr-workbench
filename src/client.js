@@ -19,7 +19,7 @@ import * as React from "react";
 // ★ 工单 32 · 面板接线：`src/client.js` 不再保留内联副本，改为直接用 `src/pure/` 那份
 //   （测试覆盖的就是它）。接线是**一次一个模块**做的，每步都过 `npm run build:safe`。
 //   已接：path（toAbs）· topic（topicOf / isNoise / dateOf）· mdspec（parseMdSections / classifyHeading / mdSpecOf）· sessionpick（索引会话选择，0.2.0 兼容）· ledger（ledgerOf：设计台账派生 + 工单 17 的字段覆盖检查，工单 12 同批接线）
-import { toAbs } from "./pure/path.ts";
+import { toAbs, featureRootOf } from "./pure/path.ts";
 import { topicOf, isNoise, dateOf } from "./pure/topic.ts";
 // mdspec：这一刀**带行为修复**——模块版 mdSpecOf 认 Windows 反斜杠（内联版只按 / 切）
 import { parseMdSections, classifyHeading, mdSpecOf } from "./pure/mdspec.ts";
@@ -35,10 +35,20 @@ import {
 	containsPath,
 	indexCacheKey,
 	indexTitleFor,
+	mergeRows,
 	pickIndexSession,
+	pickWorkSession,
 	rowsFromList,
-	rowsFromStore
+	rowsFromStore,
+	titleOf,
+	workCacheDrop,
+	workCacheGet,
+	workCacheKey,
+	workCachePut,
+	workTitleFor
 } from "./pure/sessionpick.ts";
+// ★ 工单 15 · 就地改这条：失败 → **可读错误 + 下一步**（只有一份判定，面板不自己写一份 grep）
+import { explainSendFailure, isSessionGone } from "./pure/sendfail.ts";
 // ★ 工单 13/14 · 定稿工作面：解析（finalgdd）· 大纲树数据（finaltree）· 引用图与六类边（refgraph）
 //   · 特殊块切分（split）· 三段式指令文本（instruction）。
 //   这一批**全是 import，不再有内联副本** —— 面板跑的就是 `npm test` 覆盖的那份实现
@@ -1582,13 +1592,38 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 				if (!item || !item.ref || !intent.trim() || !props.onFix) return;
 				setSendMsg({ kind: "pending", text: "正在发给工作会话…" });
 				props.onFix({
-					path: d.path, ref: item.ref, before: item.text, intent: intent.trim(), impact: impactArg
+					path: d.path, ref: item.ref, before: item.text, intent: intent.trim(), impact: impactArg,
+					// ★ 功能根（= 工作会话的 cwd，工单 15）：详情页给的更权威，缺了则由 fixRunner 从路径反推
+					root: props.featureRoot || ""
 				}).then(
 					(r) => setSendMsg(r && r.ok
-						? { kind: "ok", text: "已发进工作会话 —— 去会话里看它改；改完回来点「重读」。" }
-						: { kind: "err", text: (r && r.note) || "发送失败" }),
-					(e) => setSendMsg({ kind: "err", text: String((e && e.message) || e) })
+						? {
+							kind: "ok", text: "已交给工作会话。",
+							sid: r.sid || "", target: r.target || null,
+							healed: !!r.healed, queued: !!r.queued, note: r.note || ""
+						}
+						: {
+							kind: "err",
+							text: (r && (r.message || r.note)) || "发送失败",
+							next: (r && r.next) || "再按一次；仍失败就把这条错误发给开发者。",
+							sid: (r && r.sid) || ""
+						}),
+					(e) => setSendMsg({ kind: "err", text: String((e && e.message) || e), next: "再按一次。" })
 				);
+			};
+			/** 跳到某个会话（DSH 自己的 uiWorkspace.openSession）—— 失败也要说话 */
+			const jump = (sid) => {
+				if (!sid || !props.onOpenSession) {
+					setSendMsg((m) => Object.assign({}, m, { jumpErr: "面板拿不到「跳会话」的通道（onOpenSession 没挂上）。" }));
+					return;
+				}
+				const r = props.onOpenSession(sid);
+				if (r && r.ok === false) {
+					setSendMsg((m) => Object.assign({}, m, {
+						jumpErr: "跳转失败：" + ((r.error && (r.error.message || r.error.code)) || "未知原因") +
+							"　—— 你可以在左侧列表里按标题找到它。"
+					}));
+				}
 			};
 
 			// ── 左栏：大纲树（章 → 组 → 条目，逐级带行号）──────────────────
@@ -1841,13 +1876,49 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 						}
 					}, "发到工作会话")
 				]),
+				// 目标说明：三段式会发给**这个功能的专属工作会话**（cwd = 功能目录，工单 15）
+				item.ref && preview ? h("div", {
+					key: "tg", "data-target": "work-session",
+					style: { fontSize: "10px", color: C.muted, marginTop: "5px", lineHeight: 1.7, userSelect: "text" }
+				}, "发到：本功能的专属工作会话" +
+					(props.featureRoot ? "（cwd " + winPath(props.featureRoot) + "）" : "") +
+					"　—— 不占用你自己的对话；发出去之后这里会给出「跳到那个会话」。") : null,
 				sendMsg ? h("div", {
 					key: "m",
 					style: {
 						fontSize: "11px", marginTop: "6px", lineHeight: 1.7, userSelect: "text",
 						color: sendMsg.kind === "err" ? C.bad : (sendMsg.kind === "ok" ? C.ok : C.muted)
 					}
-				}, sendMsg.text) : null
+				}, [
+					h("div", { key: "t" }, (sendMsg.kind === "ok" ? "✓ " : (sendMsg.kind === "err" ? "✗ " : "")) + sendMsg.text),
+					// 成功：说清发到哪儿了 + 一键跳过去（工单 15 第 5 条）
+					sendMsg.kind === "ok" ? h("div", {
+						key: "d", "data-sent": "ok", style: { color: C.muted, userSelect: "text" }
+					}, [
+						"目标：" + ((sendMsg.target && sendMsg.target.title) || "工作会话") +
+						(sendMsg.sid ? "　会话 " + String(sendMsg.sid).slice(0, 12) + "…" : "") +
+						(sendMsg.target && sendMsg.target.root ? "　cwd " + winPath(sendMsg.target.root) : "") +
+						"　（" + pickSourceText(sendMsg.target && sendMsg.target.source) + "）",
+						sendMsg.healed ? h("div", { key: "h", style: { color: C.warn } },
+							"上一轮记的那条会话已经不在了 —— 已自动重建一条并重发。") : null,
+						sendMsg.queued ? h("div", { key: "q", style: { color: C.warn } },
+							"它正在跑别的活，这条指令排在队列里，等它跑完当前这一轮就会处理。") : null
+					]) : null,
+					// 失败：可读错误 + 下一步（不许静默无反应，工单 15 第 6 条）
+					sendMsg.kind === "err" ? h("div", {
+						key: "n", "data-sent": "fail", style: { color: C.ink }
+					}, "下一步：" + (sendMsg.next || "再按一次。")) : null,
+					// 一键跳到那个会话（成功/失败都能点：失败时去会话里自己发一遍原文）
+					sendMsg.sid && props.onOpenSession ? h("button", {
+						key: "j", type: "button", "data-jump": sendMsg.sid,
+						onClick: () => jump(sendMsg.sid),
+						style: {
+							font: "inherit", fontSize: "11px", padding: "2px 9px", marginTop: "3px",
+							border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer"
+						}
+					}, "跳到那个会话 ›") : null,
+					sendMsg.jumpErr ? h("div", { key: "je", style: { color: C.bad } }, sendMsg.jumpErr) : null
+				]) : null
 			]) : null;
 
 			const body = d.blocks.map((b, i) => h("div", {
@@ -4206,8 +4277,31 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 			return tag + sid + (s.sessionTitle ? "「" + s.sessionTitle + "」" : "");
 		}
 
-		/** 全局面板：A1 功能看板 */
-		function Panel(props) {
+		/**
+		 * **工作会话**的来源（工单 15）—— 与索引会话那套分开写，因为来源不同：
+		 * 工作会话按"每个功能一条"认，认领凭据是标题 `策划工作台·工作（主题）`。
+		 */
+		function pickSourceText(s) {
+			const map = {
+				memory: "这次页面里已经认过它",
+				cache: "上次那条（本地缓存）",
+				title: "按标题「策划工作台·工作」认回",
+				created: "新建（已登记功能工作区并命名）"
+			};
+			return map[s] || String(s || "?");
+		}
+
+		/**
+		 * 显示用路径：混合分隔符统一成 `\`。
+		 * ★ 只改**显示**，不改传给 Remote 的字符串（`workspace.create` / `session.create` 收到的一字不动）——
+		 *   那串路径是工单 12 就存在的既有形状（`D:\…\workspace/features/…`，两种分隔符 Windows 都认），
+		 *   本票不借机改行为。
+		 */
+		function winPath(p) {
+			return String(p === null || p === undefined ? "" : p).replace(/\//g, "\\");
+		}
+
+		/** 全局面板：A1 功能看板 */		function Panel(props) {
 			// ★ 工单 32（0.2.0 兼容）：面板**不再读"用户当前选中的会话"**。
 			//   0.1.5 时这里读 `sessions.current`，而 0.2.0 的会话快照里没有 `current` 了
 			//   （"当前会话"改由 `byId[id].retainedBy.mainView > 0` 表达）⇒ sessionId 恒为 undefined
@@ -4552,7 +4646,15 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 										: dtab === "final"
 											? h(FinalDoc, {
 												key: "fd", doc: finalDoc,
-												onFix: (req) => fixRunner(d && d.srWs, req),
+												// ★ 工单 15：三段式发给**该功能的专属工作会话**
+												//   （cwd = `features\<主题>\`；root 由功能详情给出，最权威）
+												featureRoot: (detail && detail.root) || "",
+												onFix: (req) => fixRunner(d && d.srWs, req, {
+													root: (detail && detail.root) || "",
+													// 会话候选：store 快照带着 cwd / running；空则由组合根补一次 session.list
+													rows: sessionRows
+												}),
+												onOpenSession: (sid) => probe.openSession(sid),
 												// 图片加载失败时退化成「用默认程序打开」——走与产物清单同一条打开链路
 												onOpen: (abs) => handleOpen(null, abs)
 											})
@@ -4713,6 +4815,85 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 			const readTextFile = (sid, abs) => readAllText(read, sid, abs, void 0, 4000);
 
 			/**
+			 * 低层：在 `root` 这个目录上**建一条带可识别标题的会话**（工作区 → 会话 → 改名）。
+			 * ★ 顺序里踩过的坑只留一处（开发笔记坑 8）：`session.create` 的 `workspaceId` 与 `cwd`
+			 *   **互斥** —— 拿不到 workspaceId 时才退回给 cwd（会话会落进「未分组」，但可用）。
+			 */
+			const createSessionAt = async (root, title, preset) => {
+				const note = [];
+				const ws = await probe.ensureWorkspace(root);
+				const wsId = ws.ok && ws.value && ws.value.workspace ? ws.value.workspace.workspaceId : "";
+				if (!ws.ok) note.push("按路径登记工作区失败（改用 cwd 建会话）：" + humanError(ws));
+				const cr = await probe.create(wsId, root, preset || "sr-workbench");
+				if (!cr.ok) return { sid: "", error: humanError(cr), outcome: cr, note: note };
+				const sid = idText(cr.value && cr.value.sessionId);
+				if (!sid) return { sid: "", error: "会话已创建，但拿不到 sessionId。", outcome: cr, note: note };
+				if (title) {
+					const rn = await probe.renameSession(sid, title);
+					if (!rn.ok) note.push("会话建好了但改名失败（下次按缓存认回来）：" + humanError(rn));
+				}
+				return { sid: sid, error: "", outcome: cr, note: note, title: title || "" };
+			};
+
+			/**
+			 * ═══ 该功能的**专属工作会话**（工单 15 · 规格「三层会话」）═══
+			 *
+			 * 与索引会话**分工不同、因此分开**：
+			 *   · 索引会话：cwd = SR workspace 根，只负责扫描看板（`list` 限定在会话工作区内）；
+			 *   · 工作会话：cwd = `features\<主题>\`（功能专属工作区），**面板发出的指令都发给它**
+			 *     —— 这样"干活"不占用户自己的对话（用户故事 23）。
+			 *
+			 * 认领顺序（三家都不是"每次刷新新建一条"，用户故事 27）：
+			 *   内存（同一次页面会话内）→ localStorage 缓存 → **标题认领**（`策划工作台·工作（主题）`）
+			 *   → 都没有才新建（建完一定 `rename`，下次就靠标题认回来）。
+			 * 判定规则全在纯函数 `pickWorkSession` 里（含"绝不认用户的会话"这条纪律）。
+			 */
+			const ensureFeatureWorkSession = async (root, rowsIn, opts) => {
+				const o = opts || {};
+				const note = [];
+				const title = workTitleFor(root);
+				const key = workKey("sr-workbench", root);
+				if (!o.fresh) {
+					const mem = WORK_SESSIONS.get(key);
+					if (mem) return { ok: true, sid: mem, source: "memory", title: title, root: root, running: false, note: note };
+				} else {
+					WORK_SESSIONS.delete(key);
+					workCacheSet(root, null);
+				}
+				// 候选：store 快照先（带着 cwd / running）——
+				// ★ 认不着时再补一次 `remote.session.list`：store 行的 `title` 要等 host 投影下来
+				//   （`SessionSummary.title` 是 "absent until the host projects one"），
+				//   而列表里的标题在 `projections.values.title`。少了这一步，"清掉缓存"之后
+				//   会看不见自己起过名的会话 ⇒ 每次刷新又新建一条（用户故事 27）。
+				let rows = (rowsIn || []).filter((r) => r && r.id && r.id !== o.exclude);
+				const cached = o.fresh ? "" : workCacheGet(workCacheRaw(), root);
+				let hit = pickWorkSession(rows, root, { cachedId: cached });
+				if (!hit) {
+					const L = await probe.listSessions(o.signal);
+					if (L.ok) {
+						rows = mergeRows(rows, rowsFromList(L.value).filter((r) => r.id !== o.exclude));
+						hit = pickWorkSession(rows, root, { cachedId: cached });
+					} else if (rows.length === 0) {
+						note.push("会话列表读取失败：" + humanError(L));
+					}
+				}
+				if (hit) {
+					setWorkSession(key, hit.id);
+					workCacheSet(root, hit.id);
+					return {
+						ok: true, sid: hit.id, source: hit.source, root: root,
+						title: titleOf(hit.row) || title, running: !!hit.row.running, row: hit.row, note: note
+					};
+				}
+				const made = await createSessionAt(root, title, "sr-workbench");
+				for (const n of made.note) note.push(n);
+				if (made.error) return { ok: false, sid: "", error: made.error, outcome: made.outcome, root: root, note: note };
+				setWorkSession(key, made.sid);
+				workCacheSet(root, made.sid);
+				return { ok: true, sid: made.sid, source: "created", root: root, title: made.title, running: false, note: note };
+			};
+
+			/**
 			 * 在（复用的）工作会话里跑一条指令。
 			 * ★ 所有"改文件"的动作都走这里 —— 工作台在 Remote 层没有写能力，
 			 *   只能把意图交给 agent，由它用工具去写。
@@ -4720,6 +4901,9 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 			/**
 			 * 确保有一个可用的「工作会话」（按 preset + 主题缓存复用）。
 			 * ★ 建会话用 workspaceId，**不要再给 cwd** —— host 明确拒绝两者同时给。
+			 * ★ 这一条服务于**不属于任何功能**的入口（资产索引刷新 / 收件箱导入），
+			 *   所以它的 cwd 是 sr 工作区根；**功能里的"就地改这条"走
+			 *   `ensureFeatureWorkSession`**（cwd = 功能目录，工单 15）。
 			 */
 			const ensureWorkSession = async (srWs) => {
 				try {
@@ -4729,14 +4913,19 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 					const key = workKey("sr-workbench", wsId || srWs || "__assets__");
 					const hit = WORK_SESSIONS.get(key) || "";
 					if (hit) return { sid: hit, error: "" };
-					const cr = wsId
-						? await probe.create(wsId, "", "sr-workbench")
-						: await probe.create("", srWs || "", "sr-workbench");
-					if (!cr.ok) return { sid: "", error: "无法创建工作会话：" + humanError(cr) };
-					const sid = idText(cr.value && cr.value.sessionId);
-					if (!sid) return { sid: "", error: "会话已创建，但拿不到 sessionId。" };
-					setWorkSession(key, sid);
-					return { sid: sid, error: "" };
+					if (wsId) {
+						// ★ 给了工作区 id 就**不能**再给 cwd（互斥）；cwd 由工作区自己的 path 决定
+						const cr = await probe.create(wsId, "", "sr-workbench");
+						if (!cr.ok) return { sid: "", error: "无法创建工作会话：" + humanError(cr) };
+						const sid = idText(cr.value && cr.value.sessionId);
+						if (!sid) return { sid: "", error: "会话已创建，但拿不到 sessionId。" };
+						setWorkSession(key, sid);
+						return { sid: sid, error: "" };
+					}
+					const made = await createSessionAt(srWs || "", "", "sr-workbench");
+					if (made.error) return { sid: "", error: made.error };
+					setWorkSession(key, made.sid);
+					return { sid: made.sid, error: "" };
 				} catch (e) {
 					return { sid: "", error: "建会话失败：" + String((e && e.message) || e) };
 				}
@@ -4748,20 +4937,72 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 			 * ★ 面板不写文件 —— 它只把「改哪儿、改成什么」说到 agent 不用再找的程度：
 			 *   带**条目引用**（§5 UI-M1 UE3）+ **现状原文**（行号会漂，原文不会）
 			 *   + **面板扫出的结构引用**（让 agent 少一步搜索）。
-			 * ★ 语义影响仍然交给 sr-gdd-fix 的 D11 影响面闭合 —— 面板不越界。
+			 * ★ 语义影响仍然交给 sr-gdd-fix 的 D11 影响面闭合 —— 面板不越界（文本里写着）。
 			 * ★ 文本由 `buildFixInstruction`（`src/pure/instruction.ts`）拼 —— 与定位卡上
 			 *   **给用户看的那段逐字相同**（工单 14：先看后发，看到的就是要发的）。
+			 * ★ 发到**该功能的专属工作会话**（cwd = `features\<主题>\`，工单 15）：
+			 *   认领 → （会话没了就）自愈重建 → 重发一次；失败一律给「可读错误 + 下一步」。
+			 *
+			 * @param srWs  SR 工作区根（拿不到功能根时的最后兜底）
+			 * @param req   `{ path, ref, before, intent, impact }`
+			 * @param extra `{ root }` 功能根（详情页给的更权威）· `{ rows }` 会话候选
+			 * @returns `{ ok, sid, sent, healed, queued, target, message?, next?, note? }`
 			 */
-			const fixRunner = async (srWs, req) => {
+			const fixRunner = async (srWs, req, extra) => {
+				const c = extra || {};
 				if (!req || !req.path || !req.ref) return { ok: false, note: "缺少定稿路径或条目引用。" };
 				const text = buildFixInstruction({
 					path: req.path, ref: req.ref, before: req.before, intent: req.intent, impact: req.impact
 				});
-				const got = await ensureWorkSession(srWs || "");
-				if (got.error) return { ok: false, note: got.error };
-				const r = await probe.prompt(got.sid, text);
-				if (!r || r.ok !== true) return { ok: false, note: humanError(r) || "发送失败" };
-				return { ok: true, sid: got.sid, sent: text };
+				// 功能根：详情页给的更权威；否则从 `features\<主题>\gdd\…` 反推
+				const root = c.root || featureRootOf(req.path) || srWs || "";
+				const targetOf = (got) => ({
+					root: root, title: (got && got.title) || workTitleFor(root),
+					source: (got && got.source) || "", running: !!(got && got.running)
+				});
+				if (!root) {
+					return {
+						ok: false, sent: text,
+						message: "算不出这条定稿属于哪个功能目录。",
+						next: "从「功能详情 › 定稿」页签进来再发一次（工作会话要建在 `features\\<主题>\\` 下）。",
+						note: "算不出这条定稿属于哪个功能目录。"
+					};
+				}
+				const attempt = async (fresh, exclude) => {
+					const got = await ensureFeatureWorkSession(root, c.rows, {
+						fresh: fresh, exclude: exclude, signal: c.signal
+					});
+					if (!got.ok) return { got: got, r: null };
+					const r = await probe.prompt(got.sid, text);
+					return { got: got, r: r };
+				};
+
+				let a = await attempt(false, "");
+				// ★ 自愈：那条会话**已经不在**（session/not-found）→ 清缓存、重建一条、**重发一次**
+				let healed = false;
+				if (a.got && a.got.ok && a.r && a.r.ok !== true && isSessionGone(a.r)) {
+					a = await attempt(true, a.got.sid);
+					healed = true;
+				}
+				if (!a.got.ok) {
+					const f = explainSendFailure(a.got.outcome || { message: a.got.error });
+					return {
+						ok: false, sid: "", sent: text, target: targetOf(a.got), healed: healed,
+						message: f.message, next: f.next, note: f.message + "　" + f.next
+					};
+				}
+				if (!a.r || a.r.ok !== true) {
+					const f = explainSendFailure(a.r);
+					return {
+						ok: false, sid: a.got.sid, sent: text, target: targetOf(a.got), healed: healed,
+						message: f.message, next: f.next, note: f.message + "　" + f.next
+					};
+				}
+				return {
+					ok: true, sid: a.got.sid, sent: text, healed: healed,
+					queued: !!a.got.running, target: targetOf(a.got),
+					note: "已交给工作会话。" + (a.got.running ? "它正在跑别的活，这条指令排在队列里。" : "")
+				};
 			};
 
 			const runInWorkSession = async (instruction) => {
@@ -5136,6 +5377,31 @@ import { buildFixInstruction } from "./pure/instruction.ts";
 					if (typeof localStorage === "undefined" || !localStorage) return;
 					localStorage.setItem(indexCacheKey(), JSON.stringify({ srWs: srWs || "", sid: sid }));
 				} catch (e) { /* 无缓存也能用 */ }
+			};
+
+			/**
+			 * ═══ 工作会话的缓存（工单 15）═══
+			 * 索引会话一条工作区一个（`sr-wb.index.v1`）；工作会话**一个功能一条**，
+			 * 所以值是一张"功能根 → 会话 id"的表。读/写/删的**判定全在纯函数里**
+			 * （`workCacheGet` / `workCachePut` / `workCacheDrop`，坏 JSON 一律当空表），
+			 * 这里只负责碰 localStorage。
+			 */
+			const workCacheRaw = () => {
+				try {
+					if (typeof localStorage === "undefined" || !localStorage) return null;
+					return localStorage.getItem(workCacheKey());
+				} catch (e) { return null; }
+			};
+			/** 写/删一条（`sid` 传 null = 删掉这个功能的记录，会话失效自愈时用） */
+			const workCacheSet = (root, sid) => {
+				try {
+					if (typeof localStorage === "undefined" || !localStorage) return;
+					const raw = workCacheRaw();
+					const next = sid === null || sid === void 0
+						? workCacheDrop(raw, root)
+						: workCachePut(raw, root, sid);
+					localStorage.setItem(workCacheKey(), next);
+				} catch (e) { /* 无缓存也能用（只是下次多认一次） */ }
 			};
 
 			/** 从配置路径反推 skills 根（形状：`<X>/.agents/skills`） */

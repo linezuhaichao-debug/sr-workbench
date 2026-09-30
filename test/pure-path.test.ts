@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { toAbs } from "../src/pure/path.ts";
+import { featureRootOf, toAbs } from "../src/pure/path.ts";
 
 const CWD = "D:\\TimeMachine";
 
@@ -30,4 +30,22 @@ test("复现用户报的那条：绝对路径不会被二次前缀", () => {
 	const bug = toAbs(CWD, "D:\\TimeMachine\\GameDesignOS\\workspace/proposals/联盟悬赏_20260923_定稿.md");
 	assert.equal(bug.split("D:\\TimeMachine").length, 2, "只应出现一次 D:\\TimeMachine：" + bug);
 	assert.equal(bug.includes("/"), false, "Windows 路径里的 / 应归一成 \\：" + bug);
+});
+
+test("featureRootOf：从定稿路径算出功能根（工作会话的 cwd，工单 15）", () => {
+	const SR = "D:\\TimeMachine\\GameDesignOS\\workspace";
+	const f = SR + "\\features\\联盟悬赏\\gdd\\联盟悬赏_20260923_定稿.md";
+	assert.equal(featureRootOf(f), SR + "\\features\\联盟悬赏");
+	// 分隔符混着来也认（面板给的是绝对路径，历史上出现过混合分隔符）
+	assert.equal(featureRootOf(f.replace(/\\/g, "/")), SR + "\\features\\联盟悬赏");
+	// 不在 gdd 下（例如分析产物）→ 退成它所在目录，不当成功能根
+	assert.equal(featureRootOf(SR + "\\features\\联盟悬赏\\analysis\\拆解.md"), SR + "\\features\\联盟悬赏\\analysis");
+	// 嵌套 gdd 取**最后**一个
+	assert.equal(featureRootOf("D:\\x\\gdd\\a\\gdd\\b.md"), "D:\\x\\gdd\\a");
+	// 目录形态（无扩展名）与空值
+	assert.equal(featureRootOf(SR + "\\features\\联盟悬赏\\gdd\\"), SR + "\\features\\联盟悬赏");
+	assert.equal(featureRootOf(""), "");
+	assert.equal(featureRootOf(null), "");
+	assert.equal(featureRootOf(undefined), "");
+	assert.equal(featureRootOf("b.md"), "");
 });

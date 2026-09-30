@@ -32,6 +32,12 @@ export interface SessionRow {
 	blank?: boolean;
 	/** 是不是"用户当前选中的那条"（0.1.5 的 current / 0.2.0 的 mainView）。 */
 	main?: boolean;
+	/**
+	 * 这条会话**正在跑**（`SessionSummary.running`）。
+	 * 收它是为了"工作会话忙碌时如实说一句"（用户故事 28）：指令走 `mode:"queue"` 会被
+	 * 排进收件箱，不是失败 —— 但面板不能装成"它立刻就开始改了"。
+	 */
+	running?: boolean;
 }
 
 /** 选择结果：挑了谁 + 为什么是它（"为什么"要显示给用户，不许闷着）。 */
@@ -120,6 +126,7 @@ export function rowsFromStore(state: any): SessionRow[] {
 			cwd: typeof r.cwd === "string" ? r.cwd : undefined,
 			updatedAt: num(r.updatedAt),
 			blank: r.blank === true,
+			running: r.running === true,
 			// ★ 0.2.0 的"当前选中"：mainView 保留计数 > 0（layout / ui-workspace 同源口径）
 			main: id === current || !!(r.retainedBy && num(r.retainedBy.mainView) > 0),
 		});
@@ -145,20 +152,39 @@ export function rowsFromList(value: any): SessionRow[] {
 			cwd: typeof it.cwd === "string" ? it.cwd : undefined,
 			updatedAt: num(it.updatedAt),
 			blank: it.blank === true,
+			running: it.running === true,
 			main: false,
 		});
 	}
 	return out;
 }
 
-/** 合并两份候选（同一 id 一拍：**先来的赢**，所以 store 的那份带着 `main` / `displayTitle`）。 */
+/**
+ * 合并两份候选（同一 id 一拍）：**先来的字段优先，先来的空字段由后来的补上**。
+ *
+ * ★ 为什么要"补空"而不是"先来的整条赢"：两份候选来自不同通道，各有各的缺项 ——
+ *   客户端 store 行带着 `main` / `displayTitle` / `running`，但 `title` 要等 host 投影下来
+ *   （`SessionSummary.title`："absent until the host projects one"）；
+ *   `session/list` 的标题在 `projections.values.title` 里，却没有 `main`。
+ *   若整条赢，store 的"没标题"会把列表里的标题**抹掉** ⇒ 标题认领静默失效
+ *   （索引会话还有 cwd 兜底，工作会话就只有标题这一条凭据 ⇒ 每次刷新新建一条，用户故事 27）。
+ */
 export function mergeRows(primary: SessionRow[], extra: SessionRow[]): SessionRow[] {
 	const out: SessionRow[] = [];
-	const seen: Record<string, true> = {};
+	const at: Record<string, number> = {};
+	const fill = (dst: SessionRow, src: SessionRow): SessionRow => {
+		const merged: SessionRow = { id: dst.id };
+		for (const k of ["title", "display", "cwd", "updatedAt", "blank", "main", "running"] as const) {
+			const d = dst[k];
+			const s = src[k];
+			(merged as any)[k] = d === undefined || d === "" || d === null ? s : d;
+		}
+		return merged;
+	};
 	for (const r of (primary || []).concat(extra || [])) {
-		if (!r || !r.id || seen[r.id]) continue;
-		seen[r.id] = true;
-		out.push(r);
+		if (!r || !r.id) continue;
+		if (at[r.id] === undefined) { at[r.id] = out.length; out.push(r); continue; }
+		out[at[r.id]] = fill(out[at[r.id]], r);
 	}
 	return out;
 }
@@ -262,4 +288,118 @@ export function indexCacheKey(): string {
 export function indexTitleFor(srWs: unknown): string {
 	const base = normPath(srWs).split("\\").filter(Boolean).pop() || "";
 	return base ? INDEX_TITLE + "（" + base + "）" : INDEX_TITLE;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 工作会话（工单 15）—— 「该功能的专属工作会话」怎么认、怎么不重复建
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 工作会话的标题（认领凭据）。
+ * ★ 与索引会话（`策划工作台·索引`）**分开**：索引会话的 cwd 是 SR workspace 根、只负责扫描；
+ *   工作会话的 cwd 是 `features\<主题>\`、只负责干活（规格「三层会话」）。
+ */
+export const WORK_TITLE = "策划工作台·工作";
+
+/** 功能主题 = 功能目录名（`features\<主题>\` 的最后一段）。空值一律给空串。 */
+export function featureTopicOf(root: unknown): string {
+	return normPath(root).split("\\").filter(Boolean).pop() || "";
+}
+
+/** 标题是不是本工作台的工作会话（按前缀认领，允许尾部再带说明）。 */
+export function isWorkTitle(t: unknown): boolean {
+	return typeof t === "string" && t.indexOf(WORK_TITLE) === 0;
+}
+
+/** 工作会话该有的标题：`策划工作台·工作（联盟悬赏）`。 */
+export function workTitleFor(root: unknown): string {
+	const topic = featureTopicOf(root);
+	return topic ? WORK_TITLE + "（" + topic + "）" : WORK_TITLE;
+}
+
+/**
+ * 挑一条**该功能的**工作会话。
+ *
+ * 顺序（前一条命中就不再往下走）：
+ *   ① `opts.cachedId` —— 面板上次给这个功能用的那条，**且 cwd 就是功能根**；
+ *   ② 标题认领 —— 标题以 `WORK_TITLE` 开头，**且 cwd 就是功能根**（自己建的会话，清缓存也能认回）；
+ *   ③ 没有 → 返回 null（调用方去建；建完一定 `rename` 成 `workTitleFor(root)`，下次就靠 ② 认回来）。
+ *
+ * ★ 为什么**不**像索引会话那样兜一条"cwd 落在功能根里的任意会话"：
+ *   工作会话会被面板**发指令**（索引会话只被读）。认一条用户自己的会话 = 往用户的对话里插活，
+ *   正是用户故事 23 要避免的（"我的对话不被工作任务的来回打断"）。
+ *   所以这里只认"我们自己的凭据"：缓存里的 id，或我们命名过的标题。
+ * ★ 为什么 cwd 必须**恰好等于**功能根（不是 contains）：工作会话的 cwd = 功能文件夹本身；
+ *   落在别处（比如 SR 根、别的功能）说明它不是这个功能的工作会话。
+ */
+export function pickWorkSession(
+	rows: SessionRow[],
+	featureRoot: unknown,
+	opts?: { cachedId?: string },
+): SessionPick | null {
+	const o = opts || {};
+	const root = normPath(featureRoot);
+	if (root === "") return null;
+	const live = (rows || []).filter((r) => r && r.id && samePath(r.cwd, root));
+	if (live.length === 0) return null;
+
+	// ① 缓存
+	if (o.cachedId) {
+		const hit = live.filter((r) => r.id === o.cachedId)[0];
+		if (hit) return { id: hit.id, source: "cache", row: hit };
+	}
+
+	// ② 标题认领（同 cwd 下可能有多条历史，取最近更新的那条）
+	const named = live.filter((r) => isWorkTitle(titleOf(r)));
+	const best = newest(named);
+	if (best) return { id: best.id, source: "title", row: best };
+	return null;
+}
+
+/**
+ * localStorage 里记"每个功能用哪条工作会话"的键（只在组合根里读写）。
+ * ★ 与索引会话的键分开：索引会话一条工作区一个，工作会话**一个功能一条**，所以值是一张表。
+ */
+export function workCacheKey(): string {
+	return "sr-wb.work.v1";
+}
+
+/** 缓存原文（可能是坏 JSON / 空）→ 表。坏值一律当空表，绝不抛。 */
+function workCacheTable(raw: unknown): Record<string, string> {
+	if (typeof raw !== "string" || raw === "") return {};
+	try {
+		const v = JSON.parse(raw) as Record<string, unknown> | null;
+		if (!v || typeof v !== "object") return {};
+		const out: Record<string, string> = {};
+		for (const k of Object.keys(v)) {
+			const one = v[k];
+			if (typeof one === "string" && one !== "") out[k] = one;
+		}
+		return out;
+	} catch (e) {
+		return {};
+	}
+}
+
+/** 这张表里，这个功能用的是哪条工作会话（没有 → 空串）。 */
+export function workCacheGet(raw: unknown, featureRoot: unknown): string {
+	const root = normPath(featureRoot);
+	if (root === "") return "";
+	return workCacheTable(raw)[root] || "";
+}
+
+/** 写回一条（返回**新的**缓存原文；组合根负责 `setItem`）。 */
+export function workCachePut(raw: unknown, featureRoot: unknown, sid: unknown): string {
+	const root = normPath(featureRoot);
+	const t = workCacheTable(raw);
+	if (root !== "" && typeof sid === "string" && sid !== "") t[root] = sid;
+	return JSON.stringify(t);
+}
+
+/** 删掉一条（会话失效自愈时用；返回新的缓存原文）。 */
+export function workCacheDrop(raw: unknown, featureRoot: unknown): string {
+	const root = normPath(featureRoot);
+	const t = workCacheTable(raw);
+	if (root !== "") delete t[root];
+	return JSON.stringify(t);
 }

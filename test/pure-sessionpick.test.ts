@@ -10,18 +10,27 @@ import test from "node:test";
 
 import {
 	INDEX_TITLE,
+	WORK_TITLE,
 	configPathCandidates,
 	containsPath,
+	featureTopicOf,
 	indexCacheKey,
 	indexTitleFor,
 	isIndexTitle,
+	isWorkTitle,
 	mergeRows,
 	normPath,
 	pickIndexSession,
+	pickWorkSession,
 	rowsFromList,
 	rowsFromStore,
 	samePath,
 	titleOf,
+	workCacheDrop,
+	workCacheGet,
+	workCacheKey,
+	workCachePut,
+	workTitleFor,
 } from "../src/pure/sessionpick.ts";
 import type { SessionRow } from "../src/pure/sessionpick.ts";
 
@@ -102,6 +111,23 @@ test("mergeRows：同 id 先来的赢（store 那份带着 main / displayTitle�
 	assert.deepEqual(m.map((r) => r.id), ["s1", "s2"]);
 	assert.equal(m[0].main, true);
 	assert.equal(m[0].display, "来自 store");
+});
+
+test("mergeRows：先来的**空**字段由后来的补上（store 行没有 title 时不许把列表里的标题抹掉）", () => {
+	// 真实形状：store 行的 title 要等 host 投影（SessionSummary.title 可能是 undefined），
+	// 而 session/list 的标题在 projections.values.title 里 —— 两条是**同一条会话**。
+	const store = [rowsFromStore({ ids: ["s1"], byId: { s1: { cwd: FEATURE, running: true, displayTitle: "联盟悬赏" } } })[0]];
+	const list = rowsFromList({ items: [{ sessionId: "s1", cwd: FEATURE, projections: { values: { title: workTitleFor(FEATURE) } } }] });
+	const m = mergeRows(store, list);
+	assert.equal(m.length, 1);
+	assert.equal(m[0].title, workTitleFor(FEATURE), "标题从列表那份补上");
+	assert.equal(m[0].display, "联盟悬赏", "store 自己的展示名保留");
+	assert.equal(m[0].running, true, "store 的 running 保留");
+	assert.equal(m[0].cwd, FEATURE);
+	// 合并之后，标题认领就能认出它（这正是"清掉缓存也不新建"的前提）
+	const merged = pickWorkSession(m, FEATURE);
+	assert.equal(merged && merged.id, "s1");
+	assert.equal(merged && merged.source, "title");
 });
 
 test("pickIndexSession：① 标题认领优先，cwd 与 sr 根相等者先于祖先目录", () => {
@@ -196,4 +222,103 @@ test("configPathCandidates：每个根一条**绝对**候选，去重，末尾�
 	const c2 = configPathCandidates(["D:\\TimeMachine", "d:/timemachine"]);
 	assert.equal(c2.length, 2, "第一条绝对 + 末尾相对");
 	assert.equal(indexCacheKey(), "sr-wb.index.v1");
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 工作会话（工单 15）：cwd = 功能根、标题认领、缓存、绝不抢用户的会话
+// ════════════════════════════════════════════════════════════════════════════
+
+const FEATURE = SR_ROOT + "\\features\\联盟悬赏";
+const OTHER_FEATURE = SR_ROOT + "\\features\\神话宝库";
+
+test("工作会话标题：带功能主题、与索引会话分得开", () => {
+	assert.equal(featureTopicOf(FEATURE), "联盟悬赏");
+	assert.equal(featureTopicOf(FEATURE + "\\"), "联盟悬赏", "尾部分隔符不算主题");
+	assert.equal(featureTopicOf(""), "");
+	assert.equal(workTitleFor(FEATURE), WORK_TITLE + "（联盟悬赏）");
+	assert.equal(workTitleFor(""), WORK_TITLE);
+	assert.equal(isWorkTitle(WORK_TITLE + "（联盟悬赏）"), true);
+	assert.equal(isWorkTitle(WORK_TITLE), true);
+	assert.equal(isWorkTitle("  " + WORK_TITLE), false, "前面有空格就不算（认领要严）");
+	assert.equal(isWorkTitle(INDEX_TITLE), false, "索引会话不是工作会话");
+	assert.equal(isWorkTitle(undefined), false);
+	// 索引标题的认领不会把工作会话捞进来（两个前缀互不包含）
+	assert.equal(isIndexTitle(workTitleFor(FEATURE)), false);
+});
+
+test("pickWorkSession：① 缓存命中（且 cwd 恰好是功能根）优先于标题", () => {
+	const rows = [
+		row({ id: "named", title: workTitleFor(FEATURE), cwd: FEATURE, updatedAt: 50 }),
+		row({ id: "cached", title: "随便一条", cwd: FEATURE, updatedAt: 1 }),
+	];
+	const hit = pickWorkSession(rows, FEATURE, { cachedId: "cached" });
+	assert.equal(hit && hit.id, "cached");
+	assert.equal(hit && hit.source, "cache");
+});
+
+test("pickWorkSession：② 缓存丢了就按标题认回来（同 cwd 取最近更新的那条）", () => {
+	const rows = [
+		row({ id: "old", title: workTitleFor(FEATURE), cwd: FEATURE, updatedAt: 5 }),
+		row({ id: "new", title: workTitleFor(FEATURE), cwd: FEATURE, updatedAt: 9 }),
+	];
+	const hit = pickWorkSession(rows, FEATURE);
+	assert.equal(hit && hit.id, "new");
+	assert.equal(hit && hit.source, "title");
+});
+
+test("pickWorkSession：③ **绝不**认用户的会话（cwd 对但标题不是我们起的）—— 用户故事 23", () => {
+	const rows = [
+		row({ id: "user", title: "我自己在联盟悬赏目录里的对话", cwd: FEATURE, updatedAt: 999, main: true }),
+		row({ id: "other", title: workTitleFor(OTHER_FEATURE), cwd: OTHER_FEATURE, updatedAt: 100 }),
+	];
+	assert.equal(pickWorkSession(rows, FEATURE), null, "认了它 = 往用户的对话里插活");
+	// 缓存里记的是"用户那条"也不认（缓存只是线索，仍要过标题这一关？不——缓存是我们自己写的凭据）
+	assert.equal(pickWorkSession(rows, FEATURE, { cachedId: "user" })?.id, "user");
+});
+
+test("pickWorkSession：cwd 必须**恰好**是功能根（不是覆盖、不是别的功能）", () => {
+	const rows = [
+		row({ id: "root", title: workTitleFor(SR_ROOT), cwd: SR_ROOT, updatedAt: 9 }),
+		row({ id: "other", title: workTitleFor(OTHER_FEATURE), cwd: OTHER_FEATURE, updatedAt: 9 }),
+		row({ id: "sub", title: workTitleFor(FEATURE), cwd: FEATURE + "\\gdd", updatedAt: 9 }),
+	];
+	assert.equal(pickWorkSession(rows, FEATURE), null);
+	assert.equal(pickWorkSession(rows, SR_ROOT)?.id, "root");
+	// 路径写法不同（正斜杠 / 大小写）仍算同一个根
+	const slash = [row({ id: "s", title: workTitleFor(FEATURE), cwd: FEATURE.replace(/\\/g, "/").toLowerCase(), updatedAt: 1 })];
+	assert.equal(pickWorkSession(slash, FEATURE)?.id, "s");
+});
+
+test("pickWorkSession：空根 / 空候选 → null（调用方据此去建会话）", () => {
+	assert.equal(pickWorkSession([row({ id: "a", cwd: FEATURE })], ""), null);
+	assert.equal(pickWorkSession([], FEATURE), null);
+	assert.equal(pickWorkSession([row({ id: "" })], FEATURE), null);
+});
+
+test("workCache：一个功能一条，坏 JSON 不抛，删掉只删自己那条", () => {
+	assert.equal(workCacheKey(), "sr-wb.work.v1");
+	assert.equal(workCacheGet(null, FEATURE), "", "没有缓存 → 空串");
+	assert.equal(workCacheGet("{坏 json", FEATURE), "", "坏 JSON 当空表，不抛");
+
+	let raw = workCachePut("", FEATURE, "sid-jjc");
+	raw = workCachePut(raw, OTHER_FEATURE, "sid-other");
+	assert.equal(workCacheGet(raw, FEATURE), "sid-jjc");
+	assert.equal(workCacheGet(raw, OTHER_FEATURE), "sid-other");
+	assert.equal(workCacheGet(raw, FEATURE.toUpperCase()), "sid-jjc", "Windows 大小写不敏感");
+	assert.equal(workCacheGet(raw, FEATURE.replace(/\\/g, "/")), "sid-jjc", "分隔符不敏感");
+	assert.equal(workCacheGet(raw, SR_ROOT), "", "别的路径没有条目");
+
+	raw = workCacheDrop(raw, FEATURE);
+	assert.equal(workCacheGet(raw, FEATURE), "");
+	assert.equal(workCacheGet(raw, OTHER_FEATURE), "sid-other", "只删自己那条");
+	// 空值不进表
+	assert.equal(workCacheGet(workCachePut(raw, FEATURE, ""), FEATURE), "");
+	assert.equal(workCacheGet(workCachePut(raw, "", "sid-x"), ""), "");
+});
+
+test("running：会话列表与 store 两种形状都收（忙碌要如实说一句）", () => {
+	const fromList = rowsFromList({ items: [{ sessionId: "s1", cwd: FEATURE, running: true }, { sessionId: "s2", cwd: FEATURE }] });
+	assert.deepEqual(fromList.map((r) => r.running), [true, false]);
+	const fromStore = rowsFromStore({ ids: ["a"], byId: { a: { cwd: FEATURE, running: true } } });
+	assert.equal(fromStore[0].running, true);
 });
