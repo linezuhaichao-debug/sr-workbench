@@ -242,7 +242,7 @@ test("校验清单（真实数据）：V1+V3+V11+V5 四条，V6/V8 不出告警�
 	assert.equal(VCHECK_SPECS.V3.level, "error");
 	assert.equal(VCHECK_SPECS.V5.level, "info");
 	assert.equal(VCHECK_SPECS.V6.level, "error");
-	assert.equal(VCHECK_SPECS.V8.level, "error");
+	assert.equal(VCHECK_SPECS.V8.level, "warn", "2026-09-30 按用户口径从 error 降为 warn：跳号未必致命，重号才是");
 	assert.equal(VCHECK_SPECS.V11.level, "warn");
 	// 每条 issue 都要能回答"凭什么"与"去哪看"：rule 在 checks 里、行号在 issue 上
 	assert.deepEqual(cl.issues[1].lines, [379, 389]);
