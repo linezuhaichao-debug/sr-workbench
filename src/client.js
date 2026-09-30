@@ -76,6 +76,14 @@ import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 //   （去缩进后 diff 只剩 `export` 一行），留着它只会让"新加四个入口"变成两份实现。
 import { INTAKE } from "./pure/intake.ts";
 import { loadBrainstorm } from "./load/brainstorm.ts";
+// ★ 工单 24 · 文档生成工作面（「文档生成」那一格从"未实现"变成真的）：
+//   · 两大部分 + 左树的数据 —— `drafttree.ts`（复用 `finalgdd.parseFinalGdd` + `finaltree.buildFinalTree`，
+//     **不另写一份解析**，工单 24 第 5 条）；
+//   · 配置支线走到哪 + 三个动作的三段式指令 —— `draftstep.ts`（口径引自 `gdd-pipeline.md` 与 spec.md:212）；
+//   · 这一屏的加载器 —— `load/draft.ts`（读成稿 + 定稿 §6 + 读回回执，只吃 port）。
+//   ★ 指令组装器与动作表**不在 client.js 里再抄一份**：`INTAKE` 暴露 `buildDraftInstruction` /
+//     `DRAFT_ACTIONS`（`src/pure/intake.ts` 从 `draftstep.ts` re-export），与头脑风暴那条路同口径。
+import { loadDraftWorkface } from "./load/draft.ts";
 // ★ 工单 16 · 自动刷新与版本指纹 —— 判定全在 `src/pure/refresh.ts`（`test/pure-refresh.test.ts` 覆盖的就是它）：
 //   帧怎么认（`parseFrame`）· 盯哪些目标（`watchPlan`）· 这一帧要重读哪些部件（`planReload` / `unionParts`）
 //   · 自激防护（`acceptFrame`）· 指纹与"是不是最新"（`fingerprintOf` / `freshnessOf`）· 去抖合批（`shouldFlush`）
@@ -947,13 +955,13 @@ import {
 		 * ★ 为什么不是"详情页的第七个页签"：规格说得很清楚 —— 点进一个功能，先按生命周期的三个阶段走
 		 *   （头脑风暴 → 文档生成 → 定稿修订），台账 / 产物 / 界面图是**旁挂的资料页**（spec.md:30）。
 		 *   把工作面混进同一排页签，等于把"阶段"与"资料"拉平，用户就看不出"现在该走哪一步"了。
-		 * ★ 头脑风暴是**第一个工作面**（本票）；定稿修订则是工单 13/14 已经做出来的那一屏（原来叫「定稿」页签，
-		 *   现在归进工作面组、名字改成「定稿修订」—— 语义没变，页签 label 里仍含「定稿」两字）。
-		 * ★ 文档生成（工单 24）还没做：**如实显示成未实现**，不假装有。
+		 * ★ 头脑风暴是**第一个工作面**（工单 23）；定稿修订则是工单 13/14 已经做出来的那一屏
+		 *   （原来叫「定稿」页签，现在归进工作面组、名字改成「定稿修订」—— 语义没变，页签 label 里仍含「定稿」两字）。
+		 * ★ 文档生成在**工单 24 做成了真的**（不再是「· 未实现」）：读成稿、按两大部分定位、看到配置支线走到哪。
 		 */
 		const DETAIL_STAGES = [
 			{ id: "brainstorm", label: "头脑风暴" },      // ★ 工单 23：功能里的第一个工作面
-			{ id: "draft", label: "文档生成", soon: true }, // 工单 24
+			{ id: "draft", label: "文档生成" },           // ★ 工单 24：成稿 + 两大部分 + 配置支线走到哪
 			{ id: "final", label: "定稿修订" }            // ★ 工单 13/14（大纲 + 正文 + 定位卡）
 		];
 		/** 进功能时落在哪一屏 = **第一个工作面**（工单 23：功能内部先走阶段，再看资料） */
@@ -2752,6 +2760,514 @@ import {
 		}
 
 		/**
+		 * ★ 工单 24 · **文档生成工作面**（「文档生成」这一格从"未实现"变成真的）。
+		 *
+		 * 这一屏自上而下四件事，顺序就是"先看状态、再动手"：
+		 *   ① **配置支线走到哪**（`configBranchState` 的结论原文，不是这里现算的）——
+		 *      `gdd-pipeline.md` §一的四步链路（成稿 → 配置表 → 读回 → 定稿）+ 缺口逐条；
+		 *   ② **三个动作卡**（写成稿 / 改成稿 / 发起整合定稿）—— 一条链，有先后，不是并列四入口；
+		 *   ③ **两大部分**（§4 功能规则 / §5 用户体验与界面流程）—— 后续两条支线的依据，可点即定位；
+		 *   ④ **左树 + 分块正文**（章 / 组 / 条目 + 1-based 行号；正文按块渲染 + **块级错误边界**）。
+		 *
+		 * ★ 数据全部来自 `loadDraftWorkface`（`src/load/draft.ts`）+ `src/pure/drafttree.ts` /
+		 *   `draftstep.ts`：**面板不重新解析、不重新组装**——卡上看到的原文与发出去的是同一段字符串
+		 *   （工单 15 / 23 立下的口径，这里照做）。
+		 * ★ 面板**不重做 Excel**（spec.md:212）：配置表的存在性由看板按主题挂上来的真实文件名给，
+		 *   字段/记录级的一切都在 skill 与配置表工具侧；这一屏只报状态。
+		 */
+		function DraftWorkface(props) {
+			const data = props.data;
+			const root = props.root || "";
+			const doc = (data && data.doc) || null;
+			const config = (data && data.config) || null;
+			const notes = (data && data.notes) || [];
+			const actions = (INTAKE && INTAKE.DRAFT_ACTIONS) || [];
+			const [act, setAct] = React.useState("create");
+			const [seed, setSeed] = React.useState("");
+			const [mats, setMats] = React.useState("");
+			const [where, setWhere] = React.useState("");
+			const [before, setBefore] = React.useState("");
+			const [intent, setIntent] = React.useState("");
+			const [sendMsg, setSendMsg] = React.useState(null);
+			const [openG, setOpenG] = React.useState({});
+			const [openDet, setOpenDet] = React.useState(false);
+			const [sel, setSel] = React.useState(-1);
+			const bodyRef = React.useRef(null);
+
+			const e = actions.filter((x) => x.id === act)[0] || actions[0] ||
+				{ id: "", label: "", hint: "", needs: "", output: "", handoff: "" };
+
+			/** 组标识：有 `id`（R1 / UI-M1）用它，否则退回组号（5.0）——与 `finaltree.groupKey` 同口径 */
+			const gk = (g) => String(g.id || g.no || "");
+			/** 章号 → 它在哪一部分（两大部分高亮 + 组行上的归属标记） */
+			const partOfNo = (no) => {
+				const hit = (((doc && doc.parts) || []).filter((p) => p.no === String(no))[0]) || null;
+				return hit ? hit.key : "";
+			};
+			/** 组行上标 §4 / §5（只标两大部分里的组，别处不标） */
+			const partTag = (no) => {
+				const k = partOfNo(no);
+				return k === "rules" ? "§4 规则" : k === "ux" ? "§5 界面" : "";
+			};
+
+			// ★ 卡上显示的就是**要发出去的原文**（组装只有一份实现：`src/pure/draftstep.ts`）
+			const built = (INTAKE && INTAKE.buildDraftInstruction && e.id)
+				? INTAKE.buildDraftInstruction({
+					action: e.id, root: root, topic: (data && data.topic) || "",
+					date: todayYmd(),
+					// ★ 每个动作的"要写成什么/要改成什么"来自**它自己那张卡**的输入：
+					//   写成稿用 `seed`（要写成什么）、改成稿用 `intent`（要改成什么）、整合定稿不带意图。
+					//   （这里踩过一次：写成稿的输入存在 `seed`，却把 `intent` 传下去 ——
+					//    界面上的预览就会永远显示"（未指定）"，而输入框里明明有字。）
+					intent: (e.id === "create" ? seed : (e.id === "integrate" ? "" : intent)),
+					draftPath: (data && data.path) || "",
+					before: before, where: where,
+					materials: INTAKE.parseMaterials(mats),
+					configLabel: (config && config.label) || "",
+					configMissing: (config && config.missing) || []
+				})
+				: { instruction: "", blocked: "文档生成的组装器没加载上（draftstep 模块缺失）。", next: "" };
+
+			const send = () => {
+				if (built.blocked) {
+					setSendMsg({ kind: "blocked", text: built.blocked, next: built.next || "" });
+					return;
+				}
+				if (typeof props.onSend !== "function") {
+					setSendMsg({ kind: "err", text: "发送通道没挂上（onSend 缺失）。", next: "刷新页面；仍失败就把这条发给开发者。" });
+					return;
+				}
+				setSendMsg({ kind: "pending", text: "正在发给该功能的专属工作会话…" });
+				props.onSend(e.id, { text: built.instruction, root: root }).then(
+					(r) => setSendMsg(r && r.ok
+						? { kind: "ok", text: "已交给工作会话。", sid: r.sid || "", target: r.target || null, healed: !!r.healed, queued: !!r.queued, note: r.note || "" }
+						: {
+							kind: "err",
+							text: (r && (r.message || r.blocked || r.note)) || "发送失败",
+							next: (r && r.next) || "再按一次；仍失败就把这条错误发给开发者。",
+							sid: (r && r.sid) || ""
+						}),
+					(err) => setSendMsg({ kind: "err", text: String((err && err.message) || err), next: "再按一次。" })
+				);
+			};
+			const jump = (sid) => {
+				if (!sid || typeof props.onOpenSession !== "function") {
+					setSendMsg((m) => Object.assign({}, m, { jumpErr: "面板拿不到「跳会话」的通道（onOpenSession 没挂上）。" }));
+					return;
+				}
+				const r = props.onOpenSession(sid);
+				if (r && r.ok === false) {
+					setSendMsg((m) => Object.assign({}, m, {
+						jumpErr: "跳转失败：" + ((r.error && (r.error.message || r.error.code)) || "未知原因") + "　—— 你可以在左侧列表里按标题找到它。"
+					}));
+				}
+			};
+
+			/** 点一条 → 正文滚到那一块（不依赖 markdown 渲染器支持行锚点） */
+			const goto = (idx) => {
+				setSel(Number(idx));
+				const box = bodyRef.current;
+				if (!box || !box.querySelector || Number(idx) < 0) return;
+				const el = box.querySelector('[data-blk="' + Number(idx) + '"]');
+				if (el && el.scrollIntoView) el.scrollIntoView({ block: "start" });
+			};
+
+			const IN = {
+				flex: "1 1 auto", font: "inherit", fontSize: "11.5px", padding: "5px 8px",
+				border: "1px solid " + C.soft, borderRadius: "4px", boxSizing: "border-box"
+			};
+			const LABEL = { fontSize: "10.5px", color: C.muted, marginBottom: "3px" };
+			const field = (key, label, value, set, placeholder, rows) => h("div", { key: key, style: { marginBottom: "7px" } }, [
+				h("div", { key: "l", style: LABEL }, label),
+				rows
+					? h("textarea", {
+						key: "i", value: value, placeholder: placeholder, rows: rows,
+						onChange: (ev) => set(ev.target.value),
+						style: Object.assign({}, IN, { width: "100%", resize: "vertical", fontFamily: "inherit" })
+					})
+					: h("input", {
+						key: "i", value: value, placeholder: placeholder,
+						onChange: (ev) => set(ev.target.value),
+						style: Object.assign({}, IN, { width: "100%" })
+					})
+			]);
+
+			// ── 选中那张卡的输入（三个动作各自的表单）──
+			const form = () => {
+				if (e.id === "create") return [
+					field("s", "要写成什么（我的意图；选填 —— 空着就按上游材料与 VOI 门现场确认）", seed, setSeed,
+						"比如：把 sr-analysis 的复刻规格落成成稿，重点写清出刀时机与难度推进", 2),
+					field("m", "上游材料（选填，目录 / 文件路径 / 链接，可多行）", mats, setMats,
+						"D:\\TimeMachine\\GameDesignOS\\workspace\\features\\联盟悬赏\\analysis\\feature-concept_联盟悬赏_20260918.md", 2)
+				];
+				if (e.id === "revise") return [
+					field("w", "改哪儿（条目引用 / 章组号）", where, setWhere, "§4 R6 奖励　或　§5 UI-M1", 1),
+					field("b", "现状原文（逐字 —— 行号会漂，原文不会）", before, setBefore,
+						"| 终结奖励 | 击杀 BOSS（打出终结一击）的玩家获得… |", 3),
+					field("t", "要改成什么（一句话）", intent, setIntent, "终结奖励与通关奖励合并为一个宝箱入口", 1)
+				];
+				return [
+					h("div", { key: "n", style: { fontSize: "11px", color: C.muted, lineHeight: 1.8, marginBottom: "6px" } },
+						"这个动作不发新东西 —— 它把「整合定稿」这件事**连同配置支线的现状**（上面那一段，逐条带上缺口）交给该功能的专属工作会话。" +
+						"整合结果（定稿与审查报告）由后续那一票承接，本屏不重画流程。")
+				];
+			};
+
+			// ── 动作卡（三张，**有先后**：写成稿 → 改成稿 → 发起整合定稿）──
+			const card = (a) => {
+				const on = a.id === e.id;
+				return h("button", {
+					key: "card-" + a.id, type: "button", "data-dcard": a.id, "data-active": on ? "1" : "0",
+					onClick: () => { setAct(a.id); setSendMsg(null); },
+					style: {
+						flex: "1 1 200px", minWidth: "200px", textAlign: "left", font: "inherit", cursor: "pointer",
+						border: "1px solid " + (on ? C.ink : C.faint), borderTop: "3px solid " + (on ? C.ink : C.soft),
+						background: on ? "#fff" : C.bg, borderRadius: "4px", padding: "7px 9px"
+					}
+				}, [
+					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, color: C.ink } }, a.label),
+					h("div", { key: "h", style: { fontSize: "10px", color: C.link, fontFamily: "monospace", marginTop: "2px" } }, a.hint),
+					h("div", { key: "n", style: { fontSize: "10px", color: C.muted, marginTop: "4px", lineHeight: 1.65 } }, "前置：" + a.needs),
+					h("div", { key: "o", style: { fontSize: "10px", color: C.muted, marginTop: "3px", lineHeight: 1.65 } }, "产出：" + a.output)
+				]);
+			};
+
+			// ── ① 配置支线走到哪 ──
+			const STAGE_TONE = {
+				"before-draft": C.muted, "rules-ready": C.link, "integrating": C.warn,
+				"missing-pending": C.warn, "missing-nofields": C.warn, landed: C.ok
+			};
+			const tone = (config && STAGE_TONE[config.stage]) || C.muted;
+			const cfgBox = config ? h("div", {
+				key: "cfg", "data-config-stage": config.stage,
+				style: {
+					border: "1px solid " + C.faint, borderLeft: "3px solid " + tone, background: "#fff",
+					borderRadius: "4px", padding: "8px 11px", marginBottom: "10px"
+				}
+			}, [
+				h("div", { key: "h", style: { display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap" } }, [
+					h("b", { key: "t", style: { fontSize: "12px" } }, "配置支线"),
+					h("span", { key: "v", "data-config-label": config.label, style: { fontSize: "12px", color: tone, fontWeight: 600 } }, config.label)
+				]),
+				h("div", { key: "r", "data-config-reason": config.reason, style: { fontSize: "10.5px", color: C.muted, marginTop: "4px", lineHeight: 1.75, userSelect: "text" } },
+					"依据：" + config.reason),
+				// 四步链路（成稿 → 配置表 → 读回 → 定稿），每步一个勾
+				h("div", { key: "s", "data-config-steps": config.steps.map((x) => (x.done ? "✔" : "○") + x.key).join(","), style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "6px" } },
+					config.steps.map((x, i) => h("div", {
+						key: i, "data-step": x.key, "data-done": x.done ? "1" : "0",
+						style: {
+							flex: "1 1 190px", minWidth: "190px", border: "1px solid " + (x.done ? C.ok : C.soft),
+							borderLeft: "3px solid " + (x.done ? C.ok : C.soft), background: x.done ? "#f0fdf4" : "#fff",
+							borderRadius: "4px", padding: "4px 8px"
+						}
+					}, [
+						h("div", { key: "l", style: { fontSize: "10.5px", fontWeight: 600, color: x.done ? C.ok : C.muted } }, (x.done ? "✔ " : "○ ") + x.label),
+						h("div", { key: "e", style: { fontSize: "10px", color: C.muted, fontFamily: "monospace", lineHeight: 1.6, wordBreak: "break-all" } }, x.evidence)
+					]))),
+				// 缺口 —— 缺什么写什么
+				(config.missing || []).length
+					? h("div", {
+						key: "m", "data-config-missing": String(config.missing.length),
+						style: { marginTop: "6px", borderTop: "1px solid " + C.faint, paddingTop: "5px" }
+					}, [
+						h("div", {
+							key: "t", onClick: () => setOpenDet(!openDet),
+							style: { fontSize: "11px", color: C.warn, cursor: "pointer", userSelect: "none" }
+						}, "⚠ 缺口 / 缺件 " + config.missing.length + " 条　" + (openDet ? "收起 ▾" : "展开 ▸")),
+						openDet
+							? h("div", { key: "l", style: { marginTop: "3px" } },
+								config.missing.map((m, i) => h("div", {
+									key: i, "data-missing": String(i),
+									style: { fontSize: "10.5px", color: C.ink, lineHeight: 1.75, userSelect: "text" }
+								}, "· " + m)))
+							: null
+					])
+					: h("div", { key: "nm", style: { fontSize: "11px", color: C.ok, marginTop: "5px" } }, "✔ 没有待配表缺口、没有缺件"),
+				// 面板**不做**的事，写在脸上
+				h("div", { key: "n", style: { fontSize: "10px", color: C.muted, marginTop: "5px", lineHeight: 1.7 } },
+					"面板只显示配置支线走到哪（读定稿 §6 + `evidence\\readback_*` + 配置表文件名的存在性）—— " +
+					"**配置表的读写仍在 /sr-config 与配置表工具侧**，这里不解析工作簿、不改表。")
+			]) : null;
+
+			// ── ③ 两大部分 ──
+			const partCard = (p) => h("button", {
+				key: "part-" + p.key, type: "button", "data-part": p.key,
+				onClick: () => goto(p.idx),
+				title: "点它跳到正文里的这一部分",
+				style: {
+					flex: "1 1 320px", minWidth: "300px", textAlign: "left", font: "inherit", cursor: "pointer",
+					border: "1px solid " + C.faint, borderLeft: "3px solid " + C.link, background: "#fff",
+					borderRadius: "4px", padding: "7px 10px"
+				}
+			}, [
+				h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, color: C.ink } },
+					"§" + p.no + " " + p.label + "　"),
+				h("div", { key: "n", style: { fontSize: "10.5px", color: C.muted, fontFamily: "monospace", marginTop: "2px" } },
+					"L" + p.line + "–L" + p.endLine + "　" + p.groups + " 组 / " + p.items + " 条" + (p.skipped ? " / " + p.skipped + " 行不可引用" : "")),
+				h("div", { key: "d", style: { fontSize: "10px", color: C.muted, marginTop: "3px", lineHeight: 1.65 } }, p.note)
+			]);
+
+			// ── ④ 左树（章 → 组 → 条目，逐级带行号）──
+			const LNUM = { fontSize: "9.5px", color: C.muted, fontFamily: "monospace", marginLeft: "6px", flex: "0 0 auto" };
+			const lnum = (line) => h("span", { key: "L", style: LNUM }, "L" + line);
+			const toc = [];
+			if (doc && doc.tree) {
+				toc.push(h("div", {
+					key: "head", style: { fontSize: "11px", color: C.muted, marginBottom: "8px", lineHeight: 1.6, userSelect: "text" }
+				}, [
+					h("div", { key: "a" }, (data && data.name) + " · " + doc.counts.chapters + " 章 / " + doc.counts.groups + " 组 / " +
+						(doc.counts.rules + doc.counts.ues) + " 条（两大部分）"),
+					h("div", { key: "b" }, "点任一行 → 右边正文滚到那一块；§4 / §5 是后面两条支线的依据")
+				]));
+				for (const c of doc.tree.chapters) {
+					const ck = "ch" + c.no;
+					const cOpen = openG[ck] === undefined ? c.open : !!openG[ck];
+					const pk = partOfNo(c.no);
+					const cnt = [];
+					if (c.groups.length) cnt.push(c.groups.length + " 组");
+					if (c.items.length) cnt.push(c.items.length + " 条");
+					if (c.skipped) cnt.push(c.skipped + " 行不可引用");
+					toc.push(h("div", {
+						key: ck, "data-ch": c.no, "data-part": pk, title: c.text,
+						onClick: () => {
+							if (c.items.length) {
+								const nx = Object.assign({}, openG);
+								nx[ck] = !cOpen;
+								setOpenG(nx);
+							}
+							goto(c.idx);
+						},
+						style: {
+							display: "flex", alignItems: "baseline", cursor: "pointer", userSelect: "none",
+							fontSize: "12px", fontWeight: 600, margin: "8px 0 3px",
+							color: sel === c.idx ? C.link : (pk ? C.ink : C.muted)
+						}
+					}, [
+						h("span", { key: "t", style: { fontSize: "9px", color: C.muted, marginRight: "4px", width: "9px", flex: "0 0 9px", textAlign: "center" } },
+							c.items.length ? (cOpen ? "▾" : "▸") : "·"),
+						h("span", { key: "l" },
+							"§" + c.no + " " + c.title + (pk ? "  ★" : "") + (!cOpen && cnt.length ? "  (" + cnt.join(" · ") + ")" : "")),
+						h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
+						lnum(c.line)
+					]));
+					if (cOpen) for (const it of c.items) toc.push(tocItem(it, c.idx, c.no));
+
+					for (const g of c.groups) {
+						const tag = gk(g);
+						const gkey = "g" + g.idx;
+						const isOpen = openG[gkey] === undefined ? g.open : !!openG[gkey];
+						const gc = g.items.length ? g.items.length + " 条" : "";
+						const gs = g.skipped ? (gc ? " · " : "") + g.skipped + " 行不可引用" : "";
+						toc.push(h("div", {
+							key: gkey, "data-group": tag, "data-ch": c.no, title: g.text,
+							onClick: () => {
+								if (g.items.length) {
+									const nx = Object.assign({}, openG);
+									nx[gkey] = !isOpen;
+									setOpenG(nx);
+								}
+								goto(g.idx);
+							},
+							style: {
+								display: "flex", alignItems: "baseline", cursor: "pointer", userSelect: "none",
+								padding: "2px 0 2px 10px", borderRadius: "3px",
+								borderLeft: "2px solid " + (sel === g.idx ? C.link : "transparent")
+							}
+						}, [
+							h("span", { key: "t", style: { fontSize: "9px", color: C.muted, marginRight: "4px", width: "9px", flex: "0 0 9px", textAlign: "center" } },
+								g.items.length ? (isOpen ? "▾" : "▸") : "·"),
+							h("span", { key: "l", style: { fontSize: "11.5px", color: sel === g.idx ? C.link : C.muted } },
+								(tag ? tag + "  " : "") + g.title + (gc || gs ? "  (" + gc + gs + ")" : "")),
+							h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
+							lnum(g.line)
+						]));
+						if (isOpen) for (const it of g.items) toc.push(tocItem(it, g.idx, c.no));
+					}
+				}
+			}
+
+			function tocItem(it, idx, chNo) {
+				// 条目级不高亮整块（同一个块里有好几条）—— 高亮留给章 / 组行与正文的块边框
+				const on = false;
+				const tag = partTag(chNo);
+				return h("div", {
+					key: "it" + chNo + "-" + it.line + "-" + it.label,
+					"data-line": String(it.line), "data-label": String(it.label),
+					"data-part": partOfNo(chNo),
+					title: "L" + it.line + "　" + it.text,
+					onClick: () => goto(idx),
+					style: {
+						display: "flex", alignItems: "baseline", fontSize: "11px", cursor: "pointer", userSelect: "none",
+						padding: "1px 4px 1px 22px", borderRadius: "3px", color: on ? "#fff" : C.muted,
+						background: on ? C.link : "transparent", whiteSpace: "nowrap", overflow: "hidden"
+					}
+				}, [
+					h("span", { key: "l", style: { overflow: "hidden", textOverflow: "ellipsis" } }, it.label),
+					tag ? h("span", { key: "p", style: { color: C.muted, marginLeft: "5px", fontSize: "9.5px" } }, tag) : null,
+					h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
+					lnum(it.line)
+				]);
+			}
+
+			// ── 右栏：分块正文（代码块与图片单独渲染 + 每块一个错误边界）──
+			const labelOf = (b) => {
+				if (b.level === 2) return "§" + b.no + " " + (b.title || "");
+				const id = b.id || b.no || "";
+				const dup = b.no && b.chNo && String(b.no).indexOf(String(b.chNo) + ".") === 0;
+				return (dup ? "" : "§" + (b.chNo || "?") + " ") + id + " " + (b.title || "");
+			};
+			const absOf = (v) => {
+				if (!v || typeof v !== "string") return void 0;
+				if (!/\.(png|jpe?g|gif|webp|svg)$/i.test(v)) return void 0;
+				const isAbs = /^[A-Za-z]:[\\/]/.test(v) || v.charAt(0) === "/";
+				const dir = String((data && data.path) || "").replace(/[\\/][^\\/]*$/, "");
+				return isAbs ? v : dir + "/" + v;
+			};
+			const pathImages = { abs: absOf, resolve: (v) => { const a = absOf(v); return a ? fileUrl(a) : void 0; } };
+			const body = (doc && doc.doc && (doc.doc.blocks || []).length)
+				? doc.doc.blocks.map((b, i) => h("div", {
+					key: "b" + i, "data-blk": String(i),
+					style: {
+						padding: "2px 8px 4px 10px", marginBottom: "6px", borderRadius: "3px",
+						borderLeft: "3px solid " + (sel === i ? C.link : "transparent"),
+						background: sel === i ? "#f0f7ff" : "transparent"
+					}
+				}, h(BlockBoundary, { key: "bb", label: labelOf(b).trim() + "（L" + b.line + "）" },
+					splitSpecial(b.text).map((p, j) => {
+						if (p.t === "img") {
+							return h(ImgTag, { key: "i" + j, src: p.v, alt: p.alt, pathImages: pathImages, onOpen: props.onOpen || null });
+						}
+						if (p.t === "code") return h(CodeBlock, { key: "c" + j, text: p.v });
+						return h(Md, { key: "m" + j, text: p.v, pathImages: pathImages });
+					})
+				)))
+				: null;
+
+			return h("div", { "data-workface": "draft" }, [
+				// 缺件 / 降级：**先说清**
+				notes.length
+					? h("div", {
+						key: "nt", "data-notes": String(notes.length),
+						style: {
+							fontSize: "11px", color: C.warn, border: "1px solid " + C.faint, borderLeft: "3px solid " + C.warn,
+							background: "#fffdf7", borderRadius: "4px", padding: "7px 10px", marginBottom: "9px", lineHeight: 1.75
+						}
+					}, notes.map((x, i) => h("div", { key: i }, "⚠ " + x)))
+					: null,
+				data && data.error
+					? h("div", { key: "er", style: { fontSize: "12px", color: C.bad, marginBottom: "9px" } }, data.error)
+					: null,
+				!data ? h("div", { key: "ld", style: { fontSize: "12px", color: C.muted, marginBottom: "9px" } }, "正在读成稿…") : null,
+
+				// ① 配置支线走到哪
+				cfgBox,
+
+				// ② 三个动作卡 + 选中卡的输入与**要发出去的原文**
+				h("div", { key: "acts", style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "9px 11px", marginBottom: "10px" } }, [
+					h("div", { key: "h", style: { fontSize: "11.5px", fontWeight: 600, marginBottom: "6px" } },
+						"这一阶段的动作（一条链，有先后：写成稿 → 改成稿 → 发起整合定稿）"),
+					h("div", { key: "row", "data-row": "actions", style: { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" } },
+						actions.map(card)),
+					h("div", { key: "d", "data-action": e.id, style: { borderTop: "1px solid " + C.faint, paddingTop: "8px" } }, [
+						h("div", { key: "t", style: { fontSize: "11.5px", marginBottom: "6px" } }, [
+							h("b", { key: "b" }, e.label + "　"),
+							h("span", { key: "s", style: { color: C.muted, fontSize: "10.5px" } }, e.hint + "　前置：" + e.needs)
+						]),
+						h("div", { key: "f" }, form()),
+						built.blocked
+							? h("div", {
+								key: "blk", "data-blocked": e.id,
+								style: { fontSize: "11.5px", color: C.bad, background: "#fef2f2", border: "1px solid " + C.faint, borderRadius: "3px", padding: "6px 8px", marginBottom: "7px", lineHeight: 1.75 }
+							}, [
+								h("div", { key: "a" }, "✗ " + built.blocked),
+								built.next ? h("div", { key: "b", style: { color: C.ink } }, "下一步：" + built.next) : null
+							])
+							: null,
+						built.instruction
+							? h("div", { key: "pv", style: { marginBottom: "7px" } }, [
+								h("div", { key: "t", style: LABEL }, "组出来的指令 —— 下面这段就是发给工作会话的原文（卡上看到的 = 发出去的）："),
+								h("pre", {
+									key: "v", "data-kind": e.id,
+									style: {
+										margin: "3px 0 0", padding: "6px 8px", background: C.bg, border: "1px solid " + C.faint,
+										borderRadius: "3px", fontFamily: "monospace", fontSize: "10.5px", lineHeight: 1.6,
+										whiteSpace: "pre-wrap", color: C.ink, userSelect: "text", maxHeight: "26vh", overflow: "auto"
+									}
+								}, built.instruction)
+							])
+							: null,
+						h("div", { key: "act", style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, [
+							h("button", {
+								key: "go", type: "button", "data-send": e.id, onClick: send,
+								style: {
+									font: "inherit", fontSize: "11.5px", padding: "5px 12px", borderRadius: "4px",
+									border: "1px solid " + (built.blocked ? C.soft : C.link),
+									background: built.blocked ? "#fff" : C.link, color: built.blocked ? C.muted : "#fff", cursor: "pointer"
+								}
+							}, "发到工作会话"),
+							h("span", { key: "n", style: { fontSize: "10.5px", color: C.muted } },
+								"发到：本功能的专属工作会话" + (root ? "（cwd " + winPath(root) + "）" : "") + "　—— 不占用你自己的对话")
+						]),
+						h("div", { key: "ho", "data-handoff": e.id, style: { fontSize: "10.5px", color: C.muted, marginTop: "5px", lineHeight: 1.7 } },
+							"发起后：" + e.handoff + " —— 面板只给「跳到那个会话」。"),
+						sendMsg ? h("div", {
+							key: "m",
+							style: { fontSize: "11px", marginTop: "6px", lineHeight: 1.75, color: sendMsg.kind === "err" || sendMsg.kind === "blocked" ? C.bad : (sendMsg.kind === "ok" ? C.ok : C.muted) }
+						}, [
+							h("div", { key: "t" }, (sendMsg.kind === "ok" ? "✓ " : (sendMsg.kind === "pending" ? "" : "✗ ")) + sendMsg.text),
+							sendMsg.kind === "ok" ? h("div", { key: "d", "data-sent": "ok", style: { color: C.muted, userSelect: "text" } }, [
+								h("div", { key: "s" }, "阶段交给了 skill，进度与提问都在那个会话里 —— 面板不重画流程，跑完回本页重进就能看到产物。"),
+								h("div", { key: "g" },
+									"目标：" + ((sendMsg.target && sendMsg.target.title) || "工作会话") +
+									(sendMsg.sid ? "　会话 " + String(sendMsg.sid).slice(0, 12) + "…" : "") +
+									(sendMsg.target && sendMsg.target.root ? "　cwd " + winPath(sendMsg.target.root) : "") +
+									"　（" + pickSourceText(sendMsg.target && sendMsg.target.source) + "）"),
+								sendMsg.healed ? h("div", { key: "h", style: { color: C.warn } }, "上一轮记的那条会话已经不在了 —— 已自动重建一条并重发。") : null,
+								sendMsg.queued ? h("div", { key: "q", style: { color: C.warn } }, "它正在跑别的活，这条指令排在队列里，等它跑完当前这一轮就会处理。") : null
+							]) : null,
+							sendMsg.kind === "err" || sendMsg.kind === "blocked"
+								? h("div", { key: "n", "data-sent": "fail", style: { color: C.ink } }, "下一步：" + (sendMsg.next || "再按一次。"))
+								: null,
+							sendMsg.sid && props.onOpenSession ? h("button", {
+								key: "j", type: "button", "data-jump": sendMsg.sid,
+								onClick: () => jump(sendMsg.sid),
+								style: {
+									font: "inherit", fontSize: "11px", padding: "2px 9px", marginTop: "3px",
+									border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer"
+								}
+							}, "跳到那个会话 ›") : null,
+							sendMsg.jumpErr ? h("div", { key: "je", style: { color: C.bad } }, sendMsg.jumpErr) : null
+						]) : null
+					])
+				]),
+
+				// ③ 两大部分（后续两条支线的依据）+ ④ 树与正文
+				h("div", { key: "main", style: { border: "1px solid " + C.faint, borderRadius: "4px", background: C.bg, padding: "8px 10px" } }, [
+					h("div", { key: "h", style: { fontSize: "11.5px", fontWeight: 600, marginBottom: "6px" } },
+						"成稿的两大部分（点它跳到正文；左树里带 ★ 的章就是它们）" +
+						(doc ? "　" + (data && data.name) + " · " + doc.lines + " 行" : "")),
+					doc && doc.parts.length
+						? h("div", { key: "p", "data-row": "parts", style: { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "9px" } },
+							doc.parts.map(partCard))
+						: h("div", { key: "pn", style: { fontSize: "11px", color: C.warn, marginBottom: "9px" } },
+							doc ? "⚠ 没认出两大部分（缺：" + doc.missingParts.join(" / ") + "）—— 面板不硬指一个章号，请核对成稿的章标题。" : "（还没读到成稿）"),
+					doc && doc.tree
+						? h("div", { key: "cols", style: { display: "flex", gap: "16px", alignItems: "flex-start" } }, [
+							h("div", {
+								key: "toc",
+								style: { flex: "0 0 272px", width: "272px", maxHeight: "62vh", overflow: "auto", borderRight: "1px solid " + C.faint, paddingRight: "10px" }
+							}, toc),
+							h("div", {
+								key: "body", ref: bodyRef,
+								style: { flex: "1 1 auto", minWidth: 0, maxHeight: "62vh", overflow: "auto" }
+							}, body)
+						])
+						: null
+				])
+			]);
+		}
+
+		/**
 		 * ★ 工单 16 · 变更订阅条 + **版本指纹**（常显在最上面一行）。
 		 *
 		 * 一眼要看出三件事（这就是本票的验收口径）：
@@ -2775,7 +3291,7 @@ import {
 				"data-reloads": String(live.reloads || 0),
 				"data-skipped": String(skipped),
 				// 各部件"被点名重读"的次数（只增不减）—— 验收"只重读受影响的部分"看的就是它
-				"data-rev": ["detail", "ledger", "final", "ui"].map((p) => p + ":" + (((props.rev || {})[p]) || 0)).join(","),
+				"data-rev": ["detail", "ledger", "final", "ui", "brain", "draft"].map((p) => p + ":" + (((props.rev || {})[p]) || 0)).join(","),
 				style: {
 					display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap",
 					border: "1px solid " + C.faint, borderLeft: "3px solid " + tone,
@@ -4628,6 +5144,8 @@ import {
 			const [detail, setDetail] = React.useState(null);
 			// ★ 工单 23：头脑风暴工作面的数据（已有的分析结论 + 两种新格式的解析结果）
 			const [brain, setBrain] = React.useState(null);
+			// ★ 工单 24：文档生成工作面的数据（成稿的两大部分与左树 + 配置支线走到哪）
+			const [draft, setDraft] = React.useState(null);
 			/**
 			 * ★ 工单 16：详情里每一份数据都盖一个"这是哪个功能的"戳（`__topic`），渲染时对不上
 			 *   当前功能就**不当数**。两个作用合在一起：
@@ -4647,7 +5165,7 @@ import {
 			//   · 四个 ref（版本袋 / 已应用版本 / 待落批 / 定时器）。
 			//   判定全在 `src/pure/refresh.ts`；这里只负责"按它说的去调、把结果如实显示"。
 			// ════════════════════════════════════════════════════════════════
-			const [rev, setRev] = React.useState({ detail: 0, ledger: 0, final: 0, ui: 0 });
+			const [rev, setRev] = React.useState({ detail: 0, ledger: 0, final: 0, ui: 0, brain: 0, draft: 0 });
 			const [live, setLive] = React.useState({ phase: "off", reason: "", ready: 0, total: 0, digest: "", pending: 0, changed: [], frame: "", at: 0, reloads: 0, skipped: 0 });
 			/** 读文件时收下的版本袋（`portOf` 往里写）—— 指纹与自激防护的凭据 */
 			const bagRef = React.useRef({});
@@ -4663,6 +5181,16 @@ import {
 			const ctxRef = React.useRef({});
 			/** 当前订阅计划（轮询核对要知道盯了哪些目录） */
 			const planRef = React.useRef(null);
+			/**
+			 * ★ 工单 24：**这一批变更碰到的是不是文档生成工作面依赖的桶**（`gdd\` / `evidence\`）。
+			 *   判据 = 帧里的路径是不是那两份订阅目标之一 —— 订阅目标是**逐个目录**给的
+			 *   （见 `watchPlan`），所以"帧长什么样"就能说出"哪个桶变了"。
+			 *   `detail`（产物清单）是**所有桶的共主**：任何桶变了它都会换，只盯着它就会在
+			 *   `analysis\` 变了的时候也把 39 KB 的成稿白读一遍（实测踩过）。
+			 *   `false` = 这一轮的变更不在这一屏依赖的桶里（跳过）；其余情况（进功能 / 手动刷新 /
+			 *   切页签 / stat 核对）一律照读。
+			 */
+			const draftBucketRef = React.useRef(true);
 			/** 这一轮订阅已经 ready 了几个目标（判"帧永不 ready"的降级） */
 			const readyCountRef = React.useRef(0);
 			/** 订阅回调的**最新**一份（换一次渲染就换一个闭包，但不能因此重开订阅） */
@@ -4678,6 +5206,9 @@ import {
 			// ★ 工单 23：头脑风暴工作面的加载器 + 四入口的发送出口（走**工单 15 那条链路**，不是新通道）
 			const brainstormLoader = props.__brainstorm;
 			const brainstormRunner = props.__sendBrainstorm;
+			// ★ 工单 24：文档生成工作面（成稿 + 配置支线）+ 三个动作的发送出口（**同一条链路**）
+			const draftLoader = props.__draft;
+			const draftRunner = props.__sendDraft;
 			const diagnose = props.__diagnose;
 			const probe = props.__probe;
 			// ★ 工单 16：变更订阅 / 批量 stat（都是官方通道，包在组合根里）
@@ -4840,7 +5371,11 @@ import {
 			/** 重读一个部件：把它的计数 +1（加载 effect 依赖它，于是只有它重跑） */
 			const bumpParts = (parts) => {
 				const bump = {};
-				for (const p of ["detail", "ledger", "final", "ui"]) if ((parts || []).indexOf(p) >= 0) bump[p] = 1;
+				// ★ 工单 24：`brain`（头脑风暴）与 `draft`（文档生成）也进名单 —— 在此之前
+				//   `planReload` 已经会点名 `brain`，但这里没接，那一票的"只重读受影响的部分"里
+				//   头脑风暴其实是靠 `detail` 间接重跑的。现在两个工作面各自有独立的计数：
+				//   切到哪一屏、哪一屏在屏幕上都由它决定，`LiveBar` 的 `data-rev` 也看得见。
+				for (const p of ["detail", "ledger", "final", "ui", "brain", "draft"]) if ((parts || []).indexOf(p) >= 0) bump[p] = 1;
 				if (Object.keys(bump).length === 0) return;
 				setRev((prev) => {
 					const next = Object.assign({}, prev);
@@ -4939,6 +5474,18 @@ import {
 				b.lastAt = Date.now();
 				b.paths[normPath(path)] = version || "";
 				b.plans.push(planReload({ path: path }, { root: ctxRef.current.root, srWs: ctxRef.current.srWs }));
+				// ★ 工单 24：这一批是不是碰到了"文档生成工作面依赖的桶"（gdd\ 顶层 / evidence\）
+				const targets = (planRef.current && planRef.current.targets) || [];
+				const hit = targets.filter((tp) => normPath(tp) === normPath(path))[0] || "";
+				if (hit !== "") {
+					const rel = String(ctxRef.current.root || "") !== "" && containsPath(ctxRef.current.root, hit)
+						? normPath(hit).slice(normPath(ctxRef.current.root).length + 1)
+						: "";
+					const seg = String(rel).split("\\")[0].toLowerCase();
+					draftBucketRef.current = (seg === "gdd" || seg === "evidence");
+				} else {
+					draftBucketRef.current = false;      // 别的桶（analysis / decisions / …）
+				}
 				b.why.push(path + (reason ? "（" + reason + "）" : ""));
 				setLive((prev) => Object.assign({}, prev, { phase: "on", pending: Object.keys(b.paths).length }));
 				scheduleFlush();
@@ -5101,6 +5648,7 @@ import {
 				bagRef.current = {};
 				batchRef.current = null;
 				planRef.current = null;
+				draftSigRef.current = "";
 				setLive({ phase: "off", reason: "", ready: 0, total: 0, digest: "", pending: 0, changed: [], frame: "", at: 0, reloads: 0, skipped: 0 });
 			}, [detailTopic]);
 
@@ -5162,6 +5710,89 @@ import {
 				brainstormLoader(sessionId, { root: root, files: files, stage: dready.stage }, ac.signal, bagRef.current).then(
 					(r) => { if (!cancelled) setBrain(stamped(r)); },
 					(e) => { if (!cancelled) setBrain(stamped({ error: "读分析产物失败：" + String((e && e.message) || e) })); }
+				);
+				return () => { cancelled = true; ac.abort(); };
+			}, [view, dtab, detailTopic, sessionId, state.phase, detail]);
+
+			/** ★ 工单 24：文档生成工作面已经读过的**那一批变更的签名**（同一批只读一遍盘） */
+			const draftSigRef = React.useRef("");
+			/** ★ 工单 24：文档生成工作面的**重读代数**（`rev.detail + rev.draft`，只增不减） */
+			const draftGenRef = React.useRef(-1);
+			/**
+			 * ★ 工单 24：进「文档生成」工作面时读**成稿（两大部分 + 左树）**与**配置支线走到哪**。
+			 *
+			 * 依赖 `detail`（工单 12 的产物清单是**同一份来源**：`gdd\` 与 `evidence\` 组的文件清单）——
+			 * 不重新列目录，免得"面板列出的产物"与"工作面读的那份成稿"两处对不上（与头脑风暴同一条纪律）。
+			 * 另见下面 effect 里的两处说明：为什么**不把 `rev.draft` 当依赖**、以及那道"输入清单没变就不重读"的闸门。
+			 */
+			React.useEffect(() => {
+				if (view !== "detail" || dtab !== "draft" || !sessionId || state.phase !== "ready") { setDraft(null); draftSigRef.current = ""; draftGenRef.current = -1; return; }
+				const dready = ofTopic(detail);
+				if (!dready || dready.error) { setDraft(null); draftSigRef.current = ""; draftGenRef.current = -1; return; }
+				if (typeof draftLoader !== "function") {
+					setDraft({ error: "文档生成加载器没挂上（__draft 缺失）。" });
+					return;
+				}
+				const root = dready.root || "";
+				if (!root) { setDraft({ error: "拿不到功能根目录：这一屏读不了。" }); return; }
+				const groups = (dready.artifacts && dready.artifacts.groups) || [];
+				const gdd = groups.filter((g) => g.key === "gdd")[0];
+				const ev = groups.filter((g) => g.key === "evidence")[0];
+				/**
+				 * ★ **一次重读只读一遍盘**：这条 effect 的依赖里**没有** `rev.draft` ——
+				 *   它认的是 `detail`（工单 12 的产物清单）。`planReload` 对 `gdd\` 与 `evidence\`
+				 *   两处都同时点名 `detail` 与 `draft`，所以"该重读这一屏"的那一帧必然先把 `detail`
+				 *   换掉，这条 effect 跟着重跑一次 —— 依赖里再加 `rev.draft` 只会把同一份 39 KB 的成稿
+				 *   在前后的两次渲染里各读一遍（实测过：一条 gdd 帧读两次）。
+				 *   `rev.draft` 仍然照常累加（刷新条上的 `data-rev` 看得见它被点名），只是不当依赖用。
+				 *
+				 * ★ 闸门看**两件事一起**：① **这一批变更的代数**（`rev.detail + rev.draft`，见下面 `gen`）
+				 *   ② 面板已经读到过内容（`draft` 非空）。少看任何一条都不行：
+				 *   · 只看 ① ⇒ 组件被重新挂载时（`draft` 是 null）永远不读 —— 这一屏一直空着
+				 *     （这是实测踩出来的：闸门漏了 ② 时面板空屏）；
+				 *   · 只看 ② ⇒ **同一批里被调用两次**时会各读一遍 39 KB（一次原子替换会来两条帧）。
+				 *   `sig`（清单 + 宿主版本）留着给人排障看，不作判据 —— 它会被 stat 批更新掉。
+				 */
+				const verOf = (rel) => String(appliedRef.current[normPath(root + "\\" + String(rel).replace(/\//g, "\\"))] || "?");
+				const gddFiles = (gdd && gdd.files) || [];
+				const evFiles = (ev && ev.files) || [];
+				/**
+				 * ★ `gen` = **这一批变更的代数**（`rev.detail + rev.draft`）：一次重读只算一代，
+				 *   所以"同一批里被调用两次"的第二跳会被闸门挡掉（内容没变，白读一遍盘）。
+				 *   而 `rev` 每次重读都 +1 ⇒ 下一批的 `gen` 更大 ⇒ **原地改文件名不变**也照读。
+				 */
+				const gen = (Number(rev.detail) || 0) + (Number(rev.draft) || 0);
+				const sig = gen + "\u0001" + root + "\u0001" + (gdd && gdd.count) + "\u0001" +
+					gddFiles.map((x) => x.name + "@" + verOf(x.rel || "gdd/" + x.name)).join(",") + "\u0001" +
+					evFiles.map((x) => x.name + "@" + verOf(x.rel || "evidence/" + x.name)).join(",") + "\u0001" +
+					String((dready.finalCheck && dready.finalCheck.current) || "") + "\u0001" +
+					(((curFeature && curFeature.configs) || []).join(","));
+				const sameGen = draftGenRef.current === gen;
+				// ★ 判据 = **"这一代已经读过、并且读出了内容"**。
+				//   为什么不比 `sig`：同一代里 `applied` 的版本会被 stat 批更新，`sig` 因此会变，
+				//   于是"同一批"里会各读一遍 39 KB（实测踩过：一条帧读两遍）。
+				//   代数（`rev.detail + rev.draft`）只在**真正重读**时才变，所以以它为准：
+				//   同一批只读一遍；下一批照读（`gen` 变大）—— **原地改文件名不变**也能看见。
+				// 跳过（两个理由之一）：① 这一批变更不在这一屏依赖的桶里（`gdd\` / `evidence\`）；
+				// ② 同一代里已经读过、并读出了内容。其余情况照读（进功能 / 手动刷新 / 切页签 / stat 核对）。
+				const skip = (sameGen && !!draft && dready.root === (draft && draft.root)) || draftBucketRef.current === false;
+				if (skip) return;
+				draftBucketRef.current = true;
+				draftGenRef.current = gen;
+				draftSigRef.current = sig;
+				let cancelled = false;
+				const ac = new AbortController();
+				draftLoader(sessionId, {
+					root: root,
+					gddFiles: gddFiles,
+					evidenceFiles: evFiles.map((x) => x.name),
+					finalCheck: dready.finalCheck,
+					configFiles: (curFeature && curFeature.configs) || [],
+					// ★ 配置表存在性以**真目录的列举**为准（看板按主题挂上来的那份只当兜底）
+					configRoot: (d && d.configRoot) || ""
+				}, ac.signal, bagRef.current).then(
+					(r) => { if (!cancelled) setDraft(stamped(r)); },
+					(e) => { if (!cancelled) setDraft(stamped({ error: "读成稿失败：" + String((e && e.message) || e) })); }
 				);
 				return () => { cancelled = true; ac.abort(); };
 			}, [view, dtab, detailTopic, sessionId, state.phase, detail]);
@@ -5275,6 +5906,7 @@ import {
 				const f = d.features.filter((x) => x.topic === detailTopic)[0];
 				// ★ 工单 16：只把**属于当前功能**的那几份数据交给下面的组件（`__topic` 的戳）
 				const brainV = ofTopic(brain);
+				const draftV = ofTopic(draft);
 				const ledgerV = ofTopic(ledger);
 				const finalV = ofTopic(finalDoc);
 				const ifaceV = ofTopic(iface);
@@ -5321,6 +5953,19 @@ import {
 									// 会话候选：store 快照带着 cwd / running；空则由组合根补一次 session.list
 									rows: sessionRows
 								})
+								: null,
+							onOpenSession: (sid) => probe.openSession(sid),
+							onOpen: (abs) => handleOpen(null, abs)
+						})
+						: dtab === "draft"
+						? h(DraftWorkface, {
+							key: "dw",
+							data: draftV,
+							feature: f,
+							root: (dview && dview.root) || "",
+							srWs: d.srWs,
+							onSend: typeof draftRunner === "function"
+								? (action, input) => draftRunner(d && d.srWs, action, input, { rows: sessionRows })
 								: null,
 							onOpenSession: (sid) => probe.openSession(sid),
 							onOpen: (abs) => handleOpen(null, abs)
@@ -5560,6 +6205,13 @@ import {
 			 */
 			const brainstormLoader = (sid, opts, signal, bag) =>
 				loadBrainstorm(portOf(ctx, sid, readWith(bag)), Object.assign({}, opts, { signal: signal }));
+			/**
+			 * ★ 工单 24 · 文档生成工作面：把 `gdd\` 与 `evidence\` 的产物清单交给加载器（只读那两个桶），
+			 *   配置表**存在性**用看板按主题挂上来的真实文件名（既有通道，不重新列配置目录）。
+			 *   判据全在 `src/load/draft.ts` + `src/pure/drafttree.ts` / `draftstep.ts`（有测试）。
+			 */
+			const draftLoader = (sid, opts, signal, bag) =>
+				loadDraftWorkface(portOf(ctx, sid, readWith(bag)), Object.assign({}, opts, { signal: signal }));
 			const indexLoader = (sid, srWs, signal) => loadIndex(read, sid, srWs, signal);
 			/** 按绝对路径读文本（阅读器用） */
 			const readTextFile = (sid, abs) => readAllText(read, sid, abs, void 0, 4000);
@@ -5931,6 +6583,34 @@ import {
 					const built = INTAKE.buildBrainstormInstruction(kind, Object.assign({}, inp, { root: root }));
 					if (built.blocked) return { ok: false, sent: "", blocked: built.blocked, next: built.next || "" };
 					text = built.instruction;
+				}
+				return sendFeatureInstruction(root, text, c);
+			};
+
+			/**
+			 * ★ 工单 24 · 文档生成三个动作的出口：**复用** `sendFeatureInstruction`（工单 15 立的、
+			 *   工单 23 抽出的那一条），只是正文由 `buildDraftInstruction` 给出（与卡上预览逐字相同）。
+			 *
+			 * ★ 与 `brainstormRunner` 的**唯一区别**：这里**不重算正文** —— 正文以界面传进来的那一段为准
+			 *   （`input.text`）；只有"别的调用方直接调"时才退回自己组装一次。缺前提（`built.blocked`）
+			 *   由界面拦下并显示，这一层不发。
+			 *
+			 * @returns `{ ok, sid, sent, healed, queued, target, message?, next?, note? }`
+			 */
+			const draftRunner = async (srWs, action, input, extra) => {
+				const c = extra || {};
+				const inp = input || {};
+				const root = String(inp.root || c.root || "").replace(/\\+$/, "");
+				if (!root) {
+					return {
+						ok: false, sent: "",
+						blocked: "拿不到这个功能的功能目录（`features\\<主题>\\`）。",
+						next: "从「功能详情 › 文档生成」进来再发一次 —— 指令要发给该功能的专属工作会话（cwd = 功能目录）。"
+					};
+				}
+				const text = String(inp.text || "");
+				if (text === "") {
+					return { ok: false, sent: "", blocked: "这条指令是空的（界面没有把组装好的正文传过来）。", next: "刷新页面再试一次；仍失败就把这条发给开发者。" };
 				}
 				return sendFeatureInstruction(root, text, c);
 			};
@@ -6584,6 +7264,9 @@ import {
 						// ★ 工单 23：头脑风暴工作面（数据 + 发送出口；发送复用 `sendFeatureInstruction`）
 						__brainstorm: brainstormLoader,
 						__sendBrainstorm: brainstormRunner,
+						// ★ 工单 24：文档生成工作面（成稿 + 配置支线；发送**同一条链路**）
+						__draft: draftLoader,
+						__sendDraft: draftRunner,
 						__diagnose: diagnose, __probe: probe, __projectRoot: projectRoot,
 						__interfaces: interfaceLoader, __index: indexLoader, __detail: detailLoader,
 						__resolve: resolveIndexSession,
@@ -6609,3 +7292,4 @@ import {
 		}
 
 export { apply, inject };
+

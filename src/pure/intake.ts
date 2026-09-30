@@ -9,9 +9,14 @@
  *   竞品分析 / 问答式访谈 / 旧文档分析 / 人工补充 —— 与老收件箱的四种方式**不是同一套语义**
  *   （老方式 3/4 只登记进 `inbox\`；新入口的产出全部落功能目录的 `analysis\`，且旧文档分析 / 人工补充
  *   有**固定格式**，见设计 §4.2）。老的那一组**原样保留**：设计资产屏还在用，改它就是行为回归。
+ *
+ * ★ 工单 24（文档生成工作面）继续照这条纪律走：动作表与三段式组装器都在 `./draftstep.ts`，
+ *   这里只 **re-export**（`DRAFT_ACTIONS` / `buildDraftInstruction`）—— 面板侧读 `INTAKE` 就够，
+ *   不会出现"client.js 里再抄一份"的第二份实现。
  */
 
 import { ENTRANCES, humanNoteName, legacyDocName } from "./analysisdoc.ts";
+import { DRAFT_ACTIONS_TABLE, buildDraftInstruction } from "./draftstep.ts";
 
 const INTAKE = (function () {
 	/** 文档类扩展名（导入时只复制这些，跳过图片/视频等大文件） */
@@ -417,12 +422,15 @@ const INTAKE = (function () {
 	return {
 		INTAKE_KINDS: INTAKE_KINDS,
 		BRAINSTORM_KINDS: ENTRANCES,
+		// ★ 工单 24：文档生成工作面的三个动作 + 三段式组装器（表只有一份，在 `./draftstep.ts`）
+		DRAFT_ACTIONS: DRAFT_ACTIONS_TABLE,
 		parseMaterial: parseMaterial, parseMaterials: parseMaterials,
 		baseName: baseName, extOf: extOf, isDoc: isDoc, isTextExt: isTextExt,
 		deriveTopic: deriveTopic, safeName: safeName,
 		describeMaterials: describeMaterials, hasPathMaterial: hasPathMaterial,
 		buildInstruction: buildInstruction,
-		buildBrainstormInstruction: buildBrainstormInstruction
+		buildBrainstormInstruction: buildBrainstormInstruction,
+		buildDraftInstruction: buildDraftInstruction
 	};
 })();
 

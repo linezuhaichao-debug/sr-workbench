@@ -127,10 +127,10 @@ export function watchPlan(opts: {
 // ════════════════════════════════════════════════════════════════
 
 /** 面板上"各自有一份数据"的部件 —— 重读的最小单位 */
-export type ReloadPart = "board" | "detail" | "ledger" | "brain" | "final" | "ui";
+export type ReloadPart = "board" | "detail" | "ledger" | "brain" | "final" | "ui" | "draft";
 
 /** 全部部件（手动刷新用） */
-export const RELOAD_PARTS: ReloadPart[] = ["board", "detail", "ledger", "brain", "final", "ui"];
+export const RELOAD_PARTS: ReloadPart[] = ["board", "detail", "ledger", "brain", "final", "ui", "draft"];
 
 export interface ReloadPlan {
 	parts: ReloadPart[];
@@ -161,12 +161,17 @@ function depthOf(rel: string): number {
  *   桶                 → 部件
  *   `analysis\`        → detail + brain      （头脑风暴工作面读的就是 analysis）
  *   `decisions\`       → detail + ledger     （决策台账读 decision_*.json）
- *   `evidence\`        → detail + ledger     （校准流水 calibration_*.jsonl 在台账里）
- *   `gdd\`（顶层）     → detail + final + ui （可能就是当前那份定稿；界面图来自定稿 §5）
+ *   `evidence\`        → detail + ledger + draft（校准流水在台账里；**读回回执 readback_* 在文档生成工作面里**）
+ *   `gdd\`（顶层）     → detail + final + ui + draft（当前定稿 / 界面图 / **成稿与定稿 §6（配置支线）**）
  *   `gdd\<子目录>\`    → detail + ui         （界面图）
  *   其余桶 / 其它     → detail
  *   功能根自己（rel = ""）→ detail + board    （feature.json / 设计台账 / 新增桶会影响卡片）
  *   别的功能 / 工作区外 → board / 忽略
+ *
+ * ★ 工单 24 加的 `draft`（文档生成工作面：成稿 + 定稿 §6 配置支线 + 读回回执）落在**两个桶**上：
+ *   `gdd\`（成稿与定稿都在那儿）与 `evidence\`（`readback_*` 回执在那儿）。
+ *   ★ 它**不**跟 `analysis\` 走：这一屏读的是 `gdd\` 里的成稿，不是 `analysis\` 里的分析产物 ——
+ *     多挂一个桶 = 别人改一份分析产物就把这一屏也重读一遍，那是白读。
  */
 export function planReload(notice: { path: unknown; absent?: boolean }, scope: { root: unknown; srWs?: unknown }): ReloadPlan {
 	const c = scope || {};
@@ -190,10 +195,13 @@ export function planReload(notice: { path: unknown; absent?: boolean }, scope: {
 	const seg = firstSeg(rel);
 	const depth = depthOf(rel);
 	if (seg === "analysis") return { parts: ["detail", "brain"], reason: "analysis 桶变了（头脑风暴工作面的来源）" + suffix };
-	if (seg === "decisions" || seg === "evidence") return { parts: ["detail", "ledger"], reason: seg + " 桶变了（决策台账的来源）" + suffix };
+	if (seg === "decisions") return { parts: ["detail", "ledger"], reason: seg + " 桶变了（决策台账的来源）" + suffix };
+	// ★ 工单 24：`evidence\` 多挂 `draft` —— 读回回执（`readback_*`）是配置支线的一步，在文档生成工作面里
+	if (seg === "evidence") return { parts: ["detail", "ledger", "draft"], reason: seg + " 桶变了（决策台账 + 文档生成工作面的读回回执）" + suffix };
 	if (seg === "gdd") {
 		// 「顶层」= `gdd` 目录自己（rel 只有一段）或 `gdd\<文件>`（两段）
-		if (depth <= 2) return { parts: ["detail", "final", "ui"], reason: "gdd 顶层变了（当前定稿 / 界面图都从这儿来）" + suffix };
+		// ★ 工单 24：顶层多挂 `draft`（成稿与定稿 §6 都在这儿）；子目录只管界面图，不必重读那两样
+		if (depth <= 2) return { parts: ["detail", "final", "ui", "draft"], reason: "gdd 顶层变了（当前定稿 / 成稿 / 界面图都从这儿来）" + suffix };
 		return { parts: ["detail", "ui"], reason: "gdd 里的子目录变了（界面图）" + suffix };
 	}
 	if (BUCKETS.indexOf(seg) >= 0) return { parts: ["detail"], reason: seg + " 桶变了（只影响产物清单）" + suffix };
