@@ -39,6 +39,17 @@ import {
 	rowsFromList,
 	rowsFromStore
 } from "./pure/sessionpick.ts";
+// ★ 工单 13/14 · 定稿工作面：解析（finalgdd）· 大纲树数据（finaltree）· 引用图与六类边（refgraph）
+//   · 特殊块切分（split）· 三段式指令文本（instruction）。
+//   这一批**全是 import，不再有内联副本** —— 面板跑的就是 `npm test` 覆盖的那份实现
+//   （此前 `parseFinalGdd` / `buildRefGraph` / `impactOf` / `splitSpecial` / `checkFinals` 在下面各有一份副本，
+//    其中 `buildRefGraph` 那份是**旧五类边**版本：第六类契约边在面板上根本看不见）。
+import { checkFinals, parseFinalGdd, topBlockIndex } from "./pure/finalgdd.ts";
+import { buildFinalTree } from "./pure/finaltree.ts";
+import { EDGE_LEGEND, buildRefGraph, edgeLabelOf, impactOf } from "./pure/refgraph.ts";
+import { splitSpecial } from "./pure/split.ts";
+// 三段式（改哪儿 / 现状原文 / 影响范围）只有一份实现：面板上先给用户看，发出去的就是同一段
+import { buildFixInstruction } from "./pure/instruction.ts";
 
 		const h = React.createElement;
 
@@ -407,250 +418,12 @@ import {
 			return out;
 		}
 
-		// ── 定稿有效性校验（设计 §6.1 / §8 V1）──────────────────────────
-		//   纯函数，不碰 IO —— 便于离线测试（见 test-finalcheck.js）
-		//   规则：① 组内按文件名日期倒序
-		//         ② "当前有效" = 日期最新的 active；没有 active 时退回按日期取最新
-		//         ③ active 份数 > 1 → 告警
-		//   ★ 口径声明：文件的取代关系是**派生结论**，不是文件声明——
-		//     定稿 frontmatter 只有 doc_type + status 两个字段，没有任何 superseded 标记。
-		function checkFinals(finals) {
-			// Array.isArray 而非 || ：让 check-sandbox 的探测调用能真正执行进来（提升扫描覆盖率）
-			const list = (Array.isArray(finals) ? finals : []).slice().sort((a, b) => (dateOf(a.name) < dateOf(b.name) ? 1 : -1));
-			const st = (f) => String((f && f.status) || "").trim().toLowerCase();
-			const actives = list.filter((f) => st(f) === "active").map((f) => f.name);
-			const pending = list.filter((f) => st(f) === "pending").map((f) => f.name);
-			const issues = [];
-			if (actives.length > 1) {
-				issues.push({
-					code: "V1", level: "error", files: actives,
-					msg: "同时有 " + actives.length + " 份 active 定稿——文件自身没有 archived 标记，取代关系是派生的"
-				});
-			} else if (list.length > 1 && actives.length === 1) {
-				// 只有一份 active，但要确认其余份**真的**标了 archived，而不是"没标"
-				const others = list.filter((f) => f.name !== actives[0] && st(f) !== "archived");
-				if (others.length) {
-					issues.push({
-						code: "V1c", level: "warn", files: others.map((f) => f.name),
-						msg: others.length + " 份旧定稿未标 archived（当前按日期视为历史版本）"
-					});
-				}
-			}
-			if (list.length && !actives.length && !pending.length) {
-				issues.push({
-					code: "V1b", level: "warn", files: list.map((f) => f.name),
-					msg: "没有 active 定稿——provisional / blocked / 或缺头部字段"
-				});
-			}
-			return {
-				current: actives.length ? actives[0] : (list[0] ? list[0].name : null),
-				currentFrom: actives.length ? "active" : "date",   // 判定依据，如实标注
-				actives: actives,
-				pending: pending,
-				issues: issues,
-				all: list
-			};
-		}
-
-		// ── 设计台账派生（设计 §7）：**实现已接到 `src/pure/ledger.ts`**（工单 32 方向）─────
-		//   这里原来有一份内联副本（stageOfGate / stageOfDecision / buildLedger）；
-		//   实测它与模块版的差异**只有工单 17 加的那几行**（covSources / fieldCheck / notes），
-		//   于是面板上的 `fieldCheck` 一直是 undefined —— 字段覆盖检查在面板里根本看不见。
-		//   现在改为 import 模块那一份：面板跑的就是 `npm test` 覆盖的实现。
-
-		// ── 定稿结构解析（设计 §6.2 大纲树 / §6.3 条目引用的基础）──────────
-		//   纯函数。产出：章 → 组 → 条目行，**每个都带 1-based 行号**（与编辑器一致），
-		//   行号是"定位"与"就地改这条"的锚点。
-		//   骨架依据实测定稿：`## N. 章` / `### R{n} 组名` / `### 5.x UI-M{n} 名称` /
-		//   `### 6.x 表名`，组内条目是两~三列表格的第一列。
-		function parseFinalGdd(text) {
-			const src = String(text || "");
-			const lines = src.split(/\r?\n/);
-			const meta = parseFrontmatter(src) || {};
-			let title = "", fence = false, cur = null;
-			const blocks = [];      // ★ 平铺块：每块 = 一个标题 + 它名下的原文（渲染用）
-			const outline = [];     // 大纲树：章 → 组（引用 blocks 的下标）
-
-			const start = (level, no, id, t, ln) => {
-				const b = { level: level, no: no, id: id, title: t, line: ln, text: [], rows: [] };
-				blocks.push(b);
-				cur = b;
-				if (level === 2) {
-					outline.push({ no: no, title: t, line: ln, idx: blocks.length - 1, rows: b.rows, children: [] });
-				} else if (outline.length) {
-					const parent = outline[outline.length - 1];
-					b.chNo = parent.no;     // ★ level-3 块记住自己属于哪一章（错误边界的 label 要用）
-					parent.children.push(
-						{ no: no, id: id, title: t, line: ln, idx: blocks.length - 1, rows: b.rows });
-				}
-				return b;
-			};
-
-			for (let i = 0; i < lines.length; i++) {
-				const line = lines[i];
-				const ln = i + 1;
-
-				if (/^\s*(```|~~~)/.test(line)) { fence = !fence; if (cur) cur.text.push(line); continue; }
-				if (fence) { if (cur) cur.text.push(line); continue; }
-
-				if (!blocks.length && !cur) {
-					const mt = /^#\s+(.+?)\s*$/.exec(line);
-					if (mt) { title = mt[1]; continue; }
-				}
-
-				const m2 = /^##\s+(\d+)[.、]?\s*(.*)$/.exec(line);
-				if (m2) { start(2, m2[1], "", (m2[2] || "").trim(), ln).text.push(line); continue; }
-
-				const m3 = /^###\s+(.+?)\s*$/.exec(line);
-				if (m3) {
-					const raw = m3[1];
-					let no = "", id = "", t = raw;
-					const a = /^(R\d+)\s+(.+)$/.exec(raw);                  // §4：R1 活动周期与开启
-					const b2 = /^(\d+\.\d+)\s+(UI-M\d+)\s*(.*)$/.exec(raw);  // §5：5.1 UI-M1 联盟悬赏主面板
-					const c2 = /^(\d+\.\d+)\s+(.+)$/.exec(raw);             // §6：6.2 BOSS表（…）
-					if (a) { id = a[1]; t = a[2]; }
-					else if (b2) { no = b2[1]; id = b2[2]; t = (b2[3] || b2[2]).trim(); }
-					else if (c2) { no = c2[1]; t = c2[2]; }
-					start(3, no, id, t, ln).text.push(line);
-					continue;
-				}
-
-				if (!cur) continue;    // 第一个章标题之前的内容（引言/用途块）不进块
-
-				// 表格行 → 条目（第一列作 key；表头靠在分隔行出现时回剔）
-				if (/^\s*\|.*\|\s*$/.test(line)) {
-					const cells = line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((s) => s.trim());
-					const first = cells[0] || "";
-					const isSep = /^:?-{2,}:?$/.test(first.replace(/\s/g, ""));
-					if (isSep) {
-						const last = cur.rows[cur.rows.length - 1];
-						if (last && last.line === ln - 1) cur.rows.pop();      // 剔表头
-					} else if (first) {
-						cur.rows.push({ key: first, line: ln, cells: cells.length, text: line.trim() });
-					}
-				}
-				cur.text.push(line);
-			}
-
-			for (const b of blocks) b.text = b.text.join("\n").replace(/^\s+|\s+$/g, "");
-
-			let groups = 0, rows = 0;
-			for (const b of blocks) {
-				rows += b.rows.length;
-				if (b.level === 3) groups++;
-			}
-			return {
-				meta: meta, title: title, blocks: blocks, outline: outline,
-				stats: { chapters: outline.length, groups: groups, rows: rows }
-			};
-		}
-
-		// ── 引用图（设计 §6.4.1）────────────────────────────────────────
-		//   条目 → 全文提到它的位置。**只算结构可判定的边，不做语义推断**
-		//   （"改了规则会不会让某条验收失效"仍归 sr-gdd-fix 的 D11 影响面闭合）。
-		//
-		//   已覆盖的边（六类里的五类）：
-		//     ① 显式引用  UI-M1 / UE3 / R3 / AC8 —— 全文搜编号
-		//     ② 编号同族  UE3 ↔ UE3a / UE3b（小写字母后缀是"同条的子情形"，不占主号）
-		//     ③ 界面归属  UI-M1 ↔ 它名下的 UE*；UI-M1 ↔ 5.0 清单里的行
-		//     ④ 验收关联  AC 里提到该编号
-		//     ⑤ 文本关联  §7 文本键 ↔ 引用它的位置
-		//   未覆盖：⑥ 契约关联（§4「配置字段」列 ↔ §6 行）—— 需要读表格语义，留下一轮。
-		const REF_TOKEN_RE = /(UE\d+[a-z]?|AC\d+|R\d+|UI-M\d+|[a-z][a-z0-9_]{3,})/g;
-
-		function buildRefGraph(g) {
-			if (!g || !g.outline) return { byRef: new Map(), vocabSize: 0, edgeCount: 0 };
-
-			// ① 词表：哪些 token 算"可被引用的实体"
-			const vocab = new Map();   // token → { kind, ref }
-			const add = (tk, kind, ref) => { if (tk && !vocab.has(tk)) vocab.set(tk, { kind: kind, ref: ref }); };
-			for (const c of g.outline) {
-				for (const r of c.rows) {                       // 章级表格（§7 文本键 / §10 AC）
-					if (/^AC\d+$/.test(r.key)) add(r.key, "ac", "§" + c.no + " " + r.key);
-					else if (/^[a-z][a-z0-9_]{3,}$/.test(r.key) && c.no === "7") add(r.key, "textkey", "§7 " + r.key);
-				}
-				for (const gr of c.children) {
-					if (gr.id) add(gr.id, "group", "§" + c.no + " " + gr.id);
-					for (const r of gr.rows) {
-						if (/^(UE\d+[a-z]?|AC\d+)$/.test(r.key)) {
-							add(r.key, "row", "§" + c.no + " " + (gr.id || gr.no || "") + " " + r.key);
-						}
-					}
-				}
-			}
-			if (!vocab.size) return { byRef: new Map(), vocabSize: 0, edgeCount: 0 };
-
-			// ② 扫全文：每行只跑一次正则，命中候选再查词表
-			const hits = new Map();    // token → [{line, where, text}]
-			for (const b of g.blocks) {
-				const where = (b.level === 2) ? ("§" + b.no + " " + b.title)
-					: ("§" + (b.chNo || "?") + " " + (b.id || b.no || "") + " " + b.title);
-				const lines = String(b.text || "").split(/\r?\n/);
-				for (let i = 0; i < lines.length; i++) {
-					const txt = lines[i];
-					if (!txt) continue;
-					REF_TOKEN_RE.lastIndex = 0;
-					let m, seen;
-					while ((m = REF_TOKEN_RE.exec(txt)) !== null) {
-						const tk = m[1];
-						if (!vocab.has(tk)) continue;
-						seen = seen || {};
-						if (seen[tk]) continue;               // 同一行同一 token 只记一次
-						seen[tk] = 1;
-						if (!hits.has(tk)) hits.set(tk, []);
-						hits.get(tk).push({ line: b.line + i, where: where.trim(), text: txt.trim() });
-					}
-				}
-			}
-
-			const byRef = new Map();
-			let edges = 0;
-			for (const kv of vocab.entries()) {
-				const tk = kv[0], meta = kv[1];
-				const list = hits.get(tk) || [];
-				byRef.set(meta.ref, { token: tk, kind: meta.kind, hits: list });
-				edges += list.length;
-			}
-
-			// ③ 编号同族边：同组内 UE3 ↔ UE3a / UE3b
-			//    （小写字母后缀 = "同条的子情形"，不占主号；改主条必须连带看子条 —— §6.5 的典型例子）
-			for (const c of g.outline) {
-				for (const gr of c.children) {
-					const fam = {};
-					for (const r of gr.rows) {
-						const m = /^([A-Za-z][A-Za-z\-]*\d+)([a-z])?$/.exec(r.key);
-						if (!m) continue;
-						if (!fam[m[1]]) fam[m[1]] = [];
-						fam[m[1]].push(r);
-					}
-					for (const k in fam) {
-						if (fam[k].length < 2) continue;      // 只处理真有多态的（UE2/UE2a、UE3/UE3a…）
-						const grpRef = "§" + c.no + " " + (gr.id || gr.no || "");
-						for (const me of fam[k]) {
-							const e = byRef.get((grpRef + " " + me.key).trim());
-							if (!e) continue;
-							for (const other of fam[k]) {
-								if (other === me) continue;
-								e.hits.push({
-									line: other.line, where: (grpRef + " " + other.key).trim(),
-									text: other.text || "", kind: "family"
-								});
-								edges++;
-							}
-						}
-					}
-				}
-			}
-			return { byRef: byRef, vocabSize: vocab.size, edgeCount: edges };
-		}
-
-		/** 某个条目的影响范围：它自己的定义处 + 全文提到它的其他地方（去掉自身） */
-		function impactOf(graph, ref, selfLine) {
-			if (!graph || !graph.byRef) return [];
-			const e = graph.byRef.get(ref);
-			if (!e) return [];
-			return e.hits.filter((h) => h.line !== selfLine);
-		}
+		// ── 定稿有效性校验（V1）· 定稿结构解析（§6.2 大纲树 / §6.3）· 引用图（§6.4.1）· 特殊块切分 ──
+		//   ★ 工单 13/14：这四块的**内联副本已全部删除**，改为 import 文件顶部那几个模块
+		//     （`checkFinals` / `parseFinalGdd` / `buildRefGraph` / `impactOf` / `splitSpecial`）。
+		//     本仓库的规矩：判据只有一份 —— 内联那份 `buildRefGraph` 停在"六类里的五类"，
+		//     于是面板上的影响范围**永远看不到 `[契约]`**（正是本票要修的东西）。
+		//     模块版另有 `refOf` / `fieldRowAt` / `edgeLabelOf` 三个给界面用的纯函数（见 import 处）。
 
 		function errText(r, fallback) {
 			if (!r) return fallback;
@@ -1604,21 +1377,11 @@ import {
 		 *   —— URL 里**带空格和间隔号**，塞进 `![]()` 会让 markdown 解析崩掉
 		 *   （实测症状：整个面板报 `Cannot read properties of undefined (reading 'code')`）。
 		 *   抽出来自己渲染，既绕开解析器，也顺带能控制尺寸和做失败降级。
+		 *
+		 * ★ 工单 13：这两段的**内联副本已删**（`splitImgs` / `splitSpecial` 共 55 行），
+		 *   改为 import `src/pure/split.ts` 那一份 —— 它被 `test/pure-split.test.ts` 逐条覆盖
+		 *   （4 段 fenced code + 7 个 `<img>`，路径含空格与中点号）。
 		 */
-		function splitImgs(text) {
-			const s = String(text || "");
-			const re = /<img\s+[^>]*?src\s*=\s*["']([^"']+)["'][^>]*?\/?>/gi;
-			const parts = [];
-			let last = 0, m;
-			while ((m = re.exec(s)) !== null) {
-				if (m.index > last) parts.push({ t: "md", v: s.slice(last, m.index) });
-				const alt = /alt\s*=\s*["']([^"']*)["']/i.exec(m[0]);
-				parts.push({ t: "img", v: m[1], alt: alt ? alt[1] : "" });
-				last = m.index + m[0].length;
-			}
-			if (last < s.length) parts.push({ t: "md", v: s.slice(last) });
-			return parts.length ? parts : [{ t: "md", v: s }];
-		}
 
 		/** 等宽代码块：**不经 markdown 渲染器**（实测它对 ``` 围栏会崩） */
 		function CodeBlock(props) {
@@ -1633,48 +1396,43 @@ import {
 		}
 
 		/**
-		 * 把**渲染器支持不稳的两种结构**抽出来单独渲染：围栏代码块 + HTML `<img>`。
+		 * 单张图：把定稿里的**相对路径**按定稿所在目录解析成绝对路径 → `/api/file` URL。
 		 *
-		 * ★ 实测两次崩溃都出在这里（症状都是 `Cannot read properties of undefined (reading 'code')`）：
-		 *   ① `<img src="… 含空格和间隔号 ….png">` 塞进 `![]()` → 崩；
-		 *   ② ```text 围栏代码块（定稿的循环图 / 流程图 / ASCII 骨架全用它）→ 崩。
-		 *   抽出来自己渲染就没有这些问题，顺带：代码块能 `white-space: pre` 保证 ASCII 对齐，
-		 *   图片能控制尺寸、失败退化成文件名。
+		 * ★ 失败**不显示破图**，而是退化成「用默认程序打开」——
+		 *   真实定稿的图是 `<img src="UI/UI-M1 联盟悬赏主面板 · 常规难度.png">`：
+		 *   路径含空格与中点号，`/api/file` 也可能因为权限/路径形态取不到。这时候
+		 *   ① 面板里画一个虚线框说明发生了哪种失败；② 给一个按钮走系统默认程序打开（`props.onOpen`）。
+		 *   虚线框上写明**解析出来的绝对路径**，用户能一眼看出是路径没解析对还是文件没读到。
 		 */
-		function splitSpecial(text) {
-			const s = String(text || "");
-			const parts = [];
-			const re = /^[ \t]*(`{3,}|~{3,})[ \t]*([^\n]*)\n([\s\S]*?)^[ \t]*\1[ \t]*$/gm;
-			let last = 0, m;
-			while ((m = re.exec(s)) !== null) {
-				if (m.index > last) parts.push({ t: "md", v: s.slice(last, m.index) });
-				parts.push({ t: "code", v: String(m[3]).replace(/\n$/, ""), lang: (m[2] || "").trim() });
-				last = m.index + m[0].length;
-			}
-			if (last < s.length) parts.push({ t: "md", v: s.slice(last) });
-
-			const out = [];
-			for (const p of (parts.length ? parts : [{ t: "md", v: s }])) {
-				if (p.t !== "md") { out.push(p); continue; }
-				for (const q of splitImgs(p.v)) out.push(q);
-			}
-			return out.length ? out : [{ t: "md", v: s }];
-		}
-
-		/** 单张图：解析成 /api/file URL；加载失败退化成文件名，不显示破图 */
 		function ImgTag(props) {
 			const [bad, setBad] = React.useState(false);
-			const url = (props.pathImages && props.pathImages.resolve) ? props.pathImages.resolve(props.src) : void 0;
+			const abs = (props.pathImages && props.pathImages.abs) ? props.pathImages.abs(props.src) : void 0;
+			const url = abs ? fileUrl(abs) : void 0;
+			const canOpen = !!(abs && typeof props.onOpen === "function");
 			if (!url || bad) {
 				return h("div", {
 					style: {
-						fontSize: "11px", color: C.muted, padding: "6px 9px", margin: "6px 0",
+						fontSize: "11px", color: C.muted, padding: "7px 10px", margin: "6px 0",
 						border: "1px dashed " + C.soft, borderRadius: "4px", background: C.bg, userSelect: "text"
 					}
-				}, "🖼 " + (props.alt || props.src) + (url ? "（图片加载失败）" : "（路径解析失败）"));
+				}, [
+					h("div", { key: "t" }, "🖼 " + (props.alt || props.src) +
+						(url ? "（面板内显示失败）" : "（路径没解析出来）")),
+					abs ? h("div", {
+						key: "p", style: { fontFamily: "monospace", fontSize: "10px", marginTop: "2px", wordBreak: "break-all" }
+					}, abs) : null,
+					canOpen ? h("button", {
+						key: "o", type: "button", "data-open": abs,
+						onClick: () => props.onOpen(abs),
+						style: {
+							font: "inherit", fontSize: "11px", marginTop: "6px", padding: "3px 10px",
+							border: "1px solid " + C.ink, background: "#fff", borderRadius: "3px", cursor: "pointer"
+						}
+					}, "用默认程序打开") : null
+				]);
 			}
 			return h("img", {
-				src: url, alt: props.alt || "",
+				src: url, alt: props.alt || "", "data-abs": abs,
 				onError: () => setBad(true),
 				style: {
 					maxWidth: "440px", width: "100%", display: "block", margin: "6px 0",
@@ -1704,11 +1462,16 @@ import {
 		}
 
 		/**
-		 * 定稿工作面（设计 §6.2 三栏的简化版 / §6.3 条目定位）。
+		 * 定稿工作面（设计 §6.2 三栏 / §6.3 条目定位 / §6.4.1 影响范围）。
 		 *
-		 * ★ 分块渲染：解析器把定稿切成「章 / 组」块，每块一个带 `data-blk` 的 div，
-		 *   点左栏大纲 → scrollIntoView 定位。**不依赖 markdown 渲染器支持行锚点**。
-		 * ★ 左栏是结构导航，右栏是正文；选中的块左边有竖线 + 淡蓝底，便于"知道自己在哪"。
+		 * ★ **左树 / 右正文 + 定位卡**。树的**数据**（章 → 组 → 条目、条目引用、行号、现状原文、
+		 *   默认开合、哪些行不可单独引用）全部来自 `src/pure/finaltree.ts`：引用串就是引用图的键，
+		 *   面板**不自己拼字符串**（拼错一个空格查图就是空集，界面上还看不出为什么）。
+		 * ★ 分块渲染：解析器把定稿切成「章 / 组」块，每块一个带 `data-blk` 的 div，点树 → scrollIntoView
+		 *   定位（**不依赖 markdown 渲染器支持行锚点**）；正文滚动时按 `topBlockIndex`（纯函数）
+		 *   反推"现在在看哪一块"，树上的高亮跟着走。
+		 * ★ 定位卡 = 条目引用 + 原文（带行号）+ 影响范围（**每一处标明属于哪一类边**，六类齐全）
+		 *   + 三段式指令原文（`buildFixInstruction` 拼的，与真正发出去的是同一段）。
 		 */
 		function FinalDoc(props) {
 			const d = props.doc;
@@ -1719,6 +1482,7 @@ import {
 			const [sendMsg, setSendMsg] = React.useState(null);
 			const bodyRef = React.useRef(null);
 			const graph = React.useMemo(() => (d && d.blocks ? buildRefGraph(d) : null), [d]);
+			const tree = React.useMemo(() => (d && d.outline ? buildFinalTree(d, graph) : null), [d, graph]);
 
 			if (!d) return h("p", { style: { color: C.muted, fontSize: "12px" } }, "正在读定稿…");
 			if (d.empty) return h("p", { style: { color: C.muted, fontSize: "12px" } }, d.empty);
@@ -1726,14 +1490,20 @@ import {
 			if (!d.blocks || !d.blocks.length) {
 				return h("p", { style: { color: C.muted, fontSize: "12px" } }, "定稿里没解析出章节结构。");
 			}
+			if (!tree || !tree.counts.chapters) {
+				return h("p", { style: { color: C.muted, fontSize: "12px" } }, "定稿里没解析出章节结构。");
+			}
 
+			/** 相对路径 → **绝对路径**：按定稿所在目录解析（含空格与中点号也照原样拼，不做转义） */
+			const absOf = (v) => {
+				if (!v || typeof v !== "string") return void 0;
+				if (!/\.(png|jpe?g|gif|webp|svg)$/i.test(v)) return void 0;
+				const isAbs = /^[A-Za-z]:[\\/]/.test(v) || v.charAt(0) === "/";
+				return isAbs ? v : String(d.dir).replace(/[\\/]+$/, "") + "/" + v;
+			};
 			const pathImages = {
-				resolve: (v) => {
-					if (!v || typeof v !== "string") return void 0;
-					if (!/\.(png|jpe?g|gif|webp|svg)$/i.test(v)) return void 0;
-					const isAbs = /^[A-Za-z]:[\\/]/.test(v) || v.charAt(0) === "/";
-					return fileUrl(isAbs ? v : String(d.dir).replace(/[\\/]+$/, "") + "/" + v);
-				}
+				abs: absOf,
+				resolve: (v) => { const a = absOf(v); return a ? fileUrl(a) : void 0; }
 			};
 			const goto = (idx) => {
 				setSel(idx);
@@ -1741,6 +1511,23 @@ import {
 				if (!box || !box.querySelector || idx < 0) return;
 				const el = box.querySelector('[data-blk="' + idx + '"]');
 				if (el && el.scrollIntoView) el.scrollIntoView({ block: "start" });
+			};
+			/**
+			 * 正文滚动 → 树高亮跟随。判断只有一句：把每块顶边（相对滚动容器）交给纯函数
+			 * `topBlockIndex` 取"已经越过顶边的最后一个块"。这里只负责取矩形。
+			 */
+			const onBodyScroll = () => {
+				const box = bodyRef.current;
+				if (!box || !box.querySelectorAll || !box.getBoundingClientRect) return;
+				const els = box.querySelectorAll("[data-blk]");
+				const boxTop = box.getBoundingClientRect().top;
+				const tops = [];
+				for (let i = 0; i < els.length; i++) {
+					const r = els[i] && els[i].getBoundingClientRect ? els[i].getBoundingClientRect() : null;
+					tops.push(r ? r.top - boxTop : NaN);
+				}
+				const i = topBlockIndex(tops);
+				if (i >= 0 && i !== sel) setSel(i);
 			};
 			/** 行号 → 它所在的块 idx（影响范围里点一条，跳过去看） */
 			const blockIdxOfLine = (line) => {
@@ -1751,37 +1538,51 @@ import {
 				}
 				return -1;
 			};
-			const pickItem = (ref, row, grpIdx) => {
-				setItem({ ref: ref, row: row, group: false });
-				setSendMsg(null);
-				goto(grpIdx);
-			};
+
 			/**
-			 * 组级选中（§6.3 的引用表里，§4 的规则**只到组级** —— D1 纪律规定"组内不编小号"）。
-			 * 所以点 `R2 BOSS 与难度推进` 也要出卡片：给出组级引用 + 组内条目清单 + 该组的引用面。
+			 * 选中一条 → 出定位卡。
+			 * `exclude` = 影响范围里**要排除的自指行**：条目/键/AC 是自己的定义行 ⇒ 排除它
+			 * （"还牵动别处哪些地方"才是要点）；组与 §6 字段行不排除（组的标题行、字段的声明行
+			 * 都是这一条自己的位置，留着并在卡上标明「自身」，这样处数与 14-impact-oracle 对得上）。
 			 */
-			const pickGroup = (chNo, g) => {
-				const ref = ("§" + chNo + " " + (g.id || g.no || "")).trim();
-				const names = g.rows.map((r) => r.key).slice(0, 14);
-				setItem({
-					ref: ref, group: true,
-					row: {
-						line: g.line,
-						text: g.title + "（组内 " + g.rows.length + " 条：" + names.join(" / ") +
-							(g.rows.length > 14 ? " …" : "") + "）"
-					}
-				});
-				setSendMsg(null);
-				goto(g.idx);
+			const pick = (o, idx) => { setItem(o); setSendMsg(null); goto(idx); };
+			const pickItem = (it, grpIdx) => pick({
+				ref: it.ref, line: it.line, text: it.text, self: it.line, exclude: it.line,
+				grain: it.grain, note: ""
+			}, grpIdx);
+			const pickGroup = (g) => {
+				const names = g.items.map((x) => x.label);
+				pick({
+					ref: g.ref, line: g.line, text: g.text, self: g.line,
+					exclude: null,                 // 组的标题行不排除（卡上标「（自身）」），处数与 14-impact-oracle 对齐
+					grain: g.grain,
+					note: !g.ref
+						? "这一组不是引用图的实体（§4 到规则组、§5 到界面组、§6 到行）—— 只能定位，没有影响范围。"
+						: "组内 " + g.items.length + " 条：" + names.slice(0, 14).join(" / ") + (names.length > 14 ? " …" : "")
+				}, g.idx);
 			};
-			const impact = (item && graph) ? impactOf(graph, item.ref, item.row.line) : [];
+			const pickChapter = (c) => pick({
+				ref: "", line: c.line, text: c.text, self: c.line, exclude: null,
+				grain: c.grain,
+				note: "章不单独引用：改动按条落在组/条目上（§4 到规则组、§5 到界面组+条目、§6 到行、§7 到键、§10 到条目）。"
+			}, c.idx);
+
+			const impact = (item && item.ref && graph) ? impactOf(graph, item.ref, item.exclude) : [];
+			/** 发给工作会话的那一份：**去掉自身那一行**（自指算影响没有意义） */
+			const impactSend = impact.filter((h) => h.line !== (item && item.self));
+			const impactArg = impactSend.map((h) => ({ line: h.line, where: h.where, kind: h.kind || "" }));
+			const preview = (item && item.ref)
+				? buildFixInstruction({
+					path: d.path, ref: item.ref, before: item.text,
+					intent: intent.trim(), impact: impactArg
+				})
+				: "";
 
 			const send = () => {
-				if (!item || !intent.trim() || !props.onFix) return;
+				if (!item || !item.ref || !intent.trim() || !props.onFix) return;
 				setSendMsg({ kind: "pending", text: "正在发给工作会话…" });
 				props.onFix({
-					path: d.path, ref: item.ref, before: item.row.text, intent: intent.trim(),
-					impact: impact.map((h) => ({ line: h.line, where: h.where, kind: h.kind || "" }))
+					path: d.path, ref: item.ref, before: item.text, intent: intent.trim(), impact: impactArg
 				}).then(
 					(r) => setSendMsg(r && r.ok
 						? { kind: "ok", text: "已发进工作会话 —— 去会话里看它改；改完回来点「重读」。" }
@@ -1790,50 +1591,70 @@ import {
 				);
 			};
 
-			// 左栏：大纲树（章 → 组 → 条目）
+			// ── 左栏：大纲树（章 → 组 → 条目，逐级带行号）──────────────────
+			//   ★ 默认开合来自数据（`finaltree` 给的 open）：**组级展开、章级收起** —— §7 有 49 个键。
 			//   ★ 三处刻意的设计，都是为了让"能点的东西"一眼可见：
-			//     ① **默认展开**（openGrp[key] !== false）—— 收起状态下看不到条目，用户不知道能点
-			//     ② **整行可点**（展开/收起 + 定位一起做）—— 原来只有 10px 宽的 ▸，基本点不到
-			//     ③ **章级条目也列**（§10 的 AC、§7 的文本键）—— 它们同样是可引用实体
-			const isItemKey = (k) => /^(UE\d+[a-z]?|AC\d+)$/.test(k);
-			const isTextKey = (k) => /^[a-z][a-z0-9_]{3,}$/.test(k);
+			//     ① 默认展开（组级）—— 收起状态下看不到条目，用户不知道能点
+			//     ② 整行可点（展开/收起 + 定位一起做）—— 原来只有 10px 宽的 ▸，基本点不到
+			//     ③ 不可单独引用的行**显灰 + 说明原因**（不假装能点）
+			const LNUM = { fontSize: "9.5px", color: C.muted, fontFamily: "monospace", marginLeft: "6px", flex: "0 0 auto" };
+			const lnum = (line) => h("span", { key: "L", style: LNUM }, "L" + line);
 			const toc = [h("div", {
 				key: "head",
 				style: { fontSize: "11px", color: C.muted, marginBottom: "8px", lineHeight: 1.6, userSelect: "text" }
-			}, d.name + " · " + d.stats.chapters + " 章 / " + d.stats.rows + " 条目" + "　点条目 → 看影响范围")];
+			}, [
+				h("div", { key: "a" }, d.name + " · " + tree.counts.chapters + " 章 / " + tree.counts.groups + " 组 / " +
+					tree.counts.items + " 个可引用条目"),
+				h("div", { key: "b" }, "点条目 → 出定位卡（条目引用 + 原文 + 影响范围）；组级默认展开、章级默认收起")
+			])];
 
-			const itemRow = (row, ref, grpIdx) => {
-				const on = item && item.ref === ref;
+			const itemRow = (it, grpIdx) => {
+				const on = !!item && !!it.ref && item.ref === it.ref && item.line === it.line;
+				const dead = !it.ref;
 				return h("div", {
-					key: "it" + ref,
-					onClick: () => pickItem(ref, row, grpIdx),
-					title: ref,                      // 悬停看完整引用
+					key: "it" + it.line + "-" + (it.ref || it.label),
+					onClick: dead ? void 0 : () => pickItem(it, grpIdx),
+					title: dead ? (it.why || "这一行不可单独引用") : it.ref,
+					"data-ref": it.ref || "",
+					"data-line": String(it.line),
 					style: {
-						fontSize: "11px", cursor: "pointer", userSelect: "none",
+						display: "flex", alignItems: "baseline",
+						fontSize: "11px", cursor: dead ? "default" : "pointer", userSelect: "none",
 						padding: "1px 4px 1px 22px", borderRadius: "3px",
-						color: on ? "#fff" : C.muted,
+						color: dead ? C.soft : (on ? "#fff" : C.muted),
 						background: on ? C.link : "transparent",
 						fontWeight: on ? 600 : 400,
-						whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis"
+						whiteSpace: "nowrap", overflow: "hidden"
 					}
-				}, row.key);
+				}, [
+					h("span", {
+						key: "l", style: { overflow: "hidden", textOverflow: "ellipsis" }
+					}, it.label),
+					it.sub ? h("span", { key: "s", style: { color: dead ? C.soft : C.muted, marginLeft: "5px", fontSize: "10px" } }, it.sub) : null,
+					h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
+					lnum(it.line)
+				]);
 			};
 
-			for (const c of d.outline) {
-				// 章级条目（§10 的 AC、§7 的文本键）—— 默认**收起**：成批看的对象，展开会淹没界面
-				const chItems = c.rows.filter((r) => /^AC\d+$/.test(r.key) || (c.no === "7" && isTextKey(r.key)));
+			for (const c of tree.chapters) {
 				const chKey = "ch" + c.no;
-				const chOpen = !!openGrp[chKey];
+				const chOpen = openGrp[chKey] === undefined ? c.open : !!openGrp[chKey];
+				const cnt = [];
+				if (c.groups.length) cnt.push(c.groups.length + " 组");
+				if (c.items.length) cnt.push(c.items.length + " 条");
+				if (c.skipped) cnt.push(c.skipped + " 行不可引用");
 				toc.push(h("div", {
 					key: "c" + c.no,
 					onClick: () => {
-						if (chItems.length) {
+						if (c.items.length) {
 							const nx = Object.assign({}, openGrp);
 							nx[chKey] = !chOpen;
 							setOpenGrp(nx);
 						}
-						goto(c.idx);
+						pickChapter(c);
 					},
+					title: c.text,
+					"data-ch": c.no,
 					style: {
 						display: "flex", alignItems: "baseline", cursor: "pointer", userSelect: "none",
 						fontSize: "12px", fontWeight: 600, margin: "8px 0 3px",
@@ -1846,32 +1667,37 @@ import {
 							fontSize: "9px", color: C.muted, marginRight: "4px",
 							width: "9px", flex: "0 0 9px", textAlign: "center"
 						}
-					}, chItems.length ? (chOpen ? "▾" : "▸") : "·"),
+					}, c.items.length ? (chOpen ? "▾" : "▸") : "·"),
 					h("span", { key: "l" },
-						"§" + c.no + " " + c.title + (chItems.length && !chOpen ? "  (" + chItems.length + ")" : ""))
+						"§" + c.no + " " + c.title + (!chOpen && cnt.length ? "  (" + cnt.join(" · ") + ")" : "")),
+					h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
+					lnum(c.line)
 				]));
 				if (chOpen) {
-					for (const r of chItems) toc.push(itemRow(r, ("§" + c.no + " " + r.key).trim(), c.idx));
+					for (const it of c.items) toc.push(itemRow(it, c.idx));
 				}
 
 				// 组
-				for (const g of c.children) {
+				for (const g of c.groups) {
 					const tag = g.id || g.no || "";
 					const gkey = "g" + g.idx;
-					const items = g.rows.filter((r) => isItemKey(r.key));
-					const isOpen = openGrp[gkey] !== false;      // ★ 默认展开
+					const isOpen = openGrp[gkey] === undefined ? g.open : !!openGrp[gkey];
+					const gc = g.items.length ? g.items.length + " 条" : "";
+					const gs = g.skipped ? (gc ? " · " : "") + g.skipped + " 行不可引用" : "";
 					toc.push(h("div", {
 						key: gkey,
 						onClick: () => {
-							if (items.length) {
+							if (g.items.length) {
 								const nx = Object.assign({}, openGrp);
 								nx[gkey] = !isOpen;
 								setOpenGrp(nx);
 							}
-							// 有 id 的组（R1 / UI-M1…）出卡片；没有 id 的组只定位
-							if (g.id || /^R\d+$/.test(g.no)) pickGroup(c.no, g);
+							// 有标识的组（R1 / UI-M1 / 6.2…）出卡片；没有标识的组只定位
+							if (tag) pickGroup(g);
 							else goto(g.idx);
 						},
+						title: g.text,
+						"data-group": tag,
 						style: {
 							display: "flex", alignItems: "baseline", cursor: "pointer", userSelect: "none",
 							padding: "2px 0 2px 10px", borderRadius: "3px",
@@ -1884,69 +1710,116 @@ import {
 								fontSize: "9px", color: C.muted, marginRight: "4px",
 								width: "9px", flex: "0 0 9px", textAlign: "center"
 							}
-						}, items.length ? (isOpen ? "▾" : "▸") : "·"),
+						}, g.items.length ? (isOpen ? "▾" : "▸") : "·"),
 						h("span", {
 							key: "l",
 							style: { fontSize: "11.5px", color: sel === g.idx ? C.link : C.muted }
-						}, (tag ? tag + "  " : "") + g.title + (g.rows.length ? "  (" + g.rows.length + ")" : ""))
+						}, (tag ? tag + "  " : "") + g.title + (gc || gs ? "  (" + gc + gs + ")" : "")),
+						h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
+						lnum(g.line)
 					]));
 					if (isOpen) {
-						for (const r of items) {
-							const ref = ("§" + c.no + " " + (g.id || g.no || "") + " " + r.key).trim();
-							toc.push(itemRow(r, ref, g.idx));
-						}
+						for (const it of g.items) toc.push(itemRow(it, g.idx));
 					}
 				}
 			}
 
-			// 右栏：定位卡（选中条目时）+ 分块正文
+			// ── 右栏：定位卡（选中时）+ 分块正文 ──────────────────────────
 			const labelOf = (b) => {
 				if (b.level === 2) return "§" + b.no + " " + (b.title || "");
 				const id = b.id || b.no || "";
 				const dup = b.no && b.chNo && String(b.no).indexOf(String(b.chNo) + ".") === 0;
 				return (dup ? "" : "§" + (b.chNo || "?") + " ") + id + " " + (b.title || "");
 			};
+			/** 边类别标签的颜色：⑥ 契约单独一个醒目的红，其余各有色调（用户能一眼分辨"这条算不算数"） */
+			const EDGE_TONE = { 引用: C.link, 同族: "#7c3aed", 归属: "#0f766e", 验收: C.ok, 文本: C.warn, 契约: C.bad };
+			const edgeTag = (k, label) => h("span", {
+				key: "k" + k,
+				style: {
+					fontSize: "10px", fontWeight: label === "契约" ? 700 : 400,
+					color: label === "契约" ? "#fff" : (EDGE_TONE[label] || C.muted),
+					background: label === "契约" ? C.bad : "transparent",
+					borderRadius: "3px", padding: label === "契约" ? "0 4px" : 0,
+					marginRight: "4px", flex: "0 0 auto"
+				}
+			}, "[" + label + "]");
+
 			const card = item ? h("div", {
 				key: "card",
 				style: {
 					border: "1px solid " + C.soft, borderLeft: "3px solid " + C.link, background: "#f8fbff",
 					borderRadius: "4px", padding: "9px 11px", marginBottom: "10px",
-					maxHeight: "34vh", overflow: "auto", flex: "0 0 auto"
+					maxHeight: "42vh", overflow: "auto", flex: "0 0 auto"
 				}
 			}, [
 				h("div", {
 					key: "h",
-					style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "5px" }
+					style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "3px" }
 				}, [
-					h("b", { key: "r", style: { fontSize: "12.5px", color: C.ink } }, item.ref),
+					h("b", { key: "r", style: { fontSize: "12.5px", color: C.ink, fontFamily: "monospace" } },
+						item.ref || "（不可单独引用）"),
 					h("span", {
 						key: "x",
 						onClick: () => { setItem(null); setIntent(""); setSendMsg(null); },
 						style: { fontSize: "11px", color: C.muted, cursor: "pointer", userSelect: "none" }
 					}, "✕ 取消选择")
 				]),
+				h("div", { key: "g", style: { fontSize: "10.5px", color: C.muted, marginBottom: "6px" } },
+					"引用粒度：" + item.grain + (item.note ? "　·　" + item.note : "")),
 				h("div", { key: "b", style: { fontSize: "11.5px", marginBottom: "7px", userSelect: "text" } }, [
-					h("div", { key: "t", style: { color: C.muted } }, "原文（L" + item.row.line + "）"),
+					h("div", { key: "t", style: { color: C.muted } }, "原文（L" + item.line + "）"),
 					h("div", {
 						key: "v",
 						style: {
 							color: C.ink, background: "#fff", border: "1px solid " + C.faint,
 							borderRadius: "3px", padding: "5px 7px", marginTop: "3px", lineHeight: 1.7
 						}
-					}, item.row.text)
+					}, item.text)
 				]),
 				h("div", { key: "i", style: { fontSize: "11.5px", marginBottom: "7px" } }, [
 					h("div", { key: "t", style: { color: C.muted } },
-						"影响范围 —— 面板只扫**结构引用**；语义影响（改了会不会让某条自相矛盾）由 sr-gdd-fix 的影响面闭合负责"),
+						item.ref
+							? ("影响范围 —— " + impact.length + " 处" +
+								(item.exclude === null && item.self ? "（含它自己那一行 L" + item.self + "）" : "") +
+								"；面板只扫**结构引用**，语义影响由 sr-gdd-fix 的 D11 负责")
+							: "影响范围 —— 无（章不是引用图的实体）"),
+					item.ref ? h("div", { key: "gz", style: { fontSize: "10px", color: C.muted, marginTop: "2px", lineHeight: 1.7 } },
+						"边类别：" + EDGE_LEGEND.join("　")) : null,
 					impact.length ? h("div", { key: "l", style: { marginTop: "3px" } },
-						impact.map((hh, ii) => h("div", {
-							key: ii,
-							onClick: () => goto(blockIdxOfLine(hh.line)),
-							style: { cursor: "pointer", color: C.link, lineHeight: 1.7, userSelect: "text" }
-						}, "· L" + hh.line + (hh.kind === "family" ? " [同族] " : " ") + hh.where + " —— " +
-							String(hh.text || "").slice(0, 62) + "…"))
-					) : h("div", { key: "n", style: { color: C.muted, marginTop: "3px" } }, "· 全文没有其他地方提到它")
+						impact.map((hh, ii) => {
+							const lab = edgeLabelOf(graph, item.ref, hh);
+							return h("div", {
+								key: ii,
+								onClick: () => goto(blockIdxOfLine(hh.line)),
+								title: "点它跳到正文里这一处",
+								style: {
+									display: "flex", alignItems: "baseline", cursor: "pointer",
+									color: C.link, lineHeight: 1.75, userSelect: "text"
+								}
+							}, [
+								edgeTag(ii, lab),
+								h("span", { key: "L", style: { fontFamily: "monospace", flex: "0 0 auto" } },
+									"L" + hh.line + (item.self === hh.line ? "（自身）" : "") + " "),
+								h("span", { key: "w", style: { flex: "0 0 auto" } }, hh.where),
+								h("span", { key: "x", style: { color: C.muted, marginLeft: "6px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+									"—— " + String(hh.text || "").slice(0, 64))
+							]);
+						})
+					) : h("div", { key: "n", style: { color: C.muted, marginTop: "3px" } },
+						item.ref ? "· 全文没有其他地方提到它（空集就如实报空，不硬凑关联）" : "· 请选章里的组或条目")
 				]),
+				preview ? h("div", { key: "pv", style: { fontSize: "11px", marginBottom: "7px" } }, [
+					h("div", { key: "t", style: { color: C.muted } },
+						"三段式（改哪儿 / 现状原文 / 影响范围）—— 下面这段就是发给工作会话的原文："),
+					h("pre", {
+						key: "v",
+						style: {
+							margin: "3px 0 0", padding: "6px 8px", background: C.bg, border: "1px solid " + C.faint,
+							borderRadius: "3px", fontFamily: "monospace", fontSize: "10.5px", lineHeight: 1.6,
+							whiteSpace: "pre-wrap", color: C.ink, userSelect: "text", maxHeight: "16vh", overflow: "auto"
+						}
+					}, preview)
+				]) : null,
 				h("div", { key: "act", style: { display: "flex", gap: "6px", alignItems: "center" } }, [
 					h("input", {
 						key: "in", value: intent, placeholder: "要改成什么（一句话）",
@@ -1957,14 +1830,14 @@ import {
 						}
 					}),
 					h("button", {
-						key: "go", type: "button", disabled: !intent.trim(),
+						key: "go", type: "button", disabled: !intent.trim() || !item.ref,
 						onClick: send,
 						style: {
 							font: "inherit", fontSize: "11.5px", padding: "5px 12px", borderRadius: "4px",
-							border: "1px solid " + (intent.trim() ? C.link : C.soft),
-							background: intent.trim() ? C.link : "#fff",
-							color: intent.trim() ? "#fff" : C.muted,
-							cursor: intent.trim() ? "pointer" : "default"
+							border: "1px solid " + (intent.trim() && item.ref ? C.link : C.soft),
+							background: intent.trim() && item.ref ? C.link : "#fff",
+							color: intent.trim() && item.ref ? "#fff" : C.muted,
+							cursor: intent.trim() && item.ref ? "pointer" : "default"
 						}
 					}, "发到工作会话")
 				]),
@@ -1987,7 +1860,12 @@ import {
 				}
 			}, h(BlockBoundary, { key: "bb", label: labelOf(b).trim() + "（L" + b.line + "）" },
 				splitSpecial(b.text).map((p, j) => {
-					if (p.t === "img") return h(ImgTag, { key: "i" + j, src: p.v, alt: p.alt, pathImages: pathImages });
+					if (p.t === "img") {
+						return h(ImgTag, {
+							key: "i" + j, src: p.v, alt: p.alt, pathImages: pathImages,
+							onOpen: props.onOpen || null
+						});
+					}
 					if (p.t === "code") return h(CodeBlock, { key: "c" + j, text: p.v });
 					return h(Md, { key: "m" + j, text: p.v, pathImages: pathImages });
 				})
@@ -1997,7 +1875,7 @@ import {
 				h("div", {
 					key: "toc",
 					style: {
-						flex: "0 0 252px", width: "252px", maxHeight: "68vh", overflow: "auto",
+						flex: "0 0 272px", width: "272px", maxHeight: "68vh", overflow: "auto",
 						borderRight: "1px solid " + C.faint, paddingRight: "10px"
 					}
 				}, toc),
@@ -2007,7 +1885,7 @@ import {
 				}, [
 					card,
 					h("div", {
-						key: "body", ref: bodyRef,
+						key: "body", ref: bodyRef, onScroll: onBodyScroll,
 						style: { flex: "1 1 auto", minHeight: 0, maxHeight: "68vh", overflow: "auto" }
 					}, body)
 				])
@@ -4674,7 +4552,9 @@ import {
 										: dtab === "final"
 											? h(FinalDoc, {
 												key: "fd", doc: finalDoc,
-												onFix: (req) => fixRunner(d && d.srWs, req)
+												onFix: (req) => fixRunner(d && d.srWs, req),
+												// 图片加载失败时退化成「用默认程序打开」——走与产物清单同一条打开链路
+												onOpen: (abs) => handleOpen(null, abs)
 											})
 										: h("div", { key: "soon", style: { color: C.muted, fontSize: "12px" } }, "这一屏还没做。")
 				]);
@@ -4869,21 +4749,14 @@ import {
 			 *   带**条目引用**（§5 UI-M1 UE3）+ **现状原文**（行号会漂，原文不会）
 			 *   + **面板扫出的结构引用**（让 agent 少一步搜索）。
 			 * ★ 语义影响仍然交给 sr-gdd-fix 的 D11 影响面闭合 —— 面板不越界。
+			 * ★ 文本由 `buildFixInstruction`（`src/pure/instruction.ts`）拼 —— 与定位卡上
+			 *   **给用户看的那段逐字相同**（工单 14：先看后发，看到的就是要发的）。
 			 */
 			const fixRunner = async (srWs, req) => {
 				if (!req || !req.path || !req.ref) return { ok: false, note: "缺少定稿路径或条目引用。" };
-				const L = [];
-				L.push("/sr-gdd-fix " + req.path);
-				L.push("改 " + req.ref + "。");
-				L.push("现状：" + String(req.before || "").trim());
-				L.push("要改成：" + String(req.intent || "").trim());
-				if (req.impact && req.impact.length) {
-					L.push("连带影响（工作台按结构引用扫出，供参考；语义影响请按 D11 自行扫全）：");
-					for (const h of req.impact.slice(0, 12)) {
-						L.push("  · L" + h.line + (h.kind === "family" ? " [同族] " : " ") + h.where);
-					}
-				}
-				const text = L.join("\n");
+				const text = buildFixInstruction({
+					path: req.path, ref: req.ref, before: req.before, intent: req.intent, impact: req.impact
+				});
 				const got = await ensureWorkSession(srWs || "");
 				if (got.error) return { ok: false, note: got.error };
 				const r = await probe.prompt(got.sid, text);

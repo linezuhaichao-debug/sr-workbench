@@ -5,6 +5,9 @@
  *   正文一字未改（行为不变的证据：临时 harness 对真实工作区数据做迁移前后 deepEqual）。
  * ★ 工单 14 补上第六类边：⑥ 契约关联（§4「配置字段」列 ↔ §6 声明的字段行）。
  * 只算结构可判定的边：显式引用 / 编号同族 / 界面归属 / 验收关联 / 文本关联 / 契约关联。不做语义推断。
+ * ★ 工单 13/14 接线：本模块另导出三件**给界面用**的纯函数 —— `refOf`（条目引用的唯一构造口径）、
+ *   `fieldRowAt`（§6 字段行按行号回查键）、`edgeLabelOf`（把六类边叫给人听）。
+ *   它们都不改 `byRef` 的 hits：旧五类边的输出一字不变。
  */
 
 import { extractFieldDecls, extractFieldRefs, extractRowFieldRefs } from "./vchecks.ts";
@@ -26,6 +29,85 @@ const REF_TOKEN_RE = /(UE\d+[a-z]?|AC\d+|R\d+|UI-M\d+|[a-z][a-z0-9_]{3,})/g;
 
 /** ⑥ 契约关联边的命中标记（六类边里唯一新增的 kind；②同族是 `family`，其余五类不带 kind） */
 const CONTRACT_KIND = "contract";
+
+/**
+ * 条目引用的**唯一构造口径**（CONTEXT.md 的粒度规则）——
+ *   `§4 R6`（§4 到规则组）· `§5 UI-M1 UE3`（§5 到界面组 + 条目）· `§7 alli_boss_x`（§7 到键）
+ *   `§10 AC8`（§10 到条目）· `§6 难度表.clearDropId`（§6 到行：表名 + 字段，在本文件末尾按声明行生成）
+ *
+ * ★ 为什么要有它：引用串就是 `byRef` 的键。**面板自己拼字符串迟早拼错一个空格**，
+ *   拼错了查图就是空集、还看不出为什么 —— 所以构造键的地方（`buildRefGraph`）与
+ *   生成引用的地方（`finaltree.ts` / 面板定位卡）必须同源，只留这一份。
+ * ★ 与搬家前的内联写法逐字等价：`(gr.id || gr.no || "")` 取组标识、无组标识时不留双空格。
+ */
+function refOf(no: unknown, group: unknown, key: unknown): string {
+	const g = String(group == null ? "" : group).trim();
+	const k = String(key == null ? "" : key).trim();
+	return ("§" + String(no == null ? "" : no) + (g ? " " + g : "") + (k ? " " + k : "")).trim();
+}
+
+/**
+ * 行号 → **§6 字段行**的可引用键与字段名（`{ ref, field, table }`）；不是字段声明行返回 null。
+ *
+ * ★ 为什么按行号回查：§6 的字段行**不在** `doc.outline` 的 `rows` 里（解析器把表格第一列当条目，
+ *   而字段声明表的第 3 格才是字段名），所以面板在树上画 §6 时只能拿行号回来问图。
+ *   口径只此一份：键就是 `buildRefGraph` 生成的那个（含同名字段的退化路径）。
+ */
+function fieldRowAt(graph: { byRef?: Map<string, { kind?: string; field?: string; table?: string; line?: number }> } | null, line: number) {
+	if (!graph || !graph.byRef) return null;
+	for (const kv of graph.byRef) {
+		const e = kv[1];
+		if (e && e.kind === "field" && e.line === line) {
+			return { ref: kv[0], field: String(e.field || ""), table: String(e.table || "") };
+		}
+	}
+	return null;
+}
+
+/**
+ * 六类结构边的**显示标签**（面板用；`byRef` 里的 hits 一字不动 —— 旧五类边的输出不受影响）。
+ *
+ * ★ 为什么标签由结构推、而不是给每条命中补一个 `kind`：`kind` 是**数据契约**（`family` / `contract`
+ *   已经被指令文本与测试锁住），往里加值等于改输出。这里只做"把这一类边叫给人听"的翻译。
+ * ★ 参数用 `(graph, ref, hit)` 而不是 `(entry, hit)`：**`ref` 是查图的那个键**，而 `byRef` 的条目里
+ *   并不存自己的键（存了就等于同一份信息写字两遍）。界面手里永远有 ref（它刚拿它查的图）。
+ * ★ 判定顺序（**同一处命中多类时按最具体的那一类报一次**，与 14 的口径一致）：
+ *   ② 同族（hit.kind）→ ⑥ 契约（hit.kind / §6 字段行）→ ⑤ 文本（§7 键的命中）
+ *   → ④ 验收（落在 §10 里的命中）→ ③ 界面归属（§5 界面组 ↔ 本组行 / §5.0 清单行）→ ① 显式引用（其余）
+ */
+const EDGE_LABELS = ["引用", "同族", "归属", "验收", "文本", "契约"];
+/** 标签 → 六类边的全名（面板图例用；下标即①–⑥的顺序） */
+const EDGE_LEGEND = [
+	"① 显式引用 —— 全文提到这个编号/键的位置",
+	"② 编号同族 —— 同组内 UE3 ↔ UE3a 这类子情形",
+	"③ 界面归属 —— §5 界面组自己名下的行、§5.0 清单里那一行",
+	"④ 验收关联 —— §10 里写了这个编号的行",
+	"⑤ 文本关联 —— §7 文本键 ↔ 提及它的位置",
+	"⑥ 契约关联 —— §4 配置字段 ↔ §6 声明它的那一行"
+];
+
+/** 定位串（`§4 R6 奖励` / `§10 10. 验收标准`）→ 章号；取不到返回 "" */
+function chapterOfLabel(where: unknown): string {
+	const m = /^§(\d+)/.exec(String(where == null ? "" : where));
+	return m ? m[1] : "";
+}
+
+function edgeLabelOf(graph: { byRef?: Map<string, { kind?: string }> } | null | undefined, ref: string, hit: { kind?: string; where?: string } | null): string {
+	const h = hit || {};
+	const e = (graph && graph.byRef && ref) ? (graph.byRef.get(ref) || {}) : {};
+	if (h.kind === "family") return "同族";
+	if (h.kind === "contract") return "契约";
+	if (e.kind === "field") return "契约";        // §6 字段行的命中只可能来自契约边
+	if (e.kind === "textkey") return "文本";      // ⑤ §7 键 ↔ 提及它的位置
+	const where = String(h.where || "");
+	if (chapterOfLabel(where) === "10") return "验收";   // ④
+	const r = String(ref || "");
+	if (e.kind === "group" && /^§5 UI-M\d+$/.test(r) &&
+		(where === r || where.indexOf(r + " ") === 0 || where.indexOf("§5 5.0 ") === 0)) {
+		return "归属";                            // ③
+	}
+	return "引用";                                 // ①
+}
 
 /**
  * ⑥ 契约关联的账（`buildRefGraph` 返回的 `contract`）—— 如实报数，错了能一眼看见：
@@ -60,7 +142,7 @@ function ownersOf(blocks) {
 		const seg = String(b.text == null ? "" : b.text).split(/\r?\n/);
 		const where = (b.level === 2) ? ("§" + b.no + " " + b.title)
 			: ("§" + (b.chNo || "?") + " " + (b.id || b.no || "") + " " + b.title);
-		const ref = (b.level === 3) ? ("§" + (b.chNo || "?") + " " + (b.id || b.no || "")).trim() : "";
+		const ref = (b.level === 3) ? refOf(b.chNo || "?", b.id || b.no || "", "") : "";
 		for (let i = 0; i < seg.length; i++) {
 			owner.set(b.line + i, { ref: ref, where: where.trim(), title: b.title || "", no: b.no || "" });
 		}
@@ -76,14 +158,15 @@ function buildRefGraph(g) {
 	const add = (tk, kind, ref) => { if (tk && !vocab.has(tk)) vocab.set(tk, { kind: kind, ref: ref }); };
 	for (const c of g.outline) {
 		for (const r of c.rows) {                       // 章级表格（§7 文本键 / §10 AC）
-			if (/^AC\d+$/.test(r.key)) add(r.key, "ac", "§" + c.no + " " + r.key);
-			else if (/^[a-z][a-z0-9_]{3,}$/.test(r.key) && c.no === "7") add(r.key, "textkey", "§7 " + r.key);
+			if (/^AC\d+$/.test(r.key)) add(r.key, "ac", refOf(c.no, "", r.key));
+			else if (/^[a-z][a-z0-9_]{3,}$/.test(r.key) && c.no === "7") add(r.key, "textkey", refOf("7", "", r.key));
 		}
 		for (const gr of c.children) {
-			if (gr.id) add(gr.id, "group", "§" + c.no + " " + gr.id);
+			const gid = gr.id || gr.no || "";
+			if (gr.id) add(gr.id, "group", refOf(c.no, gid, ""));
 			for (const r of gr.rows) {
 				if (/^(UE\d+[a-z]?|AC\d+)$/.test(r.key)) {
-					add(r.key, "row", "§" + c.no + " " + (gr.id || gr.no || "") + " " + r.key);
+					add(r.key, "row", refOf(c.no, gid, r.key));
 				}
 			}
 		}
@@ -135,14 +218,14 @@ function buildRefGraph(g) {
 			}
 			for (const k in fam) {
 				if (fam[k].length < 2) continue;      // 只处理真有多态的（UE2/UE2a、UE3/UE3a…）
-				const grpRef = "§" + c.no + " " + (gr.id || gr.no || "");
+				const gid = gr.id || gr.no || "";
 				for (const me of fam[k]) {
-					const e = byRef.get((grpRef + " " + me.key).trim());
+					const e = byRef.get(refOf(c.no, gid, me.key));
 					if (!e) continue;
 					for (const other of fam[k]) {
 						if (other === me) continue;
 						e.hits.push({
-							line: other.line, where: (grpRef + " " + other.key).trim(),
+							line: other.line, where: refOf(c.no, gid, other.key),
 							text: other.text || "", kind: "family"
 						});
 						edges++;
@@ -240,4 +323,4 @@ function impactOf(graph, ref, selfLine) {
 	return e.hits.filter((h) => h.line !== selfLine);
 }
 
-export { CONTRACT_KIND, REF_TOKEN_RE, buildRefGraph, impactOf };
+export { CONTRACT_KIND, EDGE_LABELS, EDGE_LEGEND, REF_TOKEN_RE, chapterOfLabel, edgeLabelOf, fieldRowAt, buildRefGraph, impactOf, refOf };

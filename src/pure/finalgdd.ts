@@ -155,4 +155,25 @@ function parseFinalGdd(text) {
 	};
 }
 
-export { parseFrontmatter, checkFinals, parseFinalGdd };
+/**
+ * 正文滚动到哪儿了 → 大纲该高亮哪一块（设计 §6.2「点大纲跳正文，正文滚动时大纲高亮跟随」）。
+ *
+ * `tops` = 每个块顶边相对**滚动容器**顶边的偏移（`getBoundingClientRect()` 相减得到，单位随意）。
+ * 口径：取**顶边已经越过 `slack` 的最后一个块**；一个都没越过（还停在第一块上方）就取第 0 块。
+ *
+ * ★ 抽成纯函数的原因：这一步是"跟随"里唯一有判断的部分，DOM 那半边只剩取矩形的胶水；
+ *   放在这里才能离线测（真机上滚一下看不出的边界：第一块还没滚到、块高小于 slack）。
+ */
+function topBlockIndex(tops: number[], slack = 8): number {
+	if (!Array.isArray(tops) || !tops.length) return -1;
+	const lim = Number.isFinite(slack) ? slack : 8;
+	let best = 0;
+	for (let i = 0; i < tops.length; i++) {
+		const t = Number(tops[i]);
+		if (!Number.isFinite(t)) continue;
+		if (t <= lim) best = i;
+	}
+	return best;
+}
+
+export { parseFrontmatter, checkFinals, parseFinalGdd, topBlockIndex };

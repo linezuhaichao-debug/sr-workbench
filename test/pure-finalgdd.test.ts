@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 
-import { checkFinals, parseFinalGdd, parseFrontmatter } from "../src/pure/finalgdd.ts";
+import { checkFinals, parseFinalGdd, parseFrontmatter, topBlockIndex } from "../src/pure/finalgdd.ts";
 import { dateOf } from "../src/pure/topic.ts";
 import { FEATURE_ROOT, FINAL_GDD, PREV_FINAL_GDD, readText, requireRealData } from "./paths.ts";
 
@@ -109,6 +109,37 @@ test("定稿按日期倒序（真实文件名）", () => {
 	assert.deepEqual(names, ["联盟悬赏_20260923_定稿.md", "联盟悬赏_20260921_定稿.md"]);
 	// 真实 gdd\ 目录里定稿确实不止一份
 	assert.ok(path.basename(FEATURE_ROOT).length > 0);
+});
+
+// ── 工单 13 · 正文滚动时大纲的跟随高亮 ────────────────────────────────────
+//   真机上"滚一下"看不出边界（第一块还没滚到、块高小于 slack），所以这一步抽成纯函数离线测。
+test("topBlockIndex：取顶边已越过顶界的最后一个块；一个都没越过取第 0 块", () => {
+	// 还没开始滚（第一块顶边在下方 300px）→ 第 0 块
+	assert.equal(topBlockIndex([300, 800, 1500]), 0);
+	// 滚过第一块、第二块顶边到 -40 → 第 1 块
+	assert.equal(topBlockIndex([-500, -40, 700]), 1);
+	// 正好压在顶界上（slack 内）也算进去
+	assert.equal(topBlockIndex([-500, 8, 700]), 1);
+	assert.equal(topBlockIndex([-500, 9, 700]), 0);
+	// 全滚过去了 → 最后一块
+	assert.equal(topBlockIndex([-900, -400, -10]), 2);
+	// 空 / 非法输入不炸
+	assert.equal(topBlockIndex([]), -1);
+	assert.equal(topBlockIndex(null as unknown as number[]), -1);
+	assert.equal(topBlockIndex([NaN, 40]), 0, "NaN 跳过，不改变结论");
+	assert.equal(topBlockIndex([-10], 0), 0);
+});
+
+test("topBlockIndex 与真实定稿的块序列配合：39 块，任一位置都能给出一个块号", () => {
+	const tops = g.blocks.map((_b, i) => i * 120);          // 假设每块 120px、还没开始滚
+	const i = topBlockIndex(tops);
+	assert.ok(i >= 0 && i < g.blocks.length);
+	// 全部块都滚过顶界 → 最后一块
+	assert.equal(topBlockIndex(g.blocks.map(() => -1)), g.blocks.length - 1);
+	// 单调递增的顶边 ⇒ 结果只会随着滚动单调前进（不会来回跳）
+	for (let k = 1; k < g.blocks.length; k++) {
+		assert.ok(topBlockIndex(tops.map((t) => t - k * 120)) >= topBlockIndex(tops.map((t) => t - (k - 1) * 120)));
+	}
 });
 
 function pick(h: Record<string, string> | null): { doc_type: unknown; status: unknown } {

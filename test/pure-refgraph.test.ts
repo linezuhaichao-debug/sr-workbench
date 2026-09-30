@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseFinalGdd } from "../src/pure/finalgdd.ts";
-import { buildRefGraph, impactOf } from "../src/pure/refgraph.ts";
+import { EDGE_LABELS, buildRefGraph, edgeLabelOf, fieldRowAt, impactOf, refOf } from "../src/pure/refgraph.ts";
 import { scanFinalChecks } from "../src/pure/vchecks.ts";
 import { FINAL_GDD, readText, requireRealData } from "./paths.ts";
 
@@ -249,4 +249,91 @@ test("⑥ 不破坏旧五类边：oracle「实测校准」的三个锚点逐行�
 	assert.deepEqual(impactOf(graph, "§10 AC8", 463), []);
 	// 词表没被契约边改动（§6 字段行只进 byRef、不进词表 ⇒ 老条目的命中集合不受影响）
 	assert.equal(graph.vocabSize, 105);
+});
+
+// ── 工单 14 接线：把六类边**叫给人听**（`edgeLabelOf`）· 条目引用的构造口径（`refOf`）──────
+//   面板上每一条影响都要标明"属于哪一类边"，用户才能判断"这条算不算数"。
+//   标签由结构推、**不改 hits**（旧五类边的输出仍然一字不变，见上一个用例）。
+
+/** 某个引用在面板上会显示成什么（行号 + 标签 + 定位串），口径与定位卡一致 */
+function shown(ref: string, selfLine: number | null) {
+	return impactOf(graph, ref, selfLine).map((h) => [h.line, edgeLabelOf(graph, ref, h), h.where]);
+}
+
+test("六类边在真实定稿上**全都出现**（面板图例里的六个标签都有实例）", () => {
+	const seen: Record<string, number> = {};
+	for (const kv of graph.byRef) {
+		for (const h of kv[1].hits) {
+			const lab = edgeLabelOf(graph, kv[0], h);
+			seen[lab] = (seen[lab] || 0) + 1;
+		}
+	}
+	assert.deepEqual(Object.keys(seen).sort(), [...EDGE_LABELS].sort(), "六个标签都要有实例：" + JSON.stringify(seen));
+	for (const k of EDGE_LABELS) assert.ok(seen[k] > 0, k + " 至少要出现一次");
+});
+
+test("六类边逐条对齐 14-impact-oracle：① 显式引用 / ② 同族 / ③ 界面归属 / ④ 验收 / ⑤ 文本 / ⑥ 契约", () => {
+	// 锚点 A · §5 UI-M1 UE3：L139（§4 R6 显式引用）+ L215[同族]（UE3a 同族）
+	assert.deepEqual(shown("§5 UI-M1 UE3", 214), [
+		[139, "引用", "§4 R6 奖励"],
+		[215, "同族", "§5 UI-M1 UE3a"],
+	]);
+	// ③ 界面归属：§5 UI-M1 的 12 处里，本组行 + §5.0 清单行判归属，§5.5 流程与 §4 判显式引用
+	assert.deepEqual(shown("§5 UI-M1", null), [
+		[139, "引用", "§4 R6 奖励"],
+		[190, "归属", "§5 5.0 界面清单总览"],
+		[197, "归属", "§5 UI-M1 联盟悬赏主面板"],
+		[199, "归属", "§5 UI-M1 联盟悬赏主面板"],
+		[205, "归属", "§5 UI-M1 联盟悬赏主面板"],
+		[284, "引用", "§5 5.5 界面流程"],
+		[285, "引用", "§5 5.5 界面流程"],
+		[286, "引用", "§5 5.5 界面流程"],
+		[287, "引用", "§5 5.5 界面流程"],
+		[289, "引用", "§5 5.5 界面流程"],
+		[290, "引用", "§5 5.5 界面流程"],
+		[291, "引用", "§5 5.5 界面流程"],
+	]);
+	// ④ 验收关联：§5 UI-M4 → 7 处含 L463（AC8）—— 真数据上唯一命中的一处验收边
+	const m4 = shown("§5 UI-M4", null);
+	assert.equal(m4.length, 7);
+	assert.deepEqual(m4.filter((x) => x[1] === "验收"), [[463, "验收", "§10 验收标准"]]);
+	// ⑤ 文本关联：§7 键的命中（重复定义的另一处）
+	assert.deepEqual(shown("§7 alli_boss_kill_count_label", 379), [[389, "文本", "§7 多语言文本"]]);
+	// ⑥ 契约关联（正向）：§4 R6 → §6 的 4 个字段行；组的标题行标「引用」不误判
+	assert.deepEqual(shown("§4 R6", null).filter((x) => x[1] === "契约"), [
+		[314, "契约", "§6 全局变量.alliBossChallengeReward"],
+		[342, "契约", "§6 难度表.clearDropId"],
+		[343, "契约", "§6 难度表.killDropId"],
+		[352, "契约", "§6 联盟排行奖励表.rewardDropId"],
+	]);
+	// ⑥ 契约关联（反向）：§6 的字段行 → 引用它的 §4 行
+	assert.deepEqual(shown("§6 难度表.clearDropId", null), [[138, "契约", "§4 R6 奖励"]]);
+	// 同一处命中多类时按最具体的那一类报一次（⑥ 契约不会被 ① 引用覆盖）
+	assert.equal(shown("§4 R1", null).filter((x) => x[1] === "契约").length, 1);
+});
+
+test("refOf：条目引用的构造口径与图里的键**同源**（面板不自己拼字符串）", () => {
+	assert.equal(refOf("4", "R6", ""), "§4 R6");
+	assert.equal(refOf("5", "UI-M1", "UE3"), "§5 UI-M1 UE3");
+	assert.equal(refOf("7", "", "alli_boss_kill_count_label"), "§7 alli_boss_kill_count_label");
+	assert.equal(refOf("10", "", "AC8"), "§10 AC8");
+	// 拼出来的串必须真的能在图里查到（拼错一个空格就会空集）
+	for (const ref of ["§4 R6", "§5 UI-M1 UE3", "§7 alli_boss_kill_count_label", "§10 AC8"]) {
+		assert.equal(graph.byRef.has(ref), true, ref);
+	}
+	// 章级表格：没有组标识时不留双空格
+	assert.equal(refOf("5", "5.0", "UI-M1"), "§5 5.0 UI-M1");
+	assert.equal(refOf("1", "", "一句话功能"), "§1 一句话功能");
+	assert.equal(refOf(null, null, null), "§");
+});
+
+test("fieldRowAt：§6 字段行按**行号**回查键（声明行不在 rows 里，面板只能这么问图）", () => {
+	assert.deepEqual(fieldRowAt(graph, 342), { ref: "§6 难度表.clearDropId", field: "clearDropId", table: "难度表" });
+	assert.deepEqual(fieldRowAt(graph, 313), { ref: "§6 全局变量.alliBossDailyAttackCount", field: "alliBossDailyAttackCount", table: "全局变量" });
+	// §6.5 的缺口表 / §6.3 的「终极难度」行都不是字段声明
+	assert.equal(fieldRowAt(graph, 358), null);
+	assert.equal(fieldRowAt(graph, 339), null);
+	// 空图不炸
+	assert.equal(fieldRowAt(null, 342), null);
+	assert.equal(fieldRowAt({}, 342), null);
 });
