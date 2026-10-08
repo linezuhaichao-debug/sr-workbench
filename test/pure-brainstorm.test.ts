@@ -1,9 +1,11 @@
 /**
  * 头脑风暴四入口的指令文本（工单 23）。
  *
- * ★ 这是**发给 agent 的上下文**，与 `test/pure-intake.test.ts` 对老收件箱的态度一样：
- *   措辞变了就是行为变了，所以逐行钉住。
+ * ★ 这是**发给 agent 的上下文**：措辞变了就是行为变了，所以逐行钉住。
  * ★ 前置不满足时必须给 `blocked` **与** `next`（"缺前提不静默"是工单 23 第 4 条）。
+ * ★ 工单 31（收口）：同一份模块里原来还并存着**老收件箱的四种方式**（`INTAKE_KINDS` +
+ *   `buildInstruction`），本票把它们删了（只服务被砍掉的「设计资产」屏）⇒ 原来那两条
+ *   "两套语义并存"的用例一并删除；这里剩下的全部是新四入口的断言，一条都没放宽。
  */
 
 import assert from "node:assert/strict";
@@ -15,9 +17,8 @@ import { humanNoteName, legacyDocName } from "../src/pure/analysisdoc.ts";
 const FEATURE = "D:\\TimeMachine\\GameDesignOS\\workspace\\features\\联盟悬赏";
 const B = (kind: string, input: any) => INTAKE.buildBrainstormInstruction(kind, Object.assign({ root: FEATURE, date: "20260930" }, input));
 
-test("四入口：表里四个都在，且与老收件箱的四种方式分得清", () => {
+test("四入口：表里四个都在（这是模块里**唯一**的一套入口口径）", () => {
 	assert.deepEqual(INTAKE.BRAINSTORM_KINDS.map((k: any) => k.id), ["analysis", "concept", "legacy", "humannote"]);
-	assert.deepEqual(INTAKE.INTAKE_KINDS.map((k: any) => k.id), ["analysis", "concept", "import", "manual"]);
 });
 
 test("竞品分析：跑 /sr-analysis + 素材 + 产出落 analysis\\", () => {
@@ -108,9 +109,5 @@ test("缺前提：每条都给可读提示 + 下一步（不静默、不发出�
 	assert.ok(unknown.blocked.includes("未知的头脑风暴入口：nope"));
 	assert.ok(unknown.next.includes("竞品分析 / 问答式访谈 / 旧文档分析 / 人工补充"));
 });
-
-test("老收件箱的四种方式一字未动（同一份模块里两套语义不许互相污染）", () => {
-	const m = INTAKE.buildInstruction("manual", { note: "正文", title: "标题", srWs: "D:\\WS" });
-	assert.ok(m.instruction.includes("D:\\WS\\inbox\\manual\\ 下新建 标题.md"), m.instruction);
-	assert.ok(m.instruction.includes("只登记为 inbox / needs_review，不提升为正式资产"));
-});
+// ★ 工单 31：这里原来还有一条「老收件箱的四种方式一字未动（同一份模块里两套语义不许互相污染）」
+//   —— 老收件箱那一组（`buildInstruction` / `INTAKE_KINDS`）已随本票删除，那条用例随之删除。

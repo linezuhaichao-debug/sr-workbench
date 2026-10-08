@@ -1,8 +1,14 @@
 /**
- * 定稿相关加载器：定稿全文（§6.2 定稿工作面）· 定稿 §5（界面图）· 设计资产索引。
+ * 定稿相关加载器：定稿全文（§6.2 定稿工作面）· 定稿 §5（界面图）。
  *
  * ★ 一律收**绝对路径** —— 面板不自己拼路径，路径由调用方从功能目录算出来，
  *   所以目录结构怎么变都不用改这里。
+ *
+ * ★ 工单 31：这里原来还有 `loadIndex`（读 `<srWs>/design-asset-index.json` 的资产索引）。
+ *   它服务的是被砍掉的「设计资产」屏（设计 §3.4：B1/B2/B3 + `design-asset-index.json` 一并砍掉，
+ *   职能并入头脑风暴四入口与定稿的「线框图替换」）；屏与面板侧的内联副本一起删掉之后，
+ *   这个加载器在**生产代码里引用清零**（只剩它自己的测试），于是同批删除。
+ *   工作区里的 `design-asset-index.json` 与 `.backup` **原样留在原处**（那是工单 21 的搬运范围）。
  */
 
 import { parseFinalGdd } from "../pure/finalgdd.ts";
@@ -36,21 +42,4 @@ export async function loadInterface(port: WorkspacePort, absPath: string, signal
 	if (!parsed) return { empty: "定稿里没有 §5 界面章。" };
 	parsed.file = String(absPath).split(/[\\/]/).pop();
 	return parsed;
-}
-
-/** 读资产索引（设计资产列表的数据源；由 scripts/refresh_asset_index.py 生成）。 */
-export async function loadIndex(port: WorkspacePort, srWs: string, signal?: AbortSignal): Promise<any> {
-	const text = await readAllText(port, srWs + "/design-asset-index.json", signal, 8000);
-	if (!text) return { error: "读不到 design-asset-index.json。先点「刷新索引」让 agent 生成它。" };
-	let j: any = null;
-	try {
-		j = JSON.parse(text);
-	} catch (e) {
-		return { error: "索引 JSON 解析失败：" + String((e && (e as Error).message) || e) };
-	}
-	if (!j || !Array.isArray(j.assets)) return { error: "索引结构不对：assets 不是数组。" };
-	return {
-		assets: j.assets, schemaVersion: j.schema_version, workspaceId: j.workspace_id,
-		srWs: srWs,
-	};
 }

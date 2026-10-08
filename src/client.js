@@ -18,11 +18,15 @@ import * as React from "react";
 
 // ★ 工单 32 · 面板接线：`src/client.js` 不再保留内联副本，改为直接用 `src/pure/` 那份
 //   （测试覆盖的就是它）。接线是**一次一个模块**做的，每步都过 `npm run build:safe`。
-//   已接：path（toAbs）· topic（topicOf / isNoise / dateOf）· mdspec（parseMdSections / classifyHeading / mdSpecOf）· sessionpick（索引会话选择，0.2.0 兼容）· ledger（ledgerOf：设计台账派生 + 工单 17 的字段覆盖检查，工单 12 同批接线）
+//   已接：path（toAbs）· topic（topicOf / isNoise / dateOf）· sessionpick（索引会话选择，0.2.0 兼容）· ledger（ledgerOf：设计台账派生 + 工单 17 的字段覆盖检查，工单 12 同批接线）
 import { toAbs, featureRootOf } from "./pure/path.ts";
 import { topicOf, isNoise, dateOf } from "./pure/topic.ts";
-// mdspec：这一刀**带行为修复**——模块版 mdSpecOf 认 Windows 反斜杠（内联版只按 / 切）
-import { parseMdSections, classifyHeading, mdSpecOf } from "./pure/mdspec.ts";
+// ★ 工单 31：这里原来有一刀「mdspec 接线」（`parseMdSections` / `classifyHeading` / `mdSpecOf`，
+//   工单 32 步骤 2，那一刀带行为修复：模块版认 Windows 反斜杠）。
+//   但它在面板里的**唯一消费者**是 B2 内容阅读器（`SpecMdView`）—— B2 属被砍的「设计资产」模块，
+//   随本票一起删除，于是这个 import 成了悬空引用，一并撤掉，避免"注释说接了、实际没人用"。
+//   `src/pure/mdspec.ts` 与 `test/pure-mdspec.test.ts` **一字未动**（单一出处与那条反斜杠修复都在）；
+//   要把它接回别的渲染路径（成稿 / 定稿正文）属于工单 32「面板接线」—— 那张票现在是**暂停**的。
 // 工单 12：功能详情的产物清单 / 三阶段 / 定稿有效性 / V 校验清单 —— 加载器走 `src/load/`（只吃 port），
 //   桶分组与三阶段在 `src/pure/artifacts.ts`（测试覆盖的就是它，**这里不写副本**）。
 import { loadFeatureDetail } from "./load/feature.ts";
@@ -161,53 +165,16 @@ import {
 		catch (e) { primitives = null; }
 
 		/**
-		 * 「收件箱 + 头脑风暴四入口」的纯逻辑（素材解析 / 主题派生 / 指令组装）。
+		 * 头脑风暴四入口 + 文档生成工作面共用的纯逻辑（素材解析 / 主题派生 / 指令组装）。
 		 *
 		 * ★ 工单 23 起这里是 **import**，不再是内联副本：
 		 *   —— 内联的那一份与 `src/pure/intake.ts` 逐行相同（去缩进后 diff 只剩 export 一行），
 		 *      而工单 23 要往组装器里加四个新入口，留着副本必然长出第二份实现（本仓库反复踩过的坑）。
 		 *   —— 早期"为什么内联"的理由（`/plugins/<pkg>/intake-parse.js` 404）针对的是**运行期再取一个模块**；
-		 *      tsdown 打包后这些都只是同一 bundle 内的静态 import，与其它已接线的 pure 模块没有区别。
+		 *     tsdown 打包后这些都只是同一 bundle 内的静态 import，与其它已接线的 pure 模块没有区别。
+		 * ★ 工单 31：`contract` / `contractErr` 这两个"兼容旧命名"的别名随旧收件箱一起删除 ——
+		 *   今天读 `INTAKE.*` 就只剩头脑风暴与文档生成两条工作面，别名没有第二个消费者了。
 		 */
-
-		/** 兼容旧命名：下面的组件与 handler 原本读 contract.*，统一指向内联实现 */
-		const contract = INTAKE;
-		const contractErr = "";
-
-		/** 二进制 → base64（分块，避免 String.fromCharCode.apply 在大文件上爆栈） */
-		function bytesToBase64(bytes) {
-			const CH = 0x8000;
-			let s = "";
-			for (let i = 0; i < bytes.length; i += CH) {
-				const chunk = bytes.subarray(i, i + CH);
-				s += String.fromCharCode.apply(null, chunk);
-			}
-			return btoa(s);
-		}
-
-		/** 读文件字节（upload 通道要 base64 字符串；这一条只用于"大小未知的二进制"） */
-		function readFileBytes(file, cap) {
-			return new Promise((resolve, reject) => {
-				const fr = new FileReader();
-				fr.onerror = () => reject(new Error("读取文件失败"));
-				fr.onload = () => {
-					const buf = fr.result;
-					if (cap && buf.byteLength > cap) { reject(new Error("文件超过 " + Math.round(cap / 1024) + " KB 上限")); return; }
-					resolve(new Uint8Array(buf));
-				};
-				fr.readAsArrayBuffer(file);
-			});
-		}
-
-		/** 读文件文本（浏览器能读就内联，省掉 agent 再读一次盘） */
-		function readFileText(file, cap) {
-			return new Promise((resolve, reject) => {
-				const fr = new FileReader();
-				fr.onerror = () => reject(new Error("读取文件失败"));
-				fr.onload = () => resolve(String(fr.result || "").slice(0, cap || 200000));
-				fr.readAsText(file);
-			});
-		}
 
 		/** 面板 id：main keyed slot 与 sidebar.panellist 用同一个 id 关联 */
 		const PANEL_ID = "sr-workbench";
@@ -1181,11 +1148,16 @@ import {
 		}
 
 		// ── 一级导航 ──────────────────────────────────────────────────
+		/**
+		 * ★ 工单 31：这里原来还有三个**占位项**，一并删掉（设计 §3.4「砍掉的四块，职能去哪了」）：
+		 *   · `设计资产`（B1/B2/B3 + `design-asset-index.json`）⇒ 素材收集/竞品分析/复刻规格并入
+		 *     头脑风暴的四种入口；界面图并入定稿的「线框图替换」；
+		 *   · `配置表与多语言`（C1/C2，一直写着「· 未实现」）⇒ 规则落成配置已并入文档生成阶段的配置支线；
+		 *   · `知识库`（D1/D2/D3，同样没实现）⇒ 设计上直接**删除**（已在用 agent + Basic Memory）。
+		 *   三个都不再有界面，所以"其余一级视图（占位）"那个分支也一并不存在了 —— 一级导航只剩功能看板。
+		 */
 		const NAV = [
-			{ id: "dashboard", label: "功能看板" },
-			{ id: "assets", label: "设计资产" },
-			{ id: "config", label: "配置表与多语言", soon: true },
-			{ id: "knowledge", label: "知识库", soon: true }
+			{ id: "dashboard", label: "功能看板" }
 		];
 		/**
 		 * 功能内部的**工作面**（设计 §4：三阶段）—— 与「资料页签」分两组显示。
@@ -1221,19 +1193,20 @@ import {
 				}
 			}, props.items.map((it) => {
 				const on = props.view === it.id;
-				const soon = !!it.soon;
+				// ★ 工单 31：这里原来还有一条 `soon`（占位页签：disabled + 灰字 + 尾巴挂「 · 未实现」）。
+				//   它唯一的两个使用者是一级导航里的「配置表与多语言」「知识库」—— 两个占位项随本票删除，
+				//   这个机制就没有消费者了，一并删掉（"点了没反应"的页签从此不可能再被渲染出来）。
 				return h("button", {
 					key: it.id, type: "button",
-					disabled: soon,
-					onClick: soon ? void 0 : () => props.onPick(it.id),
+					onClick: () => props.onPick(it.id),
 					style: {
 						font: "inherit", fontSize: "12px", padding: "4px 10px",
 						border: "1px solid " + (on ? C.ink : C.faint),
 						background: on ? C.ink : "transparent",
-						color: soon ? "#c0c0c0" : (on ? "#fff" : C.ink),
-						borderRadius: "4px", cursor: soon ? "default" : "pointer"
+						color: on ? "#fff" : C.ink,
+						borderRadius: "4px", cursor: "pointer"
 					}
-				}, it.label + (soon ? " · 未实现" : ""));
+				}, it.label);
 			}));
 		}
 
@@ -4573,7 +4546,6 @@ import {
 			} catch (e) { return ""; }
 		}
 
-		/** 读资产索引（第一部分的数据源；由 scripts/refresh_asset_index.py 生成） */
 		/**
 		 * 读定稿全文并解析结构（设计 §6.2 定稿工作面）。
 		 * ★ 收**绝对路径**（= 功能的 `openPath`）—— 面板不自己拼路径，
@@ -4590,804 +4562,12 @@ import {
 			return g;
 		}
 
-		async function loadIndex(read, sid, srWs, signal) {
-			const text = await readAllText(read, sid, srWs + "/design-asset-index.json", signal, 8000);
-			if (!text) return { error: "读不到 design-asset-index.json。先点「刷新索引」让 agent 生成它。" };
-			let j = null;
-			try { j = JSON.parse(text); }
-			catch (e) { return { error: "索引 JSON 解析失败：" + String((e && e.message) || e) }; }
-			if (!j || !Array.isArray(j.assets)) return { error: "索引结构不对：assets 不是数组。" };
-			return {
-				assets: j.assets, schemaVersion: j.schema_version, workspaceId: j.workspace_id,
-				srWs: srWs
-			};
-		}
-
-		// ── B1 设计资产列表 ──────────────────────────────────────────
-		const ASSET_TYPE_LABEL = {
-			concept: "概念", analysis: "分析", proposal: "成稿文档", decision: "决策",
-			evidence: "证据", validation: "验证", inbox: "收集箱",
-			assumption: "假设", experiment: "实验", "gate-result": "门结果",
-			"workflow-run": "工作流", learning: "复盘规则", retrospective: "复盘",
-			knowledge: "知识", "information-assessment": "信息评估"
-		};
-		const REVIEW_TONE = {
-			accepted: "ok", reviewed: "ok", draft: null, needs_review: "warn",
-			rejected: "bad", superseded: "warn"
-		};
-		const REVIEW_LABEL = {
-			draft: "草稿", needs_review: "待审", reviewed: "已审", accepted: "已接受",
-			rejected: "已驳回", superseded: "已被取代"
-		};
-
-		/** 收件箱允许内联的文本文件大小上限（超过就不内联，只记路径） */
-		const INLINE_TEXT_CAP = 200000;
-
-		/**
-		 * 一个待发送的素材 → 显示用的 { name, size, err }
-		 * 文本文件用 FileReader 读出来内联（浏览器自己就能读，省掉 agent 再读一次盘）；
-		 * 二进制只记 fullPath（agent 读盘），拿不到路径就退化成大小未知的上传件。
-		 */
-		async function ingestFile(file) {
-			const name = String((file && file.name) || "未命名文件");
-			const size = Number((file && file.size) || 0);
-			const fullPath = String((file && file.path) || "");
-			const C0 = contract;
-			const textExt = C0 ? C0.isTextExt(name) : false;
-			const docExt = C0 ? C0.isDoc(name) : false;
-			if (textExt) {
-				try {
-					const text = await readFileText(file, INLINE_TEXT_CAP);
-					return { name: name, size: size, fullPath: fullPath, isText: true, text: text, orig: file };
-				} catch (e) {
-					return { name: name, size: size, fullPath: fullPath, isText: false, isDoc: docExt, upload: !fullPath, orig: file, err: "读取失败：" + String((e && e.message) || e) };
-				}
-			}
-			// 二进制：有绝对路径 → 交给 agent 读盘；没有 → 走上传通道
-			return { name: name, size: size, fullPath: fullPath, isText: false, isDoc: docExt, upload: !fullPath, orig: file };
-		}
-
-		/**
-		 * ★ 收件箱 —— 四种输入方式的**统一入口**（拍板 2026-09-28：单框 + 四按钮并排，不做自动判型）。
-		 *
-		 * 分工（依据 outputs/四种输入方式产出规范-v1.md）：
-		 *   方式 1 竞品分析   → 跑 sr-analysis（有决策门、有花费）
-		 *   方式 2 问答式访谈 → 跑 sr-concept（有决策门、有花费）
-		 *   方式 3 旧文档导入 → 只登记进 inbox/imported/（不跑 skill）
-		 *   方式 4 人工补充   → 只登记进 inbox/manual/（不跑 skill）
-		 *
-		 * ★ 这个组件**不判断你输入的是哪一种** —— 四个按钮就是分类，按哪个就走哪条。
-		 *   工作台读不到工作区文件系统之外的东西，也不猜你的意图。
-		 */
-		function IntakeBox(props) {
-			const [raw, setRaw] = React.useState("");
-			const [note, setNote] = React.useState("");
-			const [files, setFiles] = React.useState([]);
-			const [busyId, setBusyId] = React.useState("");
-			const [msg, setMsg] = React.useState(null);
-			const [drag, setDrag] = React.useState(false);
-			const fileRef = React.useRef(null);
-
-			if (!contract) {
-				return h("div", {
-					style: { border: "1px solid " + C.faint, borderLeft: "3px solid " + C.bad, background: "#fff", borderRadius: "4px", padding: "10px 12px", marginBottom: "12px", fontSize: "12px", color: C.bad }
-				}, "收件箱逻辑没加载上（intake-parse.js）：" + (contractErr || "未知原因") + "　—— 其余屏不受影响。");
-			}
-
-			const materials = contract.parseMaterials(raw);
-			const pathMats = materials.filter((m) => m.kind !== "text");
-			const textMats = materials.filter((m) => m.kind === "text");
-			const fullPathCount = files.filter((f) => f.fullPath).length;
-			const noPath = files.filter((f) => !f.fullPath).map((f) => f.name);
-			const derived = contract.deriveTopic(materials.concat(
-				files.filter((f) => f.fullPath).map((f) => ({ kind: "file", path: f.fullPath }))
-			));
-			const noteAuto = note.trim() === "" && textMats.length > 0;
-			const effectiveNote = noteAuto
-				? textMats.map((m) => m.text).join("\n\n")
-				: note;
-
-			const addFiles = (list) => {
-				const arr = [];
-				for (const f of list) arr.push(f);
-				if (arr.length === 0) return;
-				setMsg(null);
-				Promise.all(arr.map(ingestFile)).then((out) => setFiles((cur) => cur.concat(out)));
-			};
-
-			const removeFile = (i) => setFiles((cur) => cur.filter((_, k) => k !== i));
-
-			const go = (id) => {
-				if (busyId) return;
-				setBusyId(id);
-				setMsg(null);
-				// ★ 必须接住**同步**抛错：submitIntake 是 async 函数、本身不会同步抛，
-				//   但 handler 万一被换成同步实现，异常会跳过 .then 让 busyId 永久卡住（按钮全灰）。
-				let p;
-				try {
-					p = props.onSubmit({
-						kind: id,
-						materials: materials,
-						topic: derived,
-						note: effectiveNote,
-						files: files,
-						upstream: ""
-					});
-				} catch (e) {
-					setBusyId("");
-					setMsg({ ok: false, text: "提交失败（同步抛错）：" + String((e && e.message) || e) });
-					return;
-				}
-				Promise.resolve(p).then((r) => {
-					setBusyId("");
-					if (r && r.ok) {
-						setMsg({ ok: true, text: r.note });
-						setRaw("");
-						setNote("");
-						setFiles([]);
-					} else {
-						setMsg({ ok: false, text: (r && r.note) || "没能发出指令。" });
-					}
-				}, (e) => { setBusyId(""); setMsg({ ok: false, text: "失败：" + String((e && e.message) || e) }); });
-			};
-
-			const zone = {
-				border: "1px dashed " + (drag ? C.ink : C.soft),
-				background: drag ? "#f2f2f2" : "#fff",
-				borderRadius: "4px", padding: "9px 11px", marginTop: "8px",
-				fontSize: "11px", color: C.muted, textAlign: "center", cursor: "pointer"
-			};
-
-			const kb = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB");
-
-			return h("div", {
-				key: "intake",
-				style: { border: "1px solid " + C.ink, borderRadius: "6px", padding: "12px 14px", marginBottom: "13px", background: "#fff" }
-			}, [
-				h("div", { key: "hd", style: { display: "flex", alignItems: "baseline", gap: "9px", flexWrap: "wrap", marginBottom: "8px" } }, [
-					h("span", { key: "t", style: { fontSize: "13px", fontWeight: 600 } }, "收件箱"),
-					h("span", { key: "s", style: { fontSize: "11px", color: C.muted } },
-						"四种输入方式都从这里进 —— 按你要做的那一种，别猜它算哪类")
-				]),
-
-				h("textarea", {
-					key: "raw", value: raw, rows: 3,
-					placeholder: "粘路径 / 贴链接 / 直接写一段话（多个路径请各占一行）",
-					onChange: (e) => { setRaw(e.target.value); setMsg(null); },
-					style: {
-						width: "100%", boxSizing: "border-box", fontSize: "12px", lineHeight: 1.7,
-						padding: "7px 9px", border: "1px solid " + C.soft, borderRadius: "4px",
-						outline: "none", resize: "vertical", fontFamily: "inherit", background: "#fff"
-					}
-				}),
-
-				h("div", {
-					key: "zone", style: zone,
-					onClick: () => { if (fileRef.current) fileRef.current.click(); },
-					onDragOver: (e) => { e.preventDefault(); if (!drag) setDrag(true); },
-					onDragLeave: () => setDrag(false),
-					onDrop: (e) => {
-						e.preventDefault(); setDrag(false);
-						const dt = e.dataTransfer;
-						if (dt && dt.files && dt.files.length > 0) addFiles(dt.files);
-					}
-				}, "把文件 / 文件夹拖到这里，或点这里选择文件（文本类自动读成内容；其余记路径，由 agent 去读）"),
-
-				h("input", {
-					key: "fi", type: "file", multiple: true, ref: fileRef,
-					style: { display: "none" },
-					onChange: (e) => { addFiles(e.target.files || []); e.target.value = ""; }
-				}),
-
-				files.length > 0 ? h("div", { key: "fl", style: { display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "7px" } },
-					files.map((f, i) => h("span", {
-						key: "f" + i,
-						style: {
-							display: "inline-flex", alignItems: "center", gap: "6px",
-							fontSize: "11px", padding: "3px 8px", borderRadius: "12px",
-							border: "1px solid " + (f.err ? C.bad : C.soft),
-							background: f.err ? "#fff" : "#f7f7f7", color: f.err ? C.bad : C.ink
-						}
-					}, [
-						h("span", { key: "n" }, f.name + "　" + (f.size ? kb(f.size) : "大小未知") +
-							(f.isText ? "　已读入" : f.fullPath ? "　记路径" : "　上传")),
-						h("button", {
-							key: "x", type: "button", onClick: () => removeFile(i),
-							style: { font: "inherit", border: "none", background: "transparent", cursor: "pointer", color: C.muted, padding: 0 }
-						}, "✕")
-					])) ) : null,
-
-				h("input", {
-					key: "nt", value: note, placeholder: "备注 / 分析目标 / 正文（可空；空则自动取输入框里的散文）",
-					onChange: (e) => { setNote(e.target.value); setMsg(null); },
-					style: {
-						width: "100%", boxSizing: "border-box", fontSize: "12px", padding: "5px 8px",
-						border: "1px solid " + C.soft, borderRadius: "4px", outline: "none",
-						background: "#fff", marginTop: "7px"
-					}
-				}),
-
-				h("div", { key: "meta", style: { fontSize: "11px", color: C.muted, lineHeight: 1.9, marginTop: "6px" } }, [
-					h("div", { key: "a" }, "识别到的素材：" + materials.length + " 项（其中路径/链接 " + pathMats.length + " 项，散文 " + textMats.length + " 段）" +
-						(files.length > 0 ? "，文件 " + files.length + " 个" : "")),
-					h("div", { key: "b" }, "将归档到功能主题：" + (derived || "（还看不出来 —— 给个素材或写一句标题）")),
-					noteAuto ? h("div", { key: "c" }, "备注自动取输入框里的散文：" + String(effectiveNote).replace(/\s+/g, " ").slice(0, 80) + (String(effectiveNote).length > 80 ? "…" : "")) : null,
-					noPath.length > 0 ? h("div", { key: "d", style: { color: C.warn } }, "⚠ 这些文件拿不到本机路径，只能作为会话附件上传（agent 读不到内容）：" + noPath.join("、")) : null
-				]),
-
-				h("div", { key: "btns", style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px" } },
-					contract.INTAKE_KINDS.map((k) => h("button", {
-						key: k.id, type: "button", disabled: !!busyId,
-						title: k.needs,
-						onClick: () => go(k.id),
-						style: {
-							font: "inherit", textAlign: "left", cursor: busyId ? "default" : "pointer",
-							padding: "7px 11px", borderRadius: "4px",
-							border: "1px solid " + (busyId === k.id ? C.ink : C.soft),
-							background: busyId === k.id ? C.ink : "#fff",
-							color: busyId === k.id ? "#fff" : C.ink
-						}
-					}, [
-						h("div", { key: "l", style: { fontSize: "12px", fontWeight: 600 } },
-							(busyId === k.id ? "已发出 · " : "") + k.label),
-						h("div", { key: "h", style: { fontSize: "10px", color: busyId === k.id ? "#ddd" : C.muted } }, k.hint)
-					]))),
-
-				msg ? h("div", {
-					key: "m",
-					style: {
-						marginTop: "9px", padding: "7px 10px", borderRadius: "4px", fontSize: "11px", lineHeight: 1.85,
-						border: "1px solid " + (msg.ok ? C.ok : C.bad), color: msg.ok ? C.ok : C.bad, background: "#fff"
-					}
-				}, msg.text) : null,
-
-				props.refs ? h("div", {
-					key: "rf",
-					style: { marginTop: "9px", paddingTop: "8px", borderTop: "1px solid " + C.faint, fontSize: "11px", color: C.muted, lineHeight: 1.9 }
-				}, [
-					h("div", { key: "a" }, "跑这一趟的下游产物（点开看）："),
-					props.refs.map((x, i) => h("div", { key: "r" + i }, [
-						h("button", {
-							key: "b", type: "button",
-							onClick: () => props.onOpenRef(x.abs),
-							style: { font: "inherit", fontSize: "11px", border: "none", background: "transparent", color: C.ink, cursor: "pointer", padding: 0, textDecoration: "underline" }
-						}, x.label)
-					]))
-				]) : null
-			]);
-		}
-
-		/**
-		 * B1 · 设计资产列表
-		 * 数据源：workspace/design-asset-index.json（由 refresh_asset_index.py 生成）
-		 */
-		function AssetsPanel(props) {
-			const data = props.data;
-			const [type, setType] = React.useState("__all__");
-			const [rev, setRev] = React.useState("__all__");
-			const [q, setQ] = React.useState("");
-			const [busy, setBusy] = React.useState(false);
-			const [note, setNote] = React.useState(null);
-			const [openAsset, setOpenAsset] = React.useState(null);
-			const [tool, setTool] = React.useState("");
-			const [impPath, setImpPath] = React.useState("");
-			const [impNote, setImpNote] = React.useState("");
-			const [mTitle, setMTitle] = React.useState("");
-			const [mBody, setMBody] = React.useState("");
-			const [mUp, setMUp] = React.useState("");
-			const onOpen = props.onOpen;
-			const onRefresh = props.onRefresh;
-
-			const tbtn = (key, label, active, onPick) => h("button", {
-				key: key, type: "button", disabled: busy,
-				onClick: onPick,
-				style: {
-					font: "inherit", fontSize: "12px", padding: "5px 13px",
-					border: "1px solid " + (active ? C.ink : C.soft),
-					background: active ? C.ink : "#fff",
-					color: active ? "#fff" : C.ink,
-					borderRadius: "4px", cursor: busy ? "default" : "pointer"
-				}
-			}, label);
-
-			if (!data) return h("div", { style: { color: C.muted, fontSize: "12px" } }, "正在读资产索引…");
-
-			// 阅读器（B2）
-			if (openAsset) {
-				return h(AssetReader, {
-					asset: openAsset, srWs: data.srWs, read: props.read,
-					onBack: () => setOpenAsset(null), onOpen: onOpen
-				});
-			}
-			if (data.error) {
-				return h("div", null, [
-					h("div", { key: "e", style: { border: "1px solid " + C.bad, borderLeft: "3px solid " + C.bad, background: "#fff", borderRadius: "4px", padding: "10px 12px", fontSize: "12px", color: C.bad, marginBottom: "10px" } }, data.error),
-					props.onRefresh ? h("div", { key: "a" }, h("button", {
-						type: "button",
-						onClick: () => { setBusy(true); setNote(null); props.onRefresh().then((t) => { setBusy(false); setNote(t); }); },
-						disabled: busy,
-						style: { font: "inherit", fontSize: "12px", padding: "6px 14px", border: "1px solid " + C.ink, background: C.ink, color: "#fff", borderRadius: "4px", cursor: "pointer" }
-					}, busy ? "已发出指令，等 agent 跑完…" : "刷新资产索引")) : null,					note ? h("div", { key: "n", style: { marginTop: "9px", fontSize: "12px", color: C.muted } }, note) : null
-				]);
-			}
-
-			const all = data.assets;
-			const byId = {};
-			for (const a of all) byId[a.asset_id] = a;
-
-			// 计数
-			const typeCounts = {}, revCounts = {};
-			for (const a of all) {
-				typeCounts[a.asset_type] = (typeCounts[a.asset_type] || 0) + 1;
-				revCounts[a.review_status] = (revCounts[a.review_status] || 0) + 1;
-			}
-
-			const filtered = all.filter((a) => {
-				if (type !== "__all__" && a.asset_type !== type) return false;
-				if (rev !== "__all__" && a.review_status !== rev) return false;
-				if (q) {
-					const hay = (a.asset_id + " " + a.path + " " + (a.title || "")).toLowerCase();
-					if (hay.indexOf(q.toLowerCase()) < 0) return false;
-				}
-				return true;
-			}).sort((x, y) => (x.asset_id < y.asset_id ? -1 : 1));
-
-			const chip = (label, count, active, onPick, key) => h("button", {
-				key: key, type: "button", onClick: onPick,
-				style: {
-					font: "inherit", fontSize: "11px", padding: "3px 10px",
-					border: "1px solid " + (active ? C.ink : C.faint),
-					background: active ? C.ink : "#fff",
-					color: active ? "#fff" : C.ink,
-					borderRadius: "12px", cursor: "pointer", whiteSpace: "nowrap"
-				}
-			}, label + (count === void 0 ? "" : " " + count));
-
-			const linkRefs = (refs) => (refs || []).map((r) => {
-				const t = byId[r];
-				return t ? (ASSET_TYPE_LABEL[t.asset_type] || t.asset_type) + " " + r : r;
-			}).join("、");
-
-			return h("div", null, [
-				h("div", { key: "sum", style: { fontSize: "12px", color: C.muted, marginBottom: "10px" } },
-					"索引 schema " + (data.schemaVersion || "?") + " · 工作区 " + (data.workspaceId || "?") + "　共 " + all.length + " 条资产"),
-
-				// ★ 收件箱：四种输入方式的统一入口（拍板 2026-09-28）
-				props.onIntake ? h(IntakeBox, {
-					key: "intake",
-					onSubmit: props.onIntake,
-					refs: props.intakeRefs,
-					onOpenRef: onOpen
-				}) : null,
-
-				// ↓ 旧的「导入旧文档 / 人工补充」双窗口已并入上面的收件箱；保留代码仅为回退，入口不再显示。
-				// 工具栏：三种"改文件"的动作，全部交给 agent（工作台自己写不了文件）
-				(onRefresh && tool === "__legacy__") ? h("div", { key: "rf", style: { marginBottom: "11px" } }, [
-					h("div", { key: "btns", style: { display: "flex", gap: "7px", flexWrap: "wrap", marginBottom: "7px" } }, [
-						tbtn("b1", busy ? "已发出指令…" : "刷新资产索引", tool === "", () => { setTool(""); setNote(null); setBusy(true); props.onRefresh().then((t) => { setBusy(false); setNote(t); }); }),
-						tbtn("b2", "导入旧文档", tool === "import", () => { setTool(tool === "import" ? "" : "import"); setNote(null); }),
-						tbtn("b3", "人工补充", tool === "manual", () => { setTool(tool === "manual" ? "" : "manual"); setNote(null); })
-					]),
-					h("div", { key: "hint", style: { fontSize: "11px", color: C.muted } },
-						"工作台不自己改文件 —— 这三个动作都只是把意图发给 agent，由它执行")
-				]) : null,
-
-				// 方式 3 · 导入旧文档
-				tool === "import" ? h("div", {
-					key: "imp",
-					style: { border: "1px solid " + C.faint, borderLeft: "3px solid " + C.ink, background: "#fff", borderRadius: "4px", padding: "11px 13px", marginBottom: "11px" }
-				}, [
-					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, marginBottom: "6px" } }, "方式 3 · 导入旧文档"),
-					h("div", { key: "d", style: { fontSize: "11px", color: C.muted, lineHeight: 1.8, marginBottom: "8px" } }, [
-						h("div", { key: "a" }, "选一个旧方案 / 旧文档所在目录（本机任意位置）。"),
-						h("div", { key: "b" }, "导入件放 " + "inbox/imported/" + "，登记为 inbox / 待审，**不提升为正式资产**（旧文档是参考材料，供成稿时按章节对照）。")
-					]),
-					h("div", { key: "row", style: { display: "flex", gap: "7px", alignItems: "center", flexWrap: "wrap", marginBottom: "7px" } }, [
-						h("button", {
-							key: "p", type: "button", disabled: busy || !props.onPickDir,
-							onClick: () => {
-								setBusy(true);
-								props.onPickDir().then((r) => {
-									setBusy(false);
-									if (r && r.ok && r.value) { setImpPath(String(r.value)); setNote(null); }
-									else if (r && r.ok && !r.value) setNote("已取消选择。");
-									else setNote("选择目录失败：" + humanError(r));
-								});
-							},
-							style: { font: "inherit", fontSize: "12px", padding: "5px 12px", border: "1px solid " + C.ink, background: "#fff", borderRadius: "4px", cursor: "pointer" }
-						}, "选择目录…"),
-						h("input", {
-							key: "i", value: impPath, placeholder: "或直接粘贴目录路径",
-							onChange: (e) => setImpPath(e.target.value),
-							style: { flex: "1 1 260px", fontSize: "12px", padding: "5px 8px", border: "1px solid " + C.soft, borderRadius: "4px", outline: "none", fontFamily: "monospace", background: "#fff" }
-						})
-					]),
-					h("input", {
-						key: "n", value: impNote, placeholder: "备注（可选，例如：V0.3 完整策划案，成稿时按章节对照）",
-						onChange: (e) => setImpNote(e.target.value),
-						style: { width: "100%", boxSizing: "border-box", fontSize: "12px", padding: "5px 8px", border: "1px solid " + C.soft, borderRadius: "4px", outline: "none", background: "#fff", marginBottom: "8px" }
-					}),
-					h("button", {
-						key: "go", type: "button", disabled: busy || !impPath,
-						onClick: () => { setBusy(true); setNote(null); props.onImport(impPath, impNote).then((t) => { setBusy(false); setNote(t); setTool(""); }); },
-						style: { font: "inherit", fontSize: "12px", padding: "6px 15px", border: "1px solid " + C.ink, background: busy || !impPath ? "#888" : C.ink, color: "#fff", borderRadius: "4px", cursor: busy || !impPath ? "default" : "pointer" }
-					}, "确认导入")
-				]) : null,
-
-				// 方式 4 · 人工补充
-				tool === "manual" ? h("div", {
-					key: "man",
-					style: { border: "1px solid " + C.faint, borderLeft: "3px solid " + C.ink, background: "#fff", borderRadius: "4px", padding: "11px 13px", marginBottom: "11px" }
-				}, [
-					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, marginBottom: "6px" } }, "方式 4 · 人工补充"),
-					h("div", { key: "d", style: { fontSize: "11px", color: C.muted, lineHeight: 1.8, marginBottom: "8px" } },
-						"写入 inbox/manual/，登记为 inbox / 待审。想到一条规则、边界情况或口径，随手记下来即可 —— 不用先想归类。"),
-					h("input", {
-						key: "ti", value: mTitle, placeholder: "标题（例如：联盟榜同分时的排序口径）",
-						onChange: (e) => setMTitle(e.target.value),
-						style: { width: "100%", boxSizing: "border-box", fontSize: "12px", padding: "5px 8px", border: "1px solid " + C.soft, borderRadius: "4px", outline: "none", background: "#fff", marginBottom: "7px" }
-					}),
-					h("textarea", {
-						key: "bo", value: mBody, placeholder: "正文（自由文本）",
-						onChange: (e) => setMBody(e.target.value),
-						rows: 7,
-						style: { width: "100%", boxSizing: "border-box", fontSize: "12px", lineHeight: 1.7, padding: "7px 9px", border: "1px solid " + C.soft, borderRadius: "4px", outline: "none", background: "#fff", resize: "vertical", fontFamily: "inherit", marginBottom: "7px" }
-					}),
-					h("div", { key: "up", style: { display: "flex", gap: "7px", alignItems: "center", flexWrap: "wrap", marginBottom: "8px" } }, [
-						h("span", { key: "l", style: { fontSize: "11px", color: C.muted } }, "补充的是哪份资产（可选）"),
-						h("select", {
-							key: "s", value: mUp, onChange: (e) => setMUp(e.target.value),
-							style: { flex: "1 1 280px", fontSize: "12px", padding: "4px 7px", border: "1px solid " + C.soft, borderRadius: "4px", background: "#fff" }
-						}, [
-							h("option", { key: "", value: "" }, "（不指定）"),
-							...all.filter((a) => a.asset_type !== "inbox").map((a) =>
-								h("option", { key: a.asset_id, value: a.asset_id }, a.asset_id + "　" + String(a.path)))
-						])
-					]),
-					h("button", {
-						key: "go", type: "button", disabled: busy || !mTitle.trim() || !mBody.trim(),
-						onClick: () => {
-							setBusy(true); setNote(null);
-							props.onManual(mTitle.trim(), mBody, mUp).then((t) => {
-								setBusy(false); setNote(t); setTool(""); setMTitle(""); setMBody(""); setMUp("");
-							});
-						},
-						style: { font: "inherit", fontSize: "12px", padding: "6px 15px", border: "1px solid " + C.ink, background: busy || !mTitle.trim() || !mBody.trim() ? "#888" : C.ink, color: "#fff", borderRadius: "4px", cursor: "pointer" }
-					}, "保存到收集箱")
-				]) : null,
-
-				note ? h("div", { key: "nt", style: { border: "1px solid " + C.faint, borderLeft: "3px solid " + C.ok, background: "#fff", borderRadius: "4px", padding: "8px 11px", fontSize: "12px", marginBottom: "11px", color: C.ok } }, note) : null,
-
-				// 筛选
-				h("div", { key: "f1", style: { display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "7px" } }, [
-					chip("全部", all.length, type === "__all__", () => setType("__all__"), "t0"),
-					...Object.keys(typeCounts).sort().map((k) => chip(ASSET_TYPE_LABEL[k] || k, typeCounts[k], type === k, () => setType(k), "t" + k))
-				]),
-				h("div", { key: "f2", style: { display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "9px", alignItems: "center" } }, [
-					chip("全部审核态", void 0, rev === "__all__", () => setRev("__all__"), "r0"),
-					...Object.keys(revCounts).sort().map((k) => chip(REVIEW_LABEL[k] || k, revCounts[k], rev === k, () => setRev(k), "r" + k)),
-					h("input", {
-						key: "q", value: q, placeholder: "搜索 id / 路径 / 标题…",
-						onChange: (e) => setQ(e.target.value),
-						style: {
-							flex: "1 1 180px", maxWidth: "280px", fontSize: "12px", padding: "3px 8px",
-							border: "1px solid " + C.soft, borderRadius: "12px", outline: "none", background: "#fff"
-						}
-					}),
-					h("span", { key: "n", style: { fontSize: "11px", color: C.muted } }, "显示 " + filtered.length + " / " + all.length)
-				]),
-
-				// 列表
-				filtered.length ? h("div", { key: "list", style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", overflow: "hidden" } },
-					filtered.map((a, i) => {
-						const tone = REVIEW_TONE[a.review_status] === void 0 ? null : REVIEW_TONE[a.review_status];
-						const refs = [];
-						if (a.supersedes && a.supersedes.length) refs.push("取代 " + linkRefs(a.supersedes));
-						if (a.upstream_assets && a.upstream_assets.length) refs.push("上游 " + linkRefs(a.upstream_assets));
-						if (a.downstream_assets && a.downstream_assets.length) refs.push("下游 " + linkRefs(a.downstream_assets));
-						return h("div", {
-							key: a.asset_id || i,
-							style: { padding: "8px 11px", borderTop: i ? "1px solid " + C.faint : "none" }
-						}, [
-							h("div", { key: "r1", style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, [
-								h("span", { key: "id", style: { fontFamily: "monospace", fontSize: "11px", color: C.muted, minWidth: "150px" } }, String(a.asset_id || "")),
-								badge(ASSET_TYPE_LABEL[a.asset_type] || a.asset_type, null),
-								a.review_status ? badge(REVIEW_LABEL[a.review_status] || a.review_status, tone) : null,
-								a.format ? badge(a.format, null) : null,
-								a.source_skill ? h("span", { key: "sk", style: { fontSize: "10px", color: C.muted, fontFamily: "monospace" } }, a.source_skill) : null
-							]),
-							h("div", { key: "r2", style: { marginTop: "3px" } }, h("button", {
-								type: "button",
-								onClick: () => setOpenAsset(a),
-								title: "在面板里阅读：" + a.path,
-								style: {
-									font: "inherit", fontSize: "12px", fontFamily: "monospace", padding: 0,
-									border: "none", background: "none", color: "#3b6ea5", cursor: "pointer",
-									textAlign: "left", maxWidth: "100%", overflow: "hidden",
-									textOverflow: "ellipsis", whiteSpace: "nowrap"
-								}
-							}, String(a.path || ""))),
-							refs.length ? h("div", { key: "r3", style: { marginTop: "3px", fontSize: "11px", color: C.muted } }, refs.join("　·　")) : null
-						]);
-					})) : h("div", { key: "none", style: { color: C.muted, fontSize: "12px" } }, "没有匹配的资产。"),
-
-				h("div", { key: "foot", style: { marginTop: "12px", fontSize: "11px", color: C.muted, lineHeight: 1.85 } }, [
-					h("div", { key: "a" }, "资产索引由 scripts/refresh_asset_index.py 生成；工作台只读它，不自己维护。"),
-					h("div", { key: "b" }, "扫描范围：analysis / decisions / evidence / proposals 四个目录。运行包与副本不在索引内。")
-				])
-			]);
-		}
-
-		// ── 内容阅读器（B2）──────────────────────────────────────────
-		/** 按扩展名判类型 */
-		function extOf(p) {
-			const m = /\.([A-Za-z0-9]+)$/.exec(String(p || ""));
-			return m ? m[1].toLowerCase() : "";
-		}
-		const IMG_EXT = { png: 1, jpg: 1, jpeg: 1, gif: 1, webp: 1, svg: 1, bmp: 1 };
-		const MD_EXT = { md: 1, markdown: 1 };
-		const JSON_EXT = { json: 1 };
-		const TEXT_EXT = { txt: 1, yml: 1, yaml: 1, csv: 1, py: 1, js: 1, ts: 1, html_: 1 };
-
-		/** 值 → 一行短文本 */
-		function shortVal(v) {
-			if (v === null) return "null";
-			if (v === void 0) return "—";
-			if (typeof v === "boolean") return v ? "true" : "false";
-			if (typeof v === "number") return String(v);
-			if (typeof v === "string") return v;
-			if (Array.isArray(v)) return "[" + v.length + " 项]";
-			return "{" + Object.keys(v).length + " 个字段}";
-		}
-		const isScalar = (v) => v === null || typeof v !== "object";
-		const isObjArray = (v) => Array.isArray(v) && v.length > 0 && v.every((x) => x && typeof x === "object" && !Array.isArray(x));
-
-		/**
-		 * 通用「可读 JSON」渲染器 —— 这是"json 不方便阅读"的正解。
-		 * 标量成行 / 对象成节 / 对象数组成表 / 长文本成块。
-		 */
-		function ReadableJson(props) {
-			const v = props.value;
-			const depth = props.depth || 0;
-			const pad = 12 + depth * 12;
-
-			if (isScalar(v)) {
-				return h("div", { style: { fontSize: "12px", lineHeight: 1.75, whiteSpace: "pre-wrap", wordBreak: "break-word" } }, shortVal(v));
-			}
-			if (Array.isArray(v)) {
-				if (v.length === 0) return h("div", { style: { fontSize: "12px", color: C.muted } }, "（空）");
-				if (isObjArray(v)) {
-					const keys = [];
-					for (const it of v) for (const k of Object.keys(it)) if (keys.indexOf(k) < 0) keys.push(k);
-					return h("div", { style: { overflowX: "auto" } }, h("table", { style: { borderCollapse: "collapse", width: "100%", fontSize: "11px" } }, [
-						h("thead", { key: "h" }, h("tr", null, keys.map((k) => h("th", {
-							key: k, style: { border: "1px solid " + C.faint, background: C.bg, padding: "4px 7px", textAlign: "left", whiteSpace: "nowrap" }
-						}, k)))),
-						h("tbody", { key: "b" }, v.map((it, i) => h("tr", { key: i }, keys.map((k) => {
-							const cell = it[k];
-							return h("td", {
-								key: k,
-								style: { border: "1px solid " + C.faint, padding: "4px 7px", verticalAlign: "top", maxWidth: "320px" }
-							}, isScalar(cell)
-								? h("span", { style: { whiteSpace: "pre-wrap", wordBreak: "break-word" } }, shortVal(cell))
-								: h("span", { style: { color: C.muted } }, shortVal(cell)));
-						}))))
-					]));
-				}
-				return h("div", { style: { display: "flex", flexDirection: "column", gap: "4px" } },
-					v.map((x, i) => h("div", { key: i, style: { display: "flex", gap: "7px" } }, [
-						h("span", { key: "i", style: { color: C.muted, fontFamily: "monospace", fontSize: "11px" } }, String(i + 1) + "."),
-						h("span", { key: "v", style: { flex: "1 1 auto" } }, isScalar(x)
-							? h("span", { style: { fontSize: "12px", whiteSpace: "pre-wrap", wordBreak: "break-word" } }, shortVal(x))
-							: h(ReadableJson, { value: x, depth: depth + 1 }))
-					])));
-			}
-			// 对象
-			const keys = Object.keys(v);
-			if (!keys.length) return h("div", { style: { fontSize: "12px", color: C.muted } }, "（空对象）");
-			return h("div", null, keys.map((k) => {
-				const val = v[k];
-				const scalar = isScalar(val);
-				return h("div", {
-					key: k,
-					style: { display: "flex", gap: "9px", paddingLeft: pad + "px", marginBottom: "3px", alignItems: "flex-start" }
-				}, [
-					h("span", {
-						key: "k",
-						style: {
-							fontSize: "11px", fontFamily: "monospace", color: C.muted,
-							minWidth: "120px", flex: "0 0 auto", paddingTop: scalar ? "1px" : "0"
-						}
-					}, k),
-					h("span", { key: "v", style: { flex: "1 1 auto", minWidth: 0 } }, scalar
-						? h("span", {
-							style: {
-								fontSize: "12px", whiteSpace: "pre-wrap", wordBreak: "break-word",
-								display: "block", lineHeight: 1.7
-							}
-						}, shortVal(val))
-						: h(ReadableJson, { value: val, depth: depth + 1 }))
-				]);
-			}));
-		}
-
-		/** 单个资产的内容阅读器（B2）*/
-		function AssetReader(props) {
-			const a = props.asset;
-			const srWs = props.srWs || "";
-			const onBack = props.onBack;
-			const onOpen = props.onOpen;
-			const [text, setText] = React.useState(void 0);   // undefined=加载中 null=读不到
-			const [docDir, setDocDir] = React.useState("");
-			const read = props.read;
-
-			const abs = a ? srWs + "/" + a.path : "";
-			const ext = extOf(a ? a.path : "");
-
-			React.useEffect(() => {
-				if (!a || !read || !srWs) { setText(null); return; }
-				if (IMG_EXT[ext]) { setText(""); return; }        // 图片不需要读文本
-				let cancelled = false;
-				setText(void 0);
-				const dir = String(a.path).replace(/[^\\/]+$/, "");
-				setDocDir(dir);
-				read(srWs + "/" + a.path).then(
-					(t) => { if (!cancelled) setText(t); },
-					() => { if (!cancelled) setText(null); }
-				);
-				return () => { cancelled = true; };
-			}, [a ? a.asset_id : "", a ? a.path : "", srWs]);
-
-			if (!a) return null;
-
-			const body = [];
-
-			// 图片
-			if (IMG_EXT[ext]) {
-				body.push(h("img", {
-					key: "img", src: fileUrl(abs), alt: a.path,
-					style: { maxWidth: "100%", border: "1px solid " + C.faint, borderRadius: "4px", background: C.bg, display: "block" }
-				}));
-			}
-			// HTML：/api/file 带 `CSP: sandbox; default-src 'none'`，内嵌会变成无样式文本 → 不内嵌
-			else if (ext === "html" || ext === "htm") {
-				body.push(h("div", {
-					key: "html",
-					style: { border: "1px solid " + C.faint, borderLeft: "3px solid " + C.warn, background: "#fffdf7", borderRadius: "4px", padding: "11px 13px", fontSize: "12px", lineHeight: 1.8 }
-				}, [
-					h("div", { key: "a" }, "HTML 交付物不在面板里内嵌渲染。"),
-					h("div", { key: "b", style: { color: C.muted } },
-						"原因：/api/file 路由带 `Content-Security-Policy: sandbox; default-src 'none'`，内嵌会丢掉全部样式。"),
-					h("div", { key: "c", style: { color: C.muted } }, "点上面的「用默认程序打开」会在浏览器里正常显示。")
-				]));
-			}
-			// markdown —— 按产出规范渲染（有规范走 SpecMdView，没有才按原文）
-			else if (MD_EXT[ext] && typeof text === "string") {
-				const absDir = srWs + (docDir ? "/" + String(docDir).replace(/\/$/, "") : "");
-				const pathImages = {
-					resolve: (v) => {
-						if (!v || typeof v !== "string") return void 0;
-						if (!/\.(png|jpe?g|gif|webp|svg)$/i.test(v)) return void 0;
-						const isAbs = /^[A-Za-z]:[\\/]/.test(v) || v.charAt(0) === "/";
-						return fileUrl(isAbs ? v : absDir.replace(/[\\/]+$/, "") + "/" + v);
-					}
-				};
-				const spec = mdSpecOf(a.path);
-				body.push(h("div", {
-					key: "note",
-					style: {
-						fontSize: "11px", marginBottom: "9px", padding: "6px 10px",
-						border: "1px solid " + C.faint, borderLeft: "3px solid " + (spec ? C.ok : C.soft),
-						background: spec ? "#f0fdf4" : C.bg, borderRadius: "4px", color: spec ? C.ok : C.muted
-					}
-				}, spec
-					? "按产出规范渲染 · " + spec.name + "（治理/备料/样本元信息已折叠；未见过的章节收进「其他章节」不会丢）"
-					: "这类产出还没有规范，按原文渲染"));
-				body.push(spec
-					? h(SpecMdView, { key: "md", text: text, spec: spec, pathImages: pathImages })
-					: h(Md, { key: "md", text: text, pathImages: pathImages }));
-			}
-			// JSON / JSONL
-			else if ((JSON_EXT[ext] || ext === "jsonl") && typeof text === "string") {
-				if (ext === "jsonl") {
-					const rows = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-					body.push(h("div", { key: "l", style: { fontSize: "11px", color: C.muted, marginBottom: "7px" } }, rows.length + " 行"));
-					body.push(h("div", { key: "r" }, rows.map((l, i) => {
-						let v = null, bad = false;
-						try { v = JSON.parse(l); } catch (e) { bad = true; }
-						return h("div", {
-							key: i,
-							style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "8px 10px", marginBottom: "6px" }
-						}, bad
-							? h("pre", { style: PRESTYLE }, l)
-							: h(ReadableJson, { value: v }));
-					})));
-				} else {
-					let v = null, bad = false;
-					try { v = JSON.parse(text); } catch (e) { bad = true; }
-					const base = String(a.path).split("/").pop() || "";
-					if (bad) {
-						body.push(h("div", {
-							key: "j",
-							style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "11px 13px" }
-						}, [h("div", { key: "e", style: { fontSize: "12px", color: C.bad, marginBottom: "6px" } }, "JSON 解析失败，原始文本如下："),
-							h("pre", { key: "p", style: PRESTYLE }, text)]));
-					} else if (/^issue-cards_/i.test(base)) {
-						body.push(h("div", {
-							key: "note",
-							style: { fontSize: "11px", marginBottom: "9px", padding: "6px 10px", border: "1px solid " + C.faint, borderLeft: "3px solid " + C.ok, background: "#f0fdf4", borderRadius: "4px", color: C.ok }
-						}, "按产出规范渲染 · 问题卡（只显示设计相关字段；路径与素材源已省略）"));
-						body.push(h(IssueCardsView, { key: "ic", data: v }));
-					} else if (/^sr-gdd-handoff_/i.test(base)) {
-						body.push(h("div", {
-							key: "note",
-							style: { fontSize: "11px", marginBottom: "9px", padding: "6px 10px", border: "1px solid " + C.faint, borderLeft: "3px solid " + C.ok, background: "#f0fdf4", borderRadius: "4px", color: C.ok }
-						}, "按产出规范渲染 · 交接件（设计核 / 已拍板事实 / 未闭合假设 / 待决问题 / 已闭合假设；路径与 id 收进溯源）"));
-						body.push(h(HandoffView, { key: "ho", data: v }));
-					} else {
-						body.push(h("div", {
-							key: "note",
-							style: { fontSize: "11px", marginBottom: "9px", padding: "6px 10px", border: "1px solid " + C.faint, borderLeft: "3px solid " + C.warn, background: "#fffdf7", borderRadius: "4px", color: C.warn }
-						}, "这类 JSON 还没有产出规范，按结构渲染（可能含元数据噪声）"));
-						body.push(h("div", {
-							key: "j",
-							style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "11px 13px" }
-						}, h(ReadableJson, { value: v })));
-					}
-				}
-			}
-			// 其他文本
-			else if (typeof text === "string") {
-				body.push(h("pre", { key: "t", style: PRESTYLE }, text.slice(0, 200000)));
-			}
-			else if (text === void 0) {
-				body.push(h("div", { key: "l", style: { color: C.muted, fontSize: "12px" } }, "正在读取…"));
-			}
-			else {
-				body.push(h("div", { key: "n", style: { color: C.muted, fontSize: "12px" } }, "读不到内容（可能不是文本文件）。用默认程序打开试试。"));
-			}
-
-			const refLine = [];
-			if (a.supersedes && a.supersedes.length) refLine.push("取代 " + a.supersedes.join("、"));
-			if (a.upstream_assets && a.upstream_assets.length) refLine.push("上游 " + a.upstream_assets.join("、"));
-			if (a.downstream_assets && a.downstream_assets.length) refLine.push("下游 " + a.downstream_assets.join("、"));
-
-			return h("div", null, [
-				h("div", { key: "bar", style: { display: "flex", gap: "8px", alignItems: "center", marginBottom: "10px", flexWrap: "wrap" } }, [
-					h("button", {
-						key: "b", type: "button", onClick: onBack,
-						style: { font: "inherit", fontSize: "12px", padding: "4px 11px", border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer" }
-					}, "‹ 返回列表"),
-					badge(ASSET_TYPE_LABEL[a.asset_type] || a.asset_type, null),
-					a.review_status ? badge(REVIEW_LABEL[a.review_status] || a.review_status, REVIEW_TONE[a.review_status]) : null,
-					h("button", {
-						key: "o", type: "button", onClick: () => onOpen(abs),
-						style: { font: "inherit", fontSize: "12px", padding: "4px 11px", border: "1px solid " + C.ink, background: "#fff", borderRadius: "4px", cursor: "pointer" }
-					}, "用默认程序打开")
-				]),
-				h("div", { key: "meta", style: { fontSize: "11px", color: C.muted, marginBottom: "10px", lineHeight: 1.8 } }, [
-					h("div", { key: "p", style: { fontFamily: "monospace", wordBreak: "break-all" } }, String(a.asset_id || "") + "　" + a.path),
-					a.source_skill ? h("div", { key: "s" }, "来源技能：" + a.source_skill) : null,
-					refLine.length ? h("div", { key: "r" }, refLine.join("　·　")) : null
-				]),
-				...body
-			]);
-		}
 		const PRESTYLE = {
 			fontSize: "11px", fontFamily: "monospace", whiteSpace: "pre-wrap",
 			wordBreak: "break-word", background: C.bg, border: "1px solid " + C.faint,
 			borderRadius: "3px", padding: "10px", margin: 0,
 			maxHeight: "70vh", overflow: "auto", userSelect: "text", lineHeight: 1.6
 		};
-
-		// ══════════════════════════════════════════════════════════════
-		// ══════════════════════════════════════════════════════════════
-		// 二、规范驱动的 md 读取 —— **工单 32 起改为 import ./pure/mdspec.ts**
-		//   三分法：设计信息（显示）/ 元数据（省略）/ 治理自检（折叠）
-		//   通用规则：置顶区 → 主体区 → 折叠区（含「未知章节不丢」）
-		//   ★ 这一刀**不是纯去重**：模块版的 mdSpecOf 用 split(/[\\/]/)，修掉了内联版只按 / 切、
-		//     Windows 反斜杠路径六种章节规范全匹配不上的缺陷（工单 03 收尾时修的那条）。
-		// ══════════════════════════════════════════════════════════════
 
 		/** 一段 markdown（用 DSH 的 MarkdownText；取不到则降级 <pre>） */
 		function Md(props) {
@@ -5399,233 +4579,6 @@ import {
 			return h("pre", { style: PRESTYLE }, text);
 		}
 
-		function SectionBlock(props) {
-			const s = props.section;
-			return h("div", { key: props.k, style: { marginBottom: "14px" } }, [
-				h("div", {
-					key: "h",
-					style: {
-						fontSize: "13px", fontWeight: 600, marginBottom: "6px", color: C.ink,
-						borderBottom: "1px solid " + C.faint, paddingBottom: "4px"
-					}
-				}, s.title),
-				h(Md, { key: "b", text: s.body, pathImages: props.pathImages })
-			]);
-		}
-
-		/**
-		 * 按规范渲染一份 markdown 产出：
-		 * 置顶区 → 主体区 → 折叠区（治理/备料）→「其他章节」（未知的不丢）
-		 */
-		function SpecMdView(props) {
-			const text = props.text;
-			const spec = props.spec;
-			const pathImages = props.pathImages;
-			const [open, setOpen] = React.useState({});
-
-			const sections = parseMdSections(text);
-			if (!sections.length) return h("pre", { style: PRESTYLE }, text);
-
-			const top = [], body = [], fold = [], unknown = [];
-			for (const s of sections) {
-				const cls = classifyHeading(s.title, spec ? spec.sections : []);
-				if (cls === "skip") continue;
-				if (cls === "top") top.push(s);
-				else if (cls === "body") body.push(s);
-				else if (cls === "fold") fold.push(s);
-				else unknown.push(s);      // ★ 未知章节不丢
-			}
-
-			const foldGroup = (label, items, keyPrefix, tone) => items.length ? h("div", {
-				key: keyPrefix,
-				style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", marginBottom: "9px", overflow: "hidden" }
-			}, [
-				h("div", {
-					key: "h",
-					onClick: () => setOpen((o) => { const n = {}; for (const k in o) n[k] = o[k]; n[keyPrefix] = !o[keyPrefix]; return n; }),
-					style: {
-						display: "flex", justifyContent: "space-between", alignItems: "center",
-						padding: "7px 11px", background: C.bg, cursor: "pointer",
-						borderBottom: open[keyPrefix] ? "1px solid " + C.faint : "none"
-					}
-				}, [
-					h("span", { key: "t", style: { fontSize: "11px", color: tone || C.muted } }, label + "（" + items.length + " 节）"),
-					h("span", { key: "g", style: { fontSize: "10px", color: C.muted } }, open[keyPrefix] ? "收起 ▾" : "展开 ▸")
-				]),
-				open[keyPrefix] ? h("div", { key: "b", style: { padding: "10px 11px" } },
-					items.map((s, i) => h(SectionBlock, { key: i, k: keyPrefix + i, section: s, pathImages: pathImages }))) : null
-			]) : null;
-
-			return h("div", null, [
-				// 置顶区
-				top.length ? h("div", {
-					key: "top",
-					style: {
-						border: "1px solid " + C.faint, borderLeft: "3px solid " + C.ink,
-						background: "#fff", borderRadius: "4px", padding: "11px 13px", marginBottom: "12px"
-					}
-				}, top.map((s, i) => h(SectionBlock, { key: i, k: "top" + i, section: s, pathImages: pathImages }))) : null,
-				// 主体区
-				body.map((s, i) => h(SectionBlock, { key: i, k: "b" + i, section: s, pathImages: pathImages })),
-				// 折叠区
-				foldGroup("治理 / 自检 / 备料", fold, "fold"),
-				foldGroup("其他章节（未在规范白名单内，保留不丢）", unknown, "unk", C.warn)
-			]);
-		}
-
-		/** 问题卡（issue-cards_*.json 规范） */
-		function IssueCardsView(props) {
-			const d = props.data || {};
-			const meta = d.meta || {};
-			const cards = Array.isArray(d.issue_cards) ? d.issue_cards : [];
-			const unc = Array.isArray(d.uncertain_observations) ? d.uncertain_observations : [];
-			const row = (k, v, color) => v ? h("div", { key: k, style: { display: "flex", gap: "9px", fontSize: "12px", lineHeight: 1.8 } }, [
-				h("span", { key: "k", style: { color: C.muted, minWidth: "78px", flex: "0 0 auto" } }, k),
-				h("span", { key: "v", style: { color: color || C.ink, flex: "1 1 auto", whiteSpace: "pre-wrap", wordBreak: "break-word" } }, v)
-			]) : null;
-			return h("div", null, [
-				h("div", { key: "m", style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "10px 13px", marginBottom: "12px" } }, [
-					row("主题", (meta.topic || "") + (meta.date ? "　" + meta.date : "")),
-					row("诊断包", meta.diagnosis_pack),
-					row("分析视角", (meta.analysis_modes || []).join(" · ")),
-					row("样本边界", meta.sample_boundary),
-					row("置信上限", meta.confidence_cap, C.warn)
-				]),
-				...cards.map((c, i) => h("div", {
-					key: i,
-					style: {
-						border: "1px solid " + C.faint,
-						borderLeft: "3px solid " + (c.priority === "P1" ? C.bad : c.priority === "P2" ? C.warn : C.soft),
-						borderRadius: "4px", background: "#fff", padding: "10px 13px", marginBottom: "9px"
-					}
-				}, [
-					h("div", { key: "h", style: { display: "flex", gap: "8px", alignItems: "center", marginBottom: "6px", flexWrap: "wrap" } }, [
-						badge(String(c.priority || ""), c.priority === "P1" ? "bad" : c.priority === "P2" ? "warn" : null),
-						h("span", { key: "i", style: { fontFamily: "monospace", fontSize: "11px", color: C.muted } }, String(c.issue_id || "")),
-						c.owner ? badge(c.owner, null) : null,
-						c.unsupported_by_sample ? badge("无样本支持", "warn") : null
-					]),
-					cardRow("症状", c.symptom, C.ink),
-					cardRow("根因假设", c.root_cause_hypothesis),
-					cardRow("影响", c.impact),
-					cardRow("修法", c.fix_action, C.ok),
-					c.validation ? h("div", { key: "v", style: { marginTop: "5px", borderTop: "1px solid " + C.faint, paddingTop: "5px" } }, [
-						h("div", { key: "t", style: { fontSize: "11px", color: C.muted, marginBottom: "2px" } }, "验证方案"),
-						h("div", { key: "b", style: { fontSize: "12px", lineHeight: 1.8, paddingLeft: "9px" } }, [
-							cardRow("指标", c.validation.metric, C.ink, true),
-							cardRow("方法", c.validation.method, C.ink, true),
-							cardRow("通过线", c.validation.pass_threshold, C.ok, true),
-							cardRow("停止条件", c.validation.stop_condition, C.bad, true)
-						])
-					]) : null,
-					(c.evidence_refs && c.evidence_refs.length) ? h("div", { key: "e", style: { marginTop: "5px", fontSize: "11px", color: C.muted, fontFamily: "monospace" } },
-						"证据：" + c.evidence_refs.join("　")) : null
-				])),
-				unc.length ? h("div", { key: "u", style: { border: "1px solid " + C.faint, borderLeft: "3px solid " + C.warn, background: "#fffdf7", borderRadius: "4px", padding: "10px 13px" } }, [
-					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, marginBottom: "5px" } }, "不确定观察（" + unc.length + "）"),
-					...unc.map((u, i) => h("div", { key: i, style: { fontSize: "12px", lineHeight: 1.8 } }, [
-						h("span", { key: "i", style: { fontFamily: "monospace", fontSize: "11px", color: C.muted } }, String(u.evidence_id || "") + "　"),
-						h("span", { key: "n" }, String(u.note || ""))
-					]))
-				]) : null
-			]);
-		}
-		function cardRow(k, v, color, compact) {
-			if (!v) return null;
-			return h("div", { key: k, style: { display: "flex", gap: "8px", fontSize: compact ? "11px" : "12px", lineHeight: 1.8, alignItems: "flex-start" } }, [
-				h("span", { key: "k", style: { color: C.muted, minWidth: compact ? "52px" : "60px", flex: "0 0 auto" } }, k),
-				h("span", { key: "v", style: { color: color || C.ink, flex: "1 1 auto", whiteSpace: "pre-wrap", wordBreak: "break-word" } }, String(v))
-			]);
-		}
-
-		/** 交接件（sr-gdd-handoff_*.json 规范）：5 区块，其余折叠 */
-		function HandoffView(props) {
-			const d = props.data || {};
-			const [showSrc, setShowSrc] = React.useState(false);
-			const nucleus = d.chosen_nucleus || {};
-			const al = d.assumption_ledger || {};
-			const facts = Array.isArray(d.calibrated_facts) ? d.calibrated_facts : [];
-			const openA = Array.isArray(al.open) ? al.open : [];
-			const closedA = Array.isArray(al.closed) ? al.closed : [];
-			const questions = Array.isArray(d.open_questions_for_gdd) ? d.open_questions_for_gdd : [];
-			const materials = d.materials || {};
-
-			const block = (key, title, tone, children) => children ? h("div", {
-				key: key,
-				style: {
-					border: "1px solid " + C.faint,
-					borderLeft: "3px solid " + (tone || C.soft),
-					borderRadius: "4px", background: "#fff", padding: "10px 13px", marginBottom: "10px"
-				}
-			}, [
-				h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, marginBottom: "6px" } }, title),
-				...children
-			]) : null;
-
-			return h("div", null, [
-				h("div", { key: "top", style: { fontSize: "12px", color: C.muted, marginBottom: "10px" } },
-					(d.topic || "") + "　" + (d.source_skill || "") + " → " + (d.target_skill || "")),
-
-				// ① 设计核
-				block("n", "① 设计核" + (nucleus.id ? "（" + nucleus.id + "）" : ""), C.ink, [
-					nucleus.statement ? h("div", { key: "s", style: { fontSize: "13px", lineHeight: 1.85, marginBottom: "6px" } }, String(nucleus.statement)) : null,
-					cardRow("核心张力", nucleus.key_tension),
-					cardRow("组合", nucleus.combination),
-					nucleus.kill_signal ? h("div", {
-						key: "k",
-						style: { marginTop: "6px", borderTop: "1px solid " + C.faint, paddingTop: "6px", fontSize: "12px", lineHeight: 1.8, color: C.bad }
-					}, [h("span", { key: "l", style: { color: C.muted } }, "Kill Signal　"), String(nucleus.kill_signal)]) : null
-				]),
-
-				// ② 已拍板事实
-				block("f", "② 已拍板事实（" + facts.length + "）", C.ok,
-					facts.map((t, i) => h("div", { key: i, style: { fontSize: "12px", lineHeight: 1.85, marginBottom: "4px", paddingLeft: "9px", borderLeft: "2px solid " + C.faint } }, String(t)))),
-
-				// ③ 未闭合假设
-				block("o", "③ 未闭合假设（" + openA.length + "）", C.warn,
-					openA.map((a, i) => h("div", { key: i, style: { fontSize: "12px", lineHeight: 1.8, marginBottom: "7px" } }, [
-						h("div", { key: "d" }, [
-							h("span", { key: "i", style: { fontFamily: "monospace", color: C.muted } }, String(a.id || "") + "　"),
-							h("span", { key: "t" }, String(a.desc || ""))
-						]),
-						h("div", { key: "m", style: { marginLeft: "9px", color: C.muted, fontSize: "11px" } },
-							"影响 " + String(a.impact || "?") + "　·　怎么验：" + String(a.validate || "?"))
-					]))),
-
-				// ④ 待决问题
-				block("q", "④ 留给成稿的待决问题（" + questions.length + "）", C.ink,
-					questions.map((t, i) => h("div", { key: i, style: { fontSize: "12px", lineHeight: 1.85, marginBottom: "4px" } }, "· " + String(t)))),
-
-				// ⑤ 已闭合假设（一行带过）
-				closedA.length ? h("div", { key: "c", style: { fontSize: "11px", color: C.muted, marginBottom: "10px" } },
-					"⑤ 已闭合假设：" + closedA.join("、")) : null,
-
-				d.next_step ? h("div", { key: "ns", style: { fontSize: "12px", lineHeight: 1.8, marginBottom: "10px" } }, [
-					h("span", { key: "l", style: { color: C.muted } }, "下一步　"),
-					String(d.next_step)
-				]) : null,
-
-				// 溯源（折叠）
-				h("div", { key: "src", style: { border: "1px solid " + C.faint, borderRadius: "4px", background: C.bg, overflow: "hidden" } }, [
-					h("div", {
-						key: "h",
-						onClick: () => setShowSrc(!showSrc),
-						style: { padding: "7px 11px", cursor: "pointer", display: "flex", justifyContent: "space-between", fontSize: "11px", color: C.muted }
-					}, [h("span", { key: "t" }, "溯源（路径 / id / 引用）"), h("span", { key: "g" }, showSrc ? "收起 ▾" : "展开 ▸")]),
-					showSrc ? h("div", { key: "b", style: { padding: "0 11px 10px", fontSize: "11px", fontFamily: "monospace", color: C.muted, lineHeight: 1.8, wordBreak: "break-all" } }, [
-						h("div", { key: "i" }, "handoff_id: " + String(d.handoff_id || "") + "　created_at: " + String(d.created_at || "")),
-						Object.keys(materials).filter((k) => k !== "original_brief_note").map((k, i) =>
-							h("div", { key: "m" + i }, k + ": " + String(materials[k]))),
-						d.risk_register_ref ? h("div", { key: "r" }, "risk_register_ref: " + String(d.risk_register_ref)) : null,
-						d.config_prediction_ref ? h("div", { key: "p" }, "config_prediction_ref: " + String(d.config_prediction_ref)) : null
-					]) : null
-				]),
-				materials.original_brief_note ? h("div", {
-					key: "obn",
-					style: { marginTop: "9px", border: "1px solid " + C.faint, borderLeft: "3px solid " + C.warn, background: "#fffdf7", borderRadius: "4px", padding: "9px 12px", fontSize: "12px", lineHeight: 1.8 }
-				}, ["旧文档说明　", String(materials.original_brief_note)]) : null
-			]);
-		}
 
 		/** 折叠块（A5 用） */
 		function Fold(props) {
@@ -6061,14 +5014,13 @@ import {
 			const [state, setState] = React.useState({ phase: "idle" });
 			const [q, setQ] = React.useState("");
 			const [notice, setNotice] = React.useState(null);
-			const [view, setView] = React.useState("dashboard");       // dashboard | detail | assets | config | knowledge
+			const [view, setView] = React.useState("dashboard");       // dashboard | detail（工单 31：assets/config/knowledge 三个占位视图已删）
 			const [detailTopic, setDetailTopic] = React.useState(null);
 			// ★ 工单 23：进功能先落在**第一个工作面**（头脑风暴）；`final` = 定稿修订工作面，其余是资料页签
 			const [dtab, setDtab] = React.useState(ENTRY_TAB);
 			const [ledger, setLedger] = React.useState(null);
 			const [iface, setIface] = React.useState(null);
 			const [finalDoc, setFinalDoc] = React.useState(null);
-			const [indexData, setIndexData] = React.useState(null);
 			// ★ 工单 12：功能详情的产物清单 / 三阶段 / 定稿有效性 / V 校验清单（进详情时读一次）
 			const [detail, setDetail] = React.useState(null);
 			// ★ 工单 23：头脑风暴工作面的数据（已有的分析结论 + 两种新格式的解析结果）
@@ -6148,7 +5100,6 @@ import {
 			const finalLoader = props.__final;
 			const fixRunner = props.__fix;
 			const interfaceLoader = props.__interfaces;
-			const indexLoader = props.__index;
 			const detailLoader = props.__detail;
 			// ★ 工单 23：头脑风暴工作面的加载器 + 四入口的发送出口（走**工单 15 那条链路**，不是新通道）
 			const brainstormLoader = props.__brainstorm;
@@ -7010,18 +5961,6 @@ import {
 				return () => { cancelled = true; ac.abort(); };
 			}, [view, dtab, detailTopic, sessionId, state.phase, rev.ui]);
 
-			// 进「设计资产」时读索引
-			React.useEffect(() => {
-				if (view !== "assets" || !sessionId || state.phase !== "ready") { setIndexData(null); return; }
-				let cancelled = false;
-				const ac = new AbortController();
-				setIndexData(null);
-				indexLoader(sessionId, state.data.srWs, ac.signal).then(
-					(r) => { if (!cancelled) setIndexData(r); },
-					(e) => { if (!cancelled) setIndexData({ error: "读取失败：" + String((e && e.message) || e) }); }
-				);
-				return () => { cancelled = true; ac.abort(); };
-			}, [view, sessionId, state.phase]);
 
 			const shell = (children) => h("div", {
 				style: {
@@ -7200,39 +6139,6 @@ import {
 												onOpen: (abs) => handleOpen(null, abs)
 											})
 										: h("div", { key: "soon", style: { color: C.muted, fontSize: "12px" } }, "这一屏还没做。")
-				]);
-			}
-
-			// ── 设计资产（B1）────────────────────────────────────
-			if (view === "assets") {
-				const wsPath = (indexData && indexData.srWs) || (state.phase === "ready" ? state.data.srWs : "");
-				return shell([
-					head("设计资产"),
-					h(NoticeBar, { key: "nt", notice: notice }),
-					h(AssetsPanel, {
-						key: "ap", data: indexData,
-						onOpen: (abs) => handleOpen(null, abs),
-						read: props.__readText ? (abs) => props.__readText(sessionId, abs) : null,
-						onRefresh: props.__refreshIndex ? () => props.__refreshIndex(wsPath) : null,
-						onPickDir: props.__pickDir || null,
-						onImport: props.__importDocs ? (p, n) => props.__importDocs(wsPath, p, n) : null,
-						onManual: props.__addManual ? (t, b, u) => props.__addManual(wsPath, t, b, u) : null,
-						// ★ 收件箱：四种输入方式的统一入口（拍板 2026-09-28）
-						onIntake: props.__intake ? (src) => props.__intake(Object.assign({}, src, { srWs: wsPath })) : null,
-						intakeRefs: props.__intakeRefs && wsPath ? props.__intakeRefs(wsPath) : null
-					})
-				]);
-			}
-
-			// ── 其余一级视图（占位）──────────────────────────────
-			if (view !== "dashboard") {
-				const label = (NAV.filter((x) => x.id === view)[0] || {}).label || view;
-				return shell([
-					head(label),
-					h("div", {
-						key: "soon",
-						style: { border: "1px dashed " + C.soft, borderRadius: "4px", padding: "30px", textAlign: "center", color: C.muted, fontSize: "12px" }
-					}, "「" + label + "」还没做 —— 屏清单见 工作台界面清单.md")
 				]);
 			}
 
@@ -7460,10 +6366,6 @@ import {
 			 */
 			const derivedLoader = (sid, opts, signal, bag) =>
 				loadDerived(portOf(ctx, sid, readWith(bag)), Object.assign({}, opts, { signal: signal }));
-			const indexLoader = (sid, srWs, signal) => loadIndex(read, sid, srWs, signal);
-			/** 按绝对路径读文本（阅读器用） */
-			const readTextFile = (sid, abs) => readAllText(read, sid, abs, void 0, 4000);
-
 			// ════════════════════════════════════════════════════════════════
 			// ★ 工单 16 · 给面板用的两条**官方通道**（组合根是唯一知道 ctx 的地方）
 			//   · `stat`     —— 版本指纹 / 切回面板与低频轮询时的核对（正确性底线）
@@ -8070,164 +6972,6 @@ import {
 			};
 
 			/**
-			 * 在「无归属工作会话」里跑一条指令（资产索引刷新 / 导入旧文档 / 人工补充）。
-			 * ★ 工单 07：这里原来**自己又建一遍会话**（`probe.create(info.id, …)`，没有标题、
-			 *   没有认领、没有权限切换）—— 现在只剩"调 `ensureWorkSession` + prompt"。
-			 *   会话的归属/标题/认领/权限**只有一份实现**（见 `createSessionAt`）。
-			 */
-			const runInWorkSession = async (instruction, srWs) => {
-				try {
-					const got = await ensureWorkSession(srWs);
-					if (!got.sid) return got.error || "拿不到工作会话。";
-					const r = await probe.prompt(got.sid, instruction);
-					if (!r.ok) return "指令发送失败：" + humanError(r);
-					const note = (got.note || []).filter(Boolean);
-					return "已交给工作会话。跑完后回本页重进即可看到新索引。" +
-						(note.length ? "　" + note.join("；") : "");
-				} catch (e) {
-					return "失败：" + String((e && e.message) || e);
-				}
-			};
-			const REFRESH_LINE = (win) =>
-				"请在 " + win + " 下运行 `python scripts/refresh_asset_index.py`，刷新 design-asset-index.json，" +
-				"并报告：新增了哪些资产、移除了哪些、哪些被新版本取代。";
-
-			/** 刷新资产索引 */
-			const refreshIndex = async (srWs) => {
-				if (!srWs) return "拿不到工作区路径，无法刷新。";
-				return runInWorkSession(REFRESH_LINE(String(srWs).replace(/\//g, "\\")), srWs);
-			};
-
-			/** 方式 3 · 导入旧文档（落 inbox/imported/，只登记不提升） */
-			const importOldDocs = async (srWs, srcPath, note) => {
-				if (!srWs) return "拿不到工作区路径。";
-				if (!srcPath) return "没有选择目录。";
-				const win = String(srWs).replace(/\//g, "\\");
-				const line = "【导入旧文档】把 " + srcPath + " 作为参考资料导入工作区：\n" +
-					"1) 在 " + win + "\\inbox\\imported\\ 下建一个以该目录名命名的子目录，把其中的文档复制进去（只复制文档，跳过图片/视频等大文件；不转换格式、不改内容）；\n" +
-					"2) 运行 `python scripts/refresh_asset_index.py` 重新生成索引；\n" +
-					"3) 报告导入了哪些文件、索引新增了几条。\n" +
-					"注意：导入件只登记为 inbox / needs_review，**不要**提升为正式资产，也**不要**改动任何 sr skill。" +
-					(note ? "\n补充说明：" + note : "");
-				return runInWorkSession(line, srWs);
-			};
-
-			/** 方式 4 · 人工补充（落 inbox/manual/，只登记不提升） */
-			const addManualNote = async (srWs, title, body, upstream) => {
-				if (!srWs) return "拿不到工作区路径。";
-				if (!title || !body) return "标题与正文都要填。";
-				const win = String(srWs).replace(/\//g, "\\");
-				const safe = String(title).replace(/[\\/:*?"<>|]/g, "_").slice(0, 60);
-				const line = "【人工补充】在 " + win + "\\inbox\\manual\\ 下新建 " + safe + ".md，内容如下：\n" +
-					"---\ntitle: " + String(title) + "\nsource: human" +
-					(upstream ? "\nupstream_asset: " + upstream : "") + "\n---\n\n" + String(body) + "\n\n" +
-					"然后运行 `python scripts/refresh_asset_index.py` 重新生成索引，并报告新增条目。" +
-					"\n注意：只登记为 inbox / needs_review，**不要**提升为正式资产，也**不要**改动任何 sr skill。";
-				return runInWorkSession(line, srWs);
-			};
-
-			/**
-			 * 上传一个文件到**当前会话**（拿不到本机路径时的退路 —— **只留收据，内容读不到**）。
-			 * ★ 返回的 attachmentId 是不透明 id，**没有宿主路径**（`fileHostPath` 只给可信同进程消费方）。
-			 *   所以上传件 agent 读不到内容：这里**不把它挂进 prompt 的 content**，
-			 *   只在指令里写明"收到过、读不到、需要就向我要路径"（见 intakeByKind 第 2 步）。
-			 */
-			const uploadForSession = async (sid, f) => {
-				const bytes = await readFileBytes(f, 64 * 1024 * 1024);
-				const r = await safeCall("fileUploads.upload", () => ctx.remote.fileUploads.upload(sid, {
-					data: bytesToBase64(bytes),
-					name: String(f.name || "upload.bin")
-				}));
-				if (!r.ok) return { name: String(f.name || ""), error: humanError(r) };
-				const file = (r.value && (r.value.file || r.value)) || {};
-				return { name: file.name || String(f.name || ""), attachmentId: file.attachmentId, bytes: file.bytes };
-			};
-
-			/** 素材数组里"要 agent 去读的路径"有多少条 */
-			const pathRefsOf = (rows) => (rows || []).filter((m) => m && (m.kind === "file" || m.kind === "dir")).length;
-
-			/**
-			 * ★ 收件箱的唯一出口：把四种输入方式组装好的指令发进工作会话。
-			 *   组装逻辑在 `lib/intake-parse.js`（同一份代码有离线回归 test-intake.mjs）。
-			 *   这里只做三件事：校验前置 → 处理拿不到路径的文件 → 发指令。
-			 */
-			const intakeByKind = async (src) => {
-				const input = src || {};
-				if (!contract) return { ok: false, note: "收件箱逻辑没加载上（intake-parse.js）。" };
-				const srWs = (src && src.srWs) || "";
-				if (!srWs) return { ok: false, note: "拿不到 sr 工作区路径（工作台锚点配置读不到）。" };
-
-				// 1) 拿不到本机路径的文件 → 上传到工作会话（与下面用的是同一个会话）
-				const uploads = [];
-				const upErr = [];
-				const pathFiles = (input.files || []).filter((f) => f.fullPath && !f.err);
-				const noPathFiles = (input.files || []).filter((f) => !f.fullPath && !f.err);
-				let sid = null;
-				if (noPathFiles.length > 0) {
-					const got = await ensureWorkSession(srWs);
-					if (got.error) return { ok: false, note: got.error };
-					sid = got.sid;
-					for (const f of noPathFiles) {
-						const u = await uploadForSession(sid, f.orig || { name: f.name, size: f.size });
-						if (u.attachmentId) uploads.push(u); else upErr.push(u.name + "（" + u.error + "）");
-					}
-				}
-
-				// 2) 组装指令（路径入参 / 备注 / 主题）
-				const rawTexts = (input.materials || []).filter((m) => m.kind === "text").map((m) => m.text);
-				const inline = (input.files || []).filter((f) => f.isText && !f.err)
-					.map((f) => "【文件：" + f.name + "】\n" + String(f.text || "").slice(0, INLINE_TEXT_CAP));
-				const note = [String(input.note || "").trim()].concat(inline).filter((x) => x !== "").join("\n\n");
-				const materialPaths = (input.materials || [])
-					.concat(pathFiles.map((f) => ({ kind: "file", path: f.fullPath })));
-				const built = contract.buildInstruction(input.kind, {
-					materials: materialPaths,
-					note: note,
-					title: input.topic,
-					upstream: input.upstream,
-					srWs: srWs
-				});
-				if (built.blocked) return { ok: false, note: built.blocked };
-				let instruction = built.instruction;
-				if (inline.length > 0) instruction += "\n\n以下是随指令内联的文件内容（浏览器已读出，不必再读盘）：\n" + inline.join("\n\n");
-				if (rawTexts.length > 0 && pathRefsOf(materialPaths) === 0) instruction += "\n\n我在输入框里写的原文：\n" + rawTexts.join("\n\n");
-				if (uploads.length > 0) instruction += "\n\n另：本次随消息收到 " + uploads.length + " 个文件（会话附件：" + uploads.map((u) => u.name).join("、") + "）。\n" +
-					"**这些文件没有可用路径，你读不到它们的内容** —— 不要假装读过。若这个文件对本次任务必要，请告诉我要它做什么、并请我补一个本机绝对路径。";
-				if (upErr.length > 0) instruction += "\n注意：这些文件上传失败，本次没有带上：" + upErr.join("、") + "。";
-
-				// 3) 发出（不带 file block —— 上传件没有宿主路径，agent 读不到内容）
-				if (sid === null) {
-					const got = await ensureWorkSession(srWs);
-					if (got.error) return { ok: false, note: got.error };
-					sid = got.sid;
-				}
-				const sent = await probe.prompt(sid, instruction);
-				if (!sent.ok) return { ok: false, note: "指令发送失败：" + humanError(sent) };
-				const warn = uploads.length > 0
-					? "　⚠ 其中 " + uploads.length + " 个文件没有本机路径，agent 读不到内容（已如实写在指令里）；要用它们请补一个绝对路径。"
-					: "";
-				return {
-					ok: true, sid: sid, kind: input.kind,
-					note: "已交给工作会话" + (sid ? "（" + String(sid).slice(0, 8) + "…）" : "") + "。" +
-						"它在那个会话里跑，跑完回本页重进就能看到；会话里有决策门时，进度与提问都在那儿。" + warn
-				};
-			};
-
-			/**
-			 * 「跑这一趟之后去哪儿看产物」——面板里的常驻跳转。
-			 * ★ 只给路径，不假装知道跑没跑完（工作台读不到会话内部状态就如实说）。
-			 */
-			const intakeRefs = (srWs) => {
-				if (!srWs) return [];
-				const abs = String(srWs).replace(/\//g, "\\").replace(/\\+$/, "");
-				return [
-					{ label: "决策记录目录：" + abs + "\\decisions", abs: abs + "\\decisions" },
-					{ label: "分析产出目录：" + abs + "\\analysis", abs: abs + "\\analysis" },
-					{ label: "收集箱：" + abs + "\\inbox", abs: abs + "\\inbox" }
-				];
-			};
-
-			/**
 			 * 用系统默认程序打开一个工作区文件。
 			 * ★ host 的 openWorkspacePath(request, signal) 会调 signal.throwIfAborted()，
 			 *   signal 是**必传**的；不给会抛 TypeError。
@@ -8493,14 +7237,10 @@ import {
 					requestId: "wb-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
 					sessionId: sid,
 					mode: "queue",
-					// ★ 不挂 file block：上传件的 attachmentId 没有宿主路径，agent 读不到内容
-					//   （见 IntakeBox 的 noPath 警告）。挂上去只会让人以为"它读过了"。
+					// ★ 不挂 file block：面板发出的指令只有正文，附件由 agent 按路径去读
 					content: [{ type: "text", text: text }]
 				})),
 				workspaceInfo: workspaceInfo,
-				/** 原生目录选择器（用于"导入旧文档"） */
-				pickDirectory: () => safeCall("directoryPicker.pick",
-					() => ctx.remote.directoryPicker.pick()),
 				/** 跳到某个会话（DSH 自己的服务；会把中栏切回对话） */
 				openSession: (sid) => {
 					try {
@@ -8753,24 +7493,19 @@ import {
 						__derived: derivedLoader,
 						__sendDerived: derivedRunner,
 						__diagnose: diagnose, __probe: probe, __projectRoot: projectRoot,
-						__interfaces: interfaceLoader, __index: indexLoader, __detail: detailLoader,
+						__interfaces: interfaceLoader, __detail: detailLoader,
 						__resolve: resolveIndexSession,
 						// ★ 工单 07：三类会话**唯一**的「认领 → 新建」出口。
 						//   面板里凡是要"给这个功能搞一条工作会话"的地方（A2 流水线的「推进一步」、
-						//   资产索引刷新、收件箱导入）都走它 —— 不再各写一份建会话的代码
-						//   （各写一份就会漏掉标题/归属/权限，改前正是这样）。
+						//   新建功能的「建立」、头脑风暴/文档生成/派生物三个工作面的发送）都走它
+						//   —— 不再各写一份建会话的代码（各写一份就会漏掉标题/归属/权限，改前正是这样）。
 						__ensureWork: ensureFeatureWorkSession,
 						// ★ 工单 22：新建功能（一个动作）的三条通道 —— 只读事实 / 发送 / 窄回读
 						__createFacts: createFactsRunner,
 						__createFeature: createFeatureRunner,
 						__readBack: readBackRunner,
 						// ★ 工单 16：变更订阅 / 版本 stat（面板的自动刷新与指纹就靠这两个出口）
-						__watch: watchTargets, __statMany: statMany,
-						__refreshIndex: refreshIndex, __readText: readTextFile,
-						__pickDir: probe.pickDirectory,
-						__importDocs: importOldDocs, __addManual: addManualNote,
-						// ★ 收件箱（四种输入方式的统一入口）
-						__intake: intakeByKind, __intakeRefs: intakeRefs
+						__watch: watchTargets, __statMany: statMany
 					})));
 			}
 

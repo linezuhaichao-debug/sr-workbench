@@ -12,7 +12,7 @@ import test from "node:test";
 
 import { CONFIG_DIR, loadDashboard, SR_WS } from "../src/load/dashboard.ts";
 import { loadFeatureDetail } from "../src/load/feature.ts";
-import { loadFinal, loadIndex, loadInterface } from "../src/load/final.ts";
+import { loadFinal, loadInterface } from "../src/load/final.ts";
 import { loadLedger } from "../src/load/ledger.ts";
 import { readAllText, readHead } from "../src/load/read.ts";
 import { ledgerOf } from "../src/pure/ledger.ts";
@@ -182,13 +182,9 @@ test("界面图：读真实定稿的 §5（4 个界面 / 7 张图 / 28 条 UE）
 	assert.deepEqual(await loadInterface(port, "", signal), { empty: "本功能还没有定稿，界面图在定稿的 §5。" });
 });
 
-test("设计资产索引：读真实的 design-asset-index.json", async () => {
-	const port = testPort();
-	const idx = await loadIndex(port, WORKSPACE, signal);
-	assert.equal(idx.schemaVersion, "0.8.0");
-	assert.equal(idx.assets.length, 41);
-	assert.ok(idx.assets.every((a: any) => typeof a.path === "string"));
-});
+// ★ 工单 31：这里原来还有一条「设计资产索引：读真实的 design-asset-index.json」。
+//   它测的 `loadIndex` 只服务被砍掉的「设计资产」屏，屏与加载器一起删了，用例随之删除。
+//   （`design-asset-index.json` 本身还在工作区里 —— 那是工单 21 的搬运范围，本票不动它。）
 
 test("读原语：readHead 只读 14 行；readAllText 分页拼回全文；读不到给 null", async () => {
 	const port = testPort();

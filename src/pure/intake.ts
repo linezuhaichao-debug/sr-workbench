@@ -1,5 +1,5 @@
 /**
- * 收件箱纯逻辑：素材解析 / 主题派生 / 四种输入方式的指令组装
+ * 收件箱纯逻辑：素材解析 / 主题派生 / 指令组装
  *
  * ★ 工单 03（WorkspacePort 接缝）从 `src/client.js` **逐字搬来**，只做了整体去缩进与补 export；
  *   正文一字未改（行为不变的证据：临时 harness 对真实工作区数据做迁移前后 deepEqual）。
@@ -8,35 +8,24 @@
  * ★ 工单 23（头脑风暴工作面）**加了一组新入口**（`buildBrainstormInstruction`）：
  *   竞品分析 / 问答式访谈 / 旧文档分析 / 人工补充 —— 与老收件箱的四种方式**不是同一套语义**
  *   （老方式 3/4 只登记进 `inbox\`；新入口的产出全部落功能目录的 `analysis\`，且旧文档分析 / 人工补充
- *   有**固定格式**，见设计 §4.2）。老的那一组**原样保留**：设计资产屏还在用，改它就是行为回归。
+ *   有**固定格式**，见设计 §4.2）。
  *
  * ★ 工单 24（文档生成工作面）继续照这条纪律走：动作表与三段式组装器都在 `./draftstep.ts`，
  *   这里只 **re-export**（`DRAFT_ACTIONS` / `buildDraftInstruction`）—— 面板侧读 `INTAKE` 就够，
  *   不会出现"client.js 里再抄一份"的第二份实现。
+ *
+ * ★ 工单 31（收口）：**老收件箱那一组删掉了** —— `INTAKE_KINDS`（四种方式的表）与
+ *   `buildInstruction`（四种方式的组装器），以及只被它们引用的 `DOC_EXT` / `TEXT_EXT` /
+ *   `isDoc` / `isTextExt` / `safeName` / `extOf`。
+ *   它们当时被"原样保留"的唯一理由是**设计资产屏还在用**（见本文件原来的注释）；那一屏属被砍的
+ *   「设计资产」模块（设计 §3.4），随本票删除、面板侧的内联副本也早已接到这一份 ⇒ 引用清零。
+ *   现在这份模块**只有一种做法**：头脑风暴四入口 + 文档生成的动作表。
  */
 
 import { ENTRANCES, humanNoteName, legacyDocName } from "./analysisdoc.ts";
 import { DRAFT_ACTIONS_TABLE, DRAFT_PHASES, buildDraftInstruction } from "./draftstep.ts";
 
 const INTAKE = (function () {
-	/** 文档类扩展名（导入时只复制这些，跳过图片/视频等大文件） */
-	const DOC_EXT = [
-		"md", "markdown", "txt", "json", "jsonc", "yaml", "yml", "csv", "tsv",
-		"html", "htm", "xml", "doc", "docx", "xls", "xlsx", "xlsm", "ppt", "pptx", "pdf"
-	];
-	/** 浏览器能直接读成文本的扩展名（拖进来即可内联，不需要 agent 再读盘） */
-	const TEXT_EXT = [
-		"md", "markdown", "txt", "json", "jsonc", "yaml", "yml", "csv", "tsv",
-		"html", "htm", "xml", "log", "ini", "conf", "css", "js", "svg"
-	];
-	/** 四种输入方式的元数据（UI 与测试共用一份口径） */
-	const INTAKE_KINDS = [
-		{ id: "analysis", label: "竞品分析", hint: "跑 sr-analysis", needs: "素材：目录 / 文件路径 / 链接（截图、录屏、PV、商店页）" },
-		{ id: "concept", label: "问答式访谈", hint: "跑 sr-concept", needs: "一句话创意（可附参考素材路径）" },
-		{ id: "import", label: "旧文档导入", hint: "只登记进收集箱", needs: "旧方案 / 旧文档的目录或文件路径" },
-		{ id: "manual", label: "人工补充", hint: "只登记进收集箱", needs: "标题 + 正文（想到什么写什么）" }
-	];
-
 	const isWinAbs = (p) => /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p) || /^[\\/]/.test(p);
 	const isHttp = (p) => /^https?:\/\//i.test(p);
 
@@ -85,18 +74,6 @@ const INTAKE = (function () {
 		return parts[parts.length - 1] || s;
 	}
 
-	/** 扩展名（小写，无点；没有则空串） */
-	function extOf(name) {
-		const m = /\.([A-Za-z0-9]{1,8})$/.exec(String(name == null ? "" : name));
-		return m ? m[1].toLowerCase() : "";
-	}
-
-	/** 是不是文档类（导入时用它决定复制哪些） */
-	function isDoc(name) { return DOC_EXT.indexOf(extOf(name)) >= 0; }
-
-	/** 浏览器能否直接读成文本 */
-	function isTextExt(name) { return TEXT_EXT.indexOf(extOf(name)) >= 0; }
-
 	/** 从素材派生功能主题（去扩展名、去日期、去尾部噪音） */
 	function deriveTopic(materials) {
 		const list = materials || [];
@@ -121,17 +98,6 @@ const INTAKE = (function () {
 		return n;
 	}
 
-	/** 文件名/标题里的非法字符 → _（写盘用） */
-	function safeName(p, limit) {
-		const s = String(p == null ? "" : p)
-			.replace(/[\\/:*?"<>|]/g, "_")
-			.replace(/[\r\n\t]/g, " ")
-			.replace(/\s+/g, " ")
-			.trim();
-		const cap = limit || 60;
-		return s.length > cap ? s.slice(0, cap) : s;
-	}
-
 	/** 素材清单 → 中文可读列表 */
 	function describeMaterials(materials) {
 		const list = materials || [];
@@ -151,98 +117,10 @@ const INTAKE = (function () {
 		return (materials || []).some((m) => m && (m.kind === "file" || m.kind === "dir" || m.kind === "url"));
 	}
 
-	/** 组装四种输入方式各自发给 agent 的指令 */
-	function buildInstruction(kind, input) {
-		const inp = input || {};
-		const materials = inp.materials || [];
-		const topic = String(inp.topic || "").trim() || deriveTopic(materials);
-		const note = String(inp.note == null ? "" : inp.note).trim();
-		const root = String(inp.srWs || "").replace(/\//g, "\\").replace(/\\+$/, "");
-		const inbox = root + "\\inbox";
-		const NOT_A_SKILL = "注意：不要改动任何 sr skill；只登记为 inbox / needs_review，不提升为正式资产。";
-
-		if (kind === "analysis") {
-			if (!hasPathMaterial(materials)) {
-				return { instruction: "", blocked: "「竞品分析」需要一份素材：目录、文件路径或链接（截图、录屏、PV、商店页 / 视频链接）。" };
-			}
-			const lines = [
-				"【输入方式 1 · 竞品分析】请执行 `/sr-analysis`（走 `/sr-analysis <素材路径或链接>` 的正常调用，不要改动该 skill）。",
-				"素材：",
-				describeMaterials(materials),
-				"分析目标：" + (note || "（未指定——按 sr-analysis 第 1 步 VOI 门现场确认）")
-			];
-			if (topic) lines.push("功能主题（用于产出命名与归档）：" + topic);
-			lines.push("按 sr-analysis 的既有流程执行，在它的决策门停下来等我拍板。");
-			return { instruction: lines.join("\n"), blocked: "" };
-		}
-
-		if (kind === "concept") {
-			const seed = note || (materials.filter((m) => m.kind === "text")[0] || {}).text || "";
-			if (String(seed).trim() === "") {
-				return { instruction: "", blocked: "「问答式访谈」需要一句创意：在输入框里写下你想做的玩法或功能。" };
-			}
-			const pathMats = materials.filter((m) => m.kind !== "text");
-			const lines = [
-				"【输入方式 2 · 问答式访谈】请执行 `/sr-concept`（走 `/sr-concept <一句话创意>` 的正常调用，不要改动该 skill）。",
-				"创意：" + String(seed).replace(/\s+/g, " ").trim()
-			];
-			if (pathMats.length > 0) {
-				lines.push("已有材料（有就给路径）：");
-				lines.push(describeMaterials(pathMats));
-			} else {
-				lines.push("已有材料：没有。");
-			}
-			if (topic) lines.push("功能主题（用于产出命名与归档）：" + topic);
-			lines.push("定位：本项目（文明之跃）新功能/新玩法。");
-			lines.push("按 sr-concept 的既有流程执行，在它的决策门停下来等我拍板。");
-			return { instruction: lines.join("\n"), blocked: "" };
-		}
-
-		if (kind === "import") {
-			const pathMats = materials.filter((m) => m.kind === "file" || m.kind === "dir");
-			if (pathMats.length === 0) {
-				return { instruction: "", blocked: "「旧文档导入」需要至少一个目录或文件路径（可拖进来，也可直接粘贴）。" };
-			}
-			const lines = [
-				"【输入方式 3 · 旧文档导入】把下列资料作为**参考材料**导入工作区：",
-				describeMaterials(pathMats),
-				"步骤：",
-				"1) 逐条处理：" +
-					"目录 → 在 " + inbox + "\\imported\\ 下建一个以该目录名命名的子目录，递归复制其中的文档（只复制文档类文件：" +
-					DOC_EXT.join(" / ") + "；跳过图片、视频等大文件；不转换格式、不改内容）；" +
-					"文件 → 在 " + inbox + "\\imported\\<文件名（去扩展名）>\\ 下复制这一个文件。",
-				"2) 在 " + root + " 下运行 `python scripts/refresh_asset_index.py` 重新生成索引（相对路径以 " + root + " 为基准，不要依赖当前工作目录）。",
-				"3) 报告导入了哪些文件、索引新增了几条。"
-			];
-			if (note) lines.push("补充说明：" + note);
-			lines.push(NOT_A_SKILL);
-			return { instruction: lines.join("\n"), blocked: "" };
-		}
-
-		if (kind === "manual") {
-			const title = String(inp.title || "").trim() || topic;
-			if (title === "") return { instruction: "", blocked: "「人工补充」需要一个标题。" };
-			if (note === "") return { instruction: "", blocked: "「人工补充」需要正文。" };
-			const lines = [
-				"【输入方式 4 · 人工补充】在 " + inbox + "\\manual\\ 下新建 " + safeName(title) + ".md，内容如下：",
-				"---",
-				"title: " + title,
-				"source: human"
-			];
-			if (inp.upstream) lines.push("upstream_asset: " + String(inp.upstream));
-			lines.push("---", "", note, "");
-			lines.push("然后运行 `python scripts/refresh_asset_index.py` 重新生成索引，并报告新增条目。");
-			lines.push(NOT_A_SKILL);
-			return { instruction: lines.join("\n"), blocked: "" };
-		}
-
-		return { instruction: "", blocked: "未知的输入方式：" + String(kind) };
-	}
-
 	/**
 	 * ★ 工单 23 · 头脑风暴四入口各自的指令（设计 §4.1 / §4.2）。
 	 *
-	 * 与 `buildInstruction` 的三点不同（这是**新语义**，不是老方式的改写）：
+	 * 与已被工单 31 删掉的老 `buildInstruction` 的三点不同（那是**另一套语义**，不是这里的改写）：
 	 *   ① 产出落到**这个功能自己的** `features\<主题>\analysis\`（不是工作区根的 `inbox\`）；
 	 *   ② 旧文档分析 / 人工补充有**固定格式**（四段章节 / `> 原话：` + 结论 + 边界 + 落点）；
 	 *   ③ 前置不满足时**连"下一步怎么做"一起给**（`blocked` + `next`）—— 缺前提不静默。
@@ -420,7 +298,9 @@ const INTAKE = (function () {
 	}
 
 	return {
-		INTAKE_KINDS: INTAKE_KINDS,
+		// ★ 工单 31：老收件箱的 `INTAKE_KINDS` / `buildInstruction` 已删（连同只被它们引用的
+		//   `DOC_EXT` / `TEXT_EXT` / `extOf` / `isDoc` / `isTextExt` / `safeName`）——
+		//   "四种输入方式"这个语义现在只有一种做法：`BRAINSTORM_KINDS`（四入口）。
 		BRAINSTORM_KINDS: ENTRANCES,
 		// ★ 工单 24：文档生成工作面的动作 + 三段式组装器（表只有一份，在 `./draftstep.ts`）
 		//   ★ 工单 24c：`DRAFT_PHASES` 也一并 re-export —— Y 形两层（纸面动作 / 支线出口）
@@ -428,10 +308,9 @@ const INTAKE = (function () {
 		DRAFT_ACTIONS: DRAFT_ACTIONS_TABLE,
 		DRAFT_PHASES: DRAFT_PHASES,
 		parseMaterial: parseMaterial, parseMaterials: parseMaterials,
-		baseName: baseName, extOf: extOf, isDoc: isDoc, isTextExt: isTextExt,
-		deriveTopic: deriveTopic, safeName: safeName,
+		baseName: baseName,
+		deriveTopic: deriveTopic,
 		describeMaterials: describeMaterials, hasPathMaterial: hasPathMaterial,
-		buildInstruction: buildInstruction,
 		buildBrainstormInstruction: buildBrainstormInstruction,
 		buildDraftInstruction: buildDraftInstruction
 	};
