@@ -15,9 +15,11 @@
  */
 
 import {
-	archiveDirNameOf, ueIntakeRows
+	archiveDirNameOf, buildMap, ueIntakeRows
 } from "../pure/ueintake.ts";
-import type { CurrentFinalRef, FeatureRef, UeIntakeRows } from "../pure/ueintake.ts";
+import { buildSwapInstruction, buildSwapPlan } from "../pure/ueswap.ts";
+import type { CurrentFinalRef, FeatureRef, MapResult, UeIntakeRows } from "../pure/ueintake.ts";
+import type { SwapPlan } from "../pure/ueswap.ts";
 import type { WorkspacePort } from "../port/types.ts";
 import { listDirs, listFiles, readAllText } from "./read.ts";
 
@@ -36,6 +38,12 @@ export interface UeIntakeOptions {
 	srWs?: string;
 	/** 面板给的今天（`YYYYMMDD`） */
 	compact?: string;
+	/**
+	 * ★ 工单 27 ⑤ 的**手动入口**：用户自己提交的图（绝对路径）。
+	 *   与交付包入口**共用同一张图源表**（`buildSwapPlan({ shots, manual })`）——
+	 *   面板侧把那几条路径传进来就行，判定与正文都还是同一处组装。
+	 */
+	manualImages?: string[];
 	signal?: AbortSignal;
 }
 
@@ -80,6 +88,11 @@ function oneLineOf(v: unknown): string {
 	return String(v == null ? "" : v).replace(/\s+/g, " ").trim();
 }
 
+/** 路径统一成 `\`（只改显示的字符串；`load/` 这一层不引纯层的 `winOf`） */
+function winOf(p: unknown): string {
+	return String(p == null ? "" : p).replace(/[\\/]+$/, "").replace(/\//g, "\\");
+}
+
 /** 功能的名字与别名（看板给的身份） */
 function aliasesOf(f: FeatureRef | undefined): string[] {
 	if (!f) return [];
@@ -101,7 +114,7 @@ function aliasesOf(f: FeatureRef | undefined): string[] {
  *   · `baseline.state` —— `fresh` / `stale` / `unknown`（`unknown` = 面板看不到依据）
  *   · `rows[].status` —— `ok` / `danger`（★ 已删条目：照单执行会改回来）/ `missing` / `note`
  */
-export async function loadUeIntake(port: WorkspacePort, options: UeIntakeOptions): Promise<UeIntakeRows & { root: string; zipAtWs: string; pkgDir: string }> {
+export async function loadUeIntake(port: WorkspacePort, options: UeIntakeOptions): Promise<UeIntakeRows & { root: string; zipAtWs: string; pkgDir: string; map: MapResult; swap: SwapPlan; swapInstruction: string; swapBlocked: string; swapNext: string; swapManual: SwapPlan; swapManualInstruction: string; swapManualBlocked: string; swapManualNext: string; uiDirFiles: string[] }> {
 	const root = String(options.root || "").replace(/[\\/]+$/, "");
 	const signal = options.signal;
 	const srWs = String(options.srWs || "").replace(/[\\/]+$/, "");
@@ -186,10 +199,28 @@ export async function loadUeIntake(port: WorkspacePort, options: UeIntakeOptions
 	const manifestText = pick !== "" ? await readText(port, pkgDir + "/manifest.json", signal, 600) : null;
 	const docName = pkgFiles.filter((n) => /交互回写文档/i.test(n))[0] || "02_交互回写文档.md";
 	const docText = pick !== "" ? await readText(port, pkgDir + "/" + docName, signal, 900) : null;
+	/**
+	 * ★ 工单 27 ④：`03_图例索引.html`（节点号的**第二份依据**，用来复核 manifest 里那一份）。
+	 *   它单文件 7.9 MB（图内嵌成 base64）⇒ 只读**前 40 KB**：13 条 `<figcaption>` 全在前 4 KB 里
+	 *   （实测：caption 区 3158 字节），截断不影响判据 —— 读不到就如实降级（不编节点号）。
+	 */
+	const legendName = pkgFiles.filter((n) => /图例索引/i.test(n))[0] || "03_图例索引.html";
+	const legendText = pick !== "" ? await readText(port, pkgDir + "/" + legendName, signal, 40) : null;
 
 	// 当前有效定稿全文（没有定稿就不读）
 	const fin = options.final || null;
 	const finalText = (fin && fin.name) ? await readText(port, root + "/gdd/" + fin.name, signal, 6000) : null;
+	/**
+	 * ★ 工单 27 ⑤：定稿 §5 里那些图**真的在不在**（`gdd\UI\` 的清单）——
+	 *   替换计划要拿它判"图源在盘上找不到"，不列就只能默认"在"（那是假结论）。
+	 *   面板只列到"桶 / 子目录"两层，`gdd\UI\` 正好是第二层。
+	 */
+	let uiDirFiles: string[] = [];
+	if (root !== "") {
+		try {
+			uiDirFiles = await listFiles(port, root + "/gdd/UI", signal, true);
+		} catch (e) { uiDirFiles = []; }
+	}
 
 	// ── ④ 交付台账（"当前已发布到哪一版"）───────────────────────
 	/**
@@ -298,10 +329,96 @@ export async function loadUeIntake(port: WorkspacePort, options: UeIntakeOptions
 		notes.push("归档位读到 " + sourceSubs.length + " 个 `UE交付_*` 目录，这一屏看的是 `" + pick + "`（" + pkgFiles.length + " 个文件）。");
 	}
 	if (finalText === null && fin && fin.name) {
-		notes.push("当前有效定稿 `" + fin.name + "` **读不到正文** —— ③ 的条目定位与「已删条目」判定本轮都做不了（② 的部分依据仍在）。");
+		notes.push("当前有效定稿 `" + fin.name + "` **读不到正文** —— ③ 的条目定位、④ 的 §5 对照与 ⑤ 的换图计划本轮都做不了（② 的部分依据仍在）。");
 	}
 
+	// ── ④ 三方映射（工单 27）─────────────────────────────────────
+	//   ★ 判据全在纯函数里（`buildMap`）；这里只把读到的四份原文交过去。
+	const map = buildMap({
+		manifest: manifestText,
+		legend: legendText,
+		doc: docText,
+		finalText: finalText,
+		pkgDir: pkgDir
+	});
+	notes.push(map.summary);
+
+	// ── ⑤ 线框替换计划（工单 27）────────────────────────────────
+	/**
+	 * 图源（两个入口**共用这一张表**）：
+	 *   · 交付包入口 = 归档位下 `截图\` 里的 PNG（按面板读到的文件名拼绝对路径）；
+	 *   · 手动入口 = 「文档生成 › 线框图」那一栏里用户自己粘/挑的图（不在本加载器里，由面板侧传）。
+	 * `present` 给的是**真的在盘上**的那些（归档位里的截图 + `gdd\UI\` 里的图），
+	 * 替换计划据此判"图源在盘上找不到"（不默认"在"）。
+	 */
+	const shotFiles = pkgFiles.filter((n) => /^截图[\\/]/i.test(n) && /\.png$/i.test(n)).sort();
+	const shots = shotFiles.map((n) => pkgDir + "\\" + winOf(n));
+	/** ★ 手动提交的图（面板给）：与交付包截图**同一张表**里的另一栏 —— 两个入口共用下面这一份组装 */
+	const manual = (Array.isArray(options.manualImages) ? options.manualImages : [])
+		.map((x) => winOf(x)).filter((x) => x !== "");
+	/**
+	 * ★ 面板**为手动入口**也盘中那一份图源：`gdd\UI\` 里现有的图（用户要换的就是它们）。
+	 *   交付包入口不把它当默认图源（那会把"现状"当成"要换成的东西"）—— 只有手动入口用它。
+	 */
+	const uiFiles = uiDirFiles.map((n) => root + "\\gdd\\UI\\" + n);
+	const present = shots.concat(uiFiles).concat(manual);
+	const finalPath = (fin && fin.name) ? root + "\\gdd\\" + fin.name : "";
+	const uiDir = root === "" ? "" : root + "\\gdd\\UI";
+	const swap = buildSwapPlan({
+		finalText: finalText || "",
+		finalPath: finalPath,
+		topic: oneLineOf((me && me.name) || topic),
+		shots: shots,
+		manual: manual,
+		uiDir: uiDir,
+		present: present,
+		draftText: draftText || "",
+		stamp: options.compact || ""
+	});
+	/**
+	 * ★ 手动入口那一份计划（**同一支组装、只换图源**）：
+	 *   图源 = `gdd\UI\` 里现有的图 —— 用户把它们换成新版图之后，走这条就能把定稿 §5 里的引用更新。
+	 *   `manualSame` 是"两个入口共用同一处组装"的**另一条运行期证据**（正文都由 `buildSwapInstruction` 出）。
+	 */
+	const swapManual = buildSwapPlan({
+		finalText: finalText || "",
+		finalPath: finalPath,
+		topic: oneLineOf((me && me.name) || topic),
+		shots: [],
+		manual: uiFiles,
+		uiDir: uiDir,
+		present: present,
+		draftText: draftText || "",
+		stamp: options.compact || ""
+	});
+	const swapManualBuilt = buildSwapInstruction(swapManual);
+	const swapBuilt = buildSwapInstruction(swap);
+	if (swap.blocked) notes.push("⑤ 线框图替换这一轮**不发指令**：" + swap.blocked + "　下一步：" + (swap.next || "见上"));
+	else notes.push(swap.summary);
+
 	return Object.assign({}, rows, {
-		notes: notes, root: root, zipAtWs: (srWs !== "" && chosen) ? srWs + "\\" + chosen : "", pkgDir: pkgDir
+		notes: notes, root: root, zipAtWs: (srWs !== "" && chosen) ? srWs + "\\" + chosen : "", pkgDir: pkgDir,
+		/**
+		 * ★ ④ / ⑤ 的结论 + **面板侧重算要用的那几份原文**：
+		 *   `map.*Text` 与 `swap.finalText / draftText / uiDir / sources / stamp` 都是"读回来的原文"的搬运，
+		 *   不是第二份判据（面板侧重算调的是**同一个** `buildMap` / `buildSwapPlan`）。
+		 */
+		map: Object.assign({}, map, {
+			manifestText: manifestText || null, legendText: legendText || null,
+			docText: docText || null, finalText: finalText || null, pkgDir: pkgDir
+		}),
+		swap: Object.assign({}, swap, {
+			finalText: finalText || "", draftText: draftText || "",
+			uiDir: uiDir, stamp: options.compact || ""
+		}),
+		swapInstruction: swapBuilt.instruction, swapBlocked: swapBuilt.blocked, swapNext: swapBuilt.next,
+		/** ★ 手动入口那一份（图源 = `gdd\UI\` 里现有的图）：同一支组装、只换图源 */
+		swapManual: Object.assign({}, swapManual, {
+			finalText: finalText || "", draftText: draftText || "",
+			uiDir: uiDir, stamp: options.compact || ""
+		}),
+		swapManualInstruction: swapManualBuilt.instruction,
+		swapManualBlocked: swapManualBuilt.blocked, swapManualNext: swapManualBuilt.next,
+		uiDirFiles: uiDirFiles
 	});
 }

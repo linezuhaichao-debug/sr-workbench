@@ -116,6 +116,33 @@ export interface ManifestLite {
 	screenshots: number;
 	/** 截图相对路径（`截图/01_….png`）—— ⑤ 线框图替换的图源 */
 	shotPaths: string[];
+	/** ★ 工单 27 ④：Figma 源文件名（`L_联盟讨伐`，`figma_source.file`） */
+	figmaFile: string;
+	/** ★ 工单 27 ④：Figma Page ID（`0:1`） */
+	pageId: string;
+	/** ★ 工单 27 ④：Page 名（`Page 1`） */
+	pageName: string;
+	/** ★ 工单 27 ④：Figma 规则节点（第一写入点，`78:480`） */
+	ruleNode: string;
+	/** ★ 工单 27 ④：规则节点版本标记（`R1（2026-09-28 15:02 写入并复核…）`） */
+	ruleVersion: string;
+	/** ★ 工单 27 ④：逐条截图台账（13 张，原样） */
+	shots: ManifestShot[];
+}
+
+/**
+ * `manifest.json` 里**一条截图台账**（工单 27 的 ④ 用；设计 §4.3.5 的「截图 ↔ 文档章节 ↔ Figma 节点」）。
+ * 四个字段都是**包里写着的原文**，面板一个都不自己发明（`rule_section` 是交付物自己的节号）。
+ */
+export interface ManifestShot {
+	/** 包内相对路径（`截图/01_活动界面_常规难度.png`） */
+	file: string;
+	/** 交付物自己的节号（`2.1` / `2.1a` / `2.4`） */
+	section: string;
+	/** 来源 Frame 名（`活动界面（难度12+按钮/信息）`） */
+	frame: string;
+	/** Figma 节点 ID（`59:619` / `39:741`） */
+	node: string;
 }
 
 /** `manifest.json` 文本 → 简化结构（**认不出来给 `null`**，不猜） */
@@ -127,6 +154,8 @@ export function parseManifest(text: unknown): ManifestLite | null {
 	try { j = JSON.parse(s); } catch (e) { return null; }
 	if (!j || typeof j !== "object" || Array.isArray(j)) return null;
 	const shots = Array.isArray(j.screenshots) ? j.screenshots : [];
+	const src = (j.figma_source || {}) as any;
+	const rule = ((j.rules || {}) as any).figma_rule_node || {};
 	return {
 		delivery: oneLine(j.delivery),
 		project: oneLine(j.project),
@@ -136,7 +165,22 @@ export function parseManifest(text: unknown): ManifestLite | null {
 		confirmations: Array.isArray(j.confirmations) ? j.confirmations.length : 0,
 		textIds: Number(j.text_ids_count) || 0,
 		screenshots: shots.length,
-		shotPaths: shots.map((x: any) => oneLine(x && x.file)).filter((x: string) => x !== "")
+		shotPaths: shots.map((x: any) => oneLine(x && x.file)).filter((x: string) => x !== ""),
+		// ── 工单 27：④ 三方映射要用的两处台账原文 ──────────────────
+		/** Figma 源（`{ file: "L_联盟讨伐", page_id: "0:1", page_name: "Page 1" }`） */
+		figmaFile: oneLine(src.file),
+		pageId: oneLine(src.page_id),
+		pageName: oneLine(src.page_name),
+		/** 规则节点（第一写入点） */
+		ruleNode: oneLine(rule.node_id),
+		ruleVersion: oneLine(rule.rule_version),
+		/** 逐条截图台账（`file` / `rule_section` / `source_frame` / `node_id`） */
+		shots: shots.map((x: any) => ({
+			file: oneLine(x && x.file),
+			section: oneLine(x && x.rule_section),
+			frame: oneLine(x && x.source_frame),
+			node: oneLine(x && x.node_id)
+		})).filter((x: ManifestShot) => x.file !== "")
 	};
 }
 
@@ -965,6 +1009,373 @@ function rowOf(target: string, action: string, basis: string, line: number, idx:
 		refs: refs, lines: found, goneKeys: goneByRemoval, foundKeys: foundKeys, newKeys: newKeys,
 		warn: warn, evidence: evidence
 	};
+}
+
+// ════════════════════════════════════════════════════════════════
+// 三·五、④ 三方映射 —— 截图 ↔ 文档章节 ↔ 设计工具节点（工单 27）
+// ════════════════════════════════════════════════════════════════
+//
+// 设计 §4.3.5 的第 ④ 格：「三方映射：截图 ↔ 文档章节 ↔ Figma 节点」，优先级**次之**。
+// 工单 27 第 1 条把它拆成可验收的一句话：「三者的对应关系**可见、可核对**」。
+//
+// ── ★ 判据（一条都不许猜；下面每一条都能在界面上对着原文核）──────────────────
+//   三条边 = 三份原文，各自独立可核：
+//   · **截图 → 文档章节**：`manifest.json` 的 `screenshots[].rule_section`（交付物自己的节号）
+//     ↔ `02_交互回写文档.md` 里 `### <节号> <标题>` 那一行（标题与行号一起给）。
+//     ★ 这一条是"交付物自己说的"，**不是**面板推的 —— 推的话就连"它自己写错了"都发现不了。
+//   · **截图 → 设计工具节点**：`manifest.json` 的 `screenshots[].node_id`（原样引用）。
+//     ★ 复核判据：`03_图例索引.html` 每张图的 caption 里也写了 `Frame <node>`；
+//       两份**不一致**时如实标 `agree=false`（不取其一当真）。
+//       （`01_宣讲会交付.html` 的 caption 里也有 `原型 Frame <node>` —— 同一份台账的第三次复述。）
+//   · **截图 → 定稿 §5**：`02_交互回写文档.md` 里**引用这张图**的那个块（`### 2.x`）的**块头**
+//     有没有点名 `UI-M*`（真实案例：`### 2.2 通用排行榜弹窗（UI-M2，Figma 50:1816）`）。
+//     ★ 实测：13 张里只有 4 张的块头点名了 `UI-M*`（`2.1` → UI-M1、`2.2` → UI-M2、`2.3` → UI-M3、
+//       `2.5` → UI-M4）—— 其余（`2.1a`–`2.1e` 那几张状态图/特写、`2.4 战斗统计弹窗`）
+//       **交付物自己没写它属于哪个界面组** ⇒ 面板如实报「推不出」，**不猜**。
+//     然后拿这个归属去当前定稿的 §5 里查：那个组**自己有没有图**、图是不是这一张（**按文件名比**）。
+//     ★ 一个节点可以横跨两个界面组（真实案例：`2.1 活动界面` 的 `59:619` 同时喂 UE1–UE9 的 UI-M1
+//       与 UE10/UE11 的 UI-M2）—— 所以归属是**一对多**，面板如实把两条都列出来，不做"唯一化"。
+//   · **对不上就说对不上**：`status` 四档 + `miss`（缺什么，空串 = 没缺口）：
+//       `ok` 三边齐全、两份节点一致、且那张图在 §5 里**文件名一致**；
+//       `agree` 同上但两份节点依据不一致（图例索引 vs manifest）；
+//       `partial` 有一边缺（章节没这一段 / 推不出界面组 / §5 里文件名不同）；
+//       `unmapped` 只有截图本身（文档章节与界面组两边都推不出）。
+
+/** `03_图例索引.html` 里一条图例（caption 原文：`01 活动界面 · 常规难度` + `截图/x.png · Frame 59:619`） */
+export interface LegendRow {
+	/** 图内标题（caption 的 `<b>`） */
+	caption: string;
+	/** caption 第二行里的文件路径（`截图/01_活动界面_常规难度.png`） */
+	file: string;
+	/** caption 第二行里的 `Frame <node>`（含 `（39:741/39:749）` 这种特写注记，**原样**） */
+	frame: string;
+	/** 从 `frame` 里抠出来的**主节点**（`39:741`；抠不出给空串） */
+	node: string;
+}
+
+/**
+ * `03_图例索引.html` → 逐条图例。**认不出来就给空数组**（不猜）。
+ * 只认这张文件的固定形状：`<figcaption><b>标题</b><span>截图/….png · Frame xx:yy</span></figcaption>`。
+ */
+export function parseLegendHtml(text: unknown): LegendRow[] {
+	const s = String(text == null ? "" : text);
+	if (s === "") return [];
+	const out: LegendRow[] = [];
+	// ★ caption 的两种写法都要认（同一份交付物里两份实测）：
+	//   `… · Frame 59:619`（常规）与 `… · Frame 59:619（39:741/39:749）`（特写裁切，**括号那一截也要原样留着**）
+	const re = /<figcaption>([\s\S]*?)<\/figcaption>/gi;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(s)) !== null) {
+		const inner = m[1] || "";
+		const b = /<b[^>]*>([\s\S]*?)<\/b>/i.exec(inner);
+		const sp = /<span[^>]*>([\s\S]*?)<\/span>/i.exec(inner);
+		const caption = plainText(b ? b[1] : "");
+		const line = plainText(sp ? sp[1] : "");
+		const fm = /Frame\s*([0-9]+:[0-9]+(?:（[^）]*）|\([^)]*\))?(?:\s*\/\s*[0-9]+:[0-9]+)*)[）)]?/i.exec(line);
+		const fileM = /([^\s·]+\.png)/i.exec(line);
+		const frame = fm ? fm[1].replace(/\s+/g, "") : "";
+		out.push({
+			caption: caption,
+			file: fileM ? fileM[1].trim() : "",
+			frame: frame,
+			// ★ 主节点 = 冒号数字对的第一处（特写那种 `59:619（39:741/39:749）` 里第一个才是 Frame）
+			node: frame === "" ? "" : frame.split(/[/（(/]/)[0].trim()
+		});
+	}
+	return out;
+}
+
+/** 去掉 HTML 标签与实体（caption 是给人看的，标签不该混进判定） */
+function plainText(v: unknown): string {
+	return oneLine(String(v == null ? "" : v).replace(/<[^>]*>/g, " ").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&"));
+}
+
+/** 一张截图在 ④ 里的一行（**每一格都带原文**，界面上可逐格核对） */
+export interface MapRow {
+	/** 截图序号（取文件名开头的两位数字；拿不到给空串） */
+	no: string;
+	/** 包内相对路径（`截图/01_活动界面_常规难度.png`） */
+	file: string;
+	/** 归档位下的绝对路径（读不到给空串 —— 图没归位时就是空） */
+	abs: string;
+	/** ★ 边 1：文档章节 —— 交付物自己写的节号 + 回写文档里那一行的标题与行号 */
+	doc: { section: string; title: string; line: number; matched: boolean };
+	/** ★ 边 2：设计工具节点 —— manifest 写的 node + 图例索引写的 node（两份对照） */
+	node: {
+		manifest: string;
+		legend: string;
+		/** 两份是否一致（`legend` 为空 = 图例索引里没有它 ⇒ 也标不一致但不算「对不上」） */
+		agree: boolean;
+		/** 这一张的**来源 Frame 名**（`活动界面（难度12+按钮/信息）`，manifest 原样） */
+		frame: string;
+		/** 图例索引 caption 里那一串 `Frame …` 原文（含特写注记 `59:619（39:741/39:749）`；读不到给空串） */
+		legendFrame: string;
+		/** Figma 源文件名 + Page（`L_联盟讨伐 Page 1（0:1）`） */
+		page: string;
+	};
+	/** ★ 边 3：定稿 §5 —— 交付物认定的归属（按图引用所在的**块头**推），与 §5 现状逐个对照 */
+	docs: Array<{
+		/** 归属到哪个界面组（`§5 UI-M1`；推不出给空串） */
+		ref: string;
+		/** 定稿 §5 里该组**自己**的图（相对路径，可能多张） */
+		images: string[];
+		/** 该组里有没有**这一张**（按文件名比） */
+		has: boolean;
+		/** 怎么归属的（人话，带依据） */
+		why: string;
+	}>;
+	/** `ok` / `agree` / `partial` / `unmapped`（见 `buildMap` 文件头那一节的三条边口径） */
+	status: "ok" | "partial" | "unmapped" | "agree";
+	/** 缺什么 / 对不上什么（空串 = 没缺口，**这句直接显示在界面上**） */
+	miss: string;
+	/** 逐格依据（界面上逐条显示） */
+	evidence: string[];
+}
+
+export interface MapResult {
+	rows: MapRow[];
+	/** Figma 源与规则节点（④ 的"图"那一侧的公共前缀） */
+	figma: { file: string; pageId: string; pageName: string; ruleNode: string; ruleVersion: string };
+	/** 一句话结论（人话；含"几张对得上 / 几张对不上"） */
+	summary: string;
+	/** 机读计数 */
+	counts: { total: number; ok: number; partial: number; unmapped: number; nodeDisagree: number; inFinal: number };
+	/** 如实标注 */
+	notes: string[];
+}
+
+/** 一行/一段文本里的 token（**大写去重保序**；每次新建正则，免得带 `g` 的 `lastIndex` 串味） */
+function toksOf(text: unknown, re: RegExp): string[] {
+	const src = String(text == null ? "" : text);
+	const out: string[] = [];
+	const r = new RegExp(re.source, re.flags.indexOf("g") >= 0 ? re.flags : re.flags + "g");
+	let m: RegExpExecArray | null;
+	while ((m = r.exec(src)) !== null) {
+		const v = m[0].toUpperCase();
+		if (out.indexOf(v) < 0) out.push(v);
+	}
+	return out;
+}
+
+/** 文件名（不带目录、去扩展名）—— 图与图比对一律用它，不比整串路径 */
+function baseNameOf(p: unknown): string {
+	const s = winOf(p);
+	const i = s.lastIndexOf("\\");
+	return (i >= 0 ? s.slice(i + 1) : s).replace(/\.[a-z0-9]+$/i, "");
+}
+
+/** 图引用相对路径的**尾段**（`UI/UI-M1 x.png` → `UI-M1 x`），用于与 §5 里的引用比 */
+function imgKeyOf(src: unknown): string {
+	return baseNameOf(src).toLowerCase();
+}
+
+/**
+ * ④ 三方映射（**纯函数**：manifest 文本 + 图例索引文本 + 回写文档全文 + 当前定稿全文 → 逐行映射）。
+ *
+ * @param input.manifest  `manifest.json` 全文（`null` = 读不到 ⇒ 节点那一列如实空）
+ * @param input.legend    `03_图例索引.html` 全文（`null` = 读不到 ⇒ 复核列空，但不影响 node 那一列）
+ * @param input.doc       `02_交互回写文档.md` 全文（`null` = 读不到 ⇒ 章节那一列只剩节号）
+ * @param input.finalText 当前有效定稿全文（`null` = 读不到 ⇒ 定稿那一列只剩"没读到定稿"）
+ * @param input.pkgDir    归档位绝对路径（拼 `abs`）
+ * @param input.archiveDir 归档位（兜底；与 `pkgDir` 二选一）
+ */
+export function buildMap(input: {
+	manifest?: unknown;
+	legend?: unknown;
+	doc?: unknown;
+	finalText?: unknown;
+	pkgDir?: unknown;
+	archiveDir?: unknown;
+}): MapResult {
+	const inp = input || {};
+	const man = parseManifest(inp.manifest);
+	const legend = parseLegendHtml(inp.legend);
+	const docText = String(inp.doc == null ? "" : inp.doc);
+	const dir = winOf(inp.pkgDir) || winOf(inp.archiveDir);
+	const notes: string[] = [];
+	const figma = {
+		file: man ? man.figmaFile : "",
+		pageId: man ? man.pageId : "",
+		pageName: man ? man.pageName : "",
+		ruleNode: man ? man.ruleNode : "",
+		ruleVersion: man ? man.ruleVersion : ""
+	};
+
+	if (!man) {
+		notes.push("**读不到 `manifest.json`** —— ④ 的三条边里「设计工具节点」那一条没有任何依据（面板不编节点号）。先让 agent 按归档指令把包归位。");
+		return {
+			rows: [], figma: figma, summary: "④ 三方映射：**读不到 `manifest.json`** —— 这一块做不了（节点那一列没有依据）。",
+			counts: { total: 0, ok: 0, partial: 0, unmapped: 0, nodeDisagree: 0, inFinal: 0 }, notes: notes
+		};
+	}
+	if (!legend.length) {
+		notes.push("**读不到 `03_图例索引.html` 的图例**（或它不是那张固定形状的索引页）—— 节点那一列只剩 `manifest.json` 一份，" +
+			"「两份是否一致」这一条复核做不了。");
+	}
+
+	// ── 回写文档：节号 → 标题 + 行号；一个 `![…](…)` 引用落在哪个块里 ────────────
+	const docLines = docText === "" ? [] : docText.split(/\r?\n/);
+	const secIdx: Record<string, { title: string; line: number }> = {};
+	for (let i = 0; i < docLines.length; i++) {
+		const m = /^###\s+(\d+(?:\.\d+)*[a-z]?)\s+(.*)$/.exec(docLines[i]);
+		if (m && !secIdx[m[1]]) secIdx[m[1]] = { title: oneLine(m[2]), line: i + 1 };
+	}
+	/**
+	 * 图引用 → 它所在的**块**（level-3 `### …`，正文到下一个 `###` / level-2 `##` 为止）。
+	 *
+	 * ★ 归属的两条依据，按硬度排序（都写进 `evidence`，界面上可核）：
+	 *   ① 块头点名了 `Figma <node>` ⇒ 那就是**交付物认定的归属**（真实案例：`### 2.2 通用排行榜弹窗（UI-M2，Figma 50:1816）`）；
+	 *   ② 否则按**条目行**里第一个 `UI-M*` 归（真实案例：`2.1b 血条区` 的条目写着「血条右侧通关奖励宝箱…」，
+	 *      **整块**一个 `UI-M*` 都没点名 ⇒ 推不出，如实报，不猜）。
+	 *
+	 * ★ 块的范围口径（第一版写错过的坑）：`###` 走到**下一个 `###` 或 level-2 `##`** 为止 ——
+	 *   写成"下一个 `##` 开头的行"会把 `###` 也算成 `##`，块被截成一行，`UI-M*` 就永远扫不到。
+	 */
+	const imgBlock = (file: string) => {
+		const key = baseNameOf(file).toLowerCase();
+		for (let i = 0; i < docLines.length; i++) {
+			const line = docLines[i];
+			if (line.indexOf("![") < 0 || line.indexOf("](") < 0) continue;
+			if (baseNameOf(oneLine((/\]\(([^)]+)\)/.exec(line) || [])[1] || "")).toLowerCase() !== key) continue;
+			let head = "", headLine = 0;
+			for (let j = i; j >= 0; j--) {
+				if (/^#{2,3}\s+/.test(docLines[j])) { head = oneLine(docLines[j].replace(/^#{2,3}\s+/, "")); headLine = j + 1; break; }
+			}
+			// 块的范围：块头 → 下一个 `###` 或 level-2 `##`
+			let end = docLines.length;
+			for (let j = headLine; j < docLines.length; j++) {
+				if (/^###\s+/.test(docLines[j]) || /^##\s+[^#]/.test(docLines[j])) { end = j; break; }
+			}
+			const body = docLines.slice(headLine - 1, end).join("\n");
+			const nodeM = /Figma\s+([0-9]+:[0-9]+)/.exec(head) || /Figma\s+([0-9]+:[0-9]+)/.exec(body);
+			// ① 块头里的 `UI-M*`
+			const headUis = toksOf(head, /UI-M\d+/gi);
+			// ② 条目行里的（块头没有时用第一个）—— 列表项那种行（`- …` / `↳ 子节点 …` / `|` 表格行）
+			const itemUis: string[] = [];
+			for (let j = headLine; j < end; j++) {
+				const t = docLines[j];
+				if (!/^\s*(?:[-*|>]\s*|↳)/.test(t)) continue;
+				for (const u of toksOf(t, /UI-M\d+/gi)) if (itemUis.indexOf(u) < 0) itemUis.push(u);
+			}
+			return { head: head, headLine: headLine, node: nodeM ? nodeM[1] : "", headUis: headUis, itemUis: itemUis };
+		}
+		return { head: "", headLine: 0, node: "", headUis: [] as string[], itemUis: [] as string[] };
+	};
+
+	// ── 定稿 §5：界面组 → 它名下的图引用（`<img src>`）────────────────────────
+	//   ★ 只认 §5.x UI-M* 那些组**自己**的块（组头 → 下一个组头/章头之间的 `<img>`）——
+	//     "别处提到这个组"不算（与 `finaltree` 的"定义行"口径一致）。
+	const finLines = String(inp.finalText == null ? "" : inp.finalText).split(/\r?\n/);
+	const groupImgs: Record<string, { images: string[]; line: number; title: string }> = {};
+	{
+		let cur = "";
+		let holder: { images: string[]; line: number; title: string } | null = null;
+		for (let i = 0; i < finLines.length; i++) {
+			const m = /^###\s+(\d+\.\d+)\s+(UI-M\d+)\s*(.*)$/i.exec(finLines[i]);
+			if (m) {
+				if (holder && cur) groupImgs[cur] = holder;
+				cur = m[2].toUpperCase();
+				holder = { images: [], line: i + 1, title: oneLine(m[3] || m[2]) };
+				continue;
+			}
+			if (/^##\s+/.test(finLines[i]) || /^###\s+/.test(finLines[i])) {
+				if (holder && cur) groupImgs[cur] = holder;
+				cur = ""; holder = null;
+				continue;
+			}
+			if (!holder) continue;
+			const im = /<img\s+[^>]*?src\s*=\s*["']([^"']+)["']/gi;
+			let mm: RegExpExecArray | null;
+			while ((mm = im.exec(finLines[i])) !== null) holder.images.push(mm[1]);
+		}
+		if (holder && cur) groupImgs[cur] = holder;
+	}
+
+	const rows: MapRow[] = [];
+	let nodeDisagree = 0, inFinal = 0;
+	for (const s of man.shots) {
+		const ev: string[] = [];
+		const no = (/^(\d{1,2})[_-]/.exec(oneLine(s.file).replace(/^.*[\\/]/, "")) || [])[1] || "";
+		const sec = secIdx[s.section] || null;
+		const blk = imgBlock(s.file);
+		const leg = legend.filter((x) => baseNameOf(x.file).toLowerCase() === baseNameOf(s.file).toLowerCase())[0] || null;
+
+		// ── 边 1：章节
+		if (sec) ev.push("文档章节：`02_交互回写文档.md` L" + sec.line + " `### " + s.section + " " + sec.title + "`（交付物在 manifest 里写的 `rule_section` = `" + s.section + "`）");
+		else if (docText === "") ev.push("文档章节：**读不到 `02_交互回写文档.md`** —— 只剩 manifest 里那个节号 `" + s.section + "`（面板不编标题）");
+		else ev.push("文档章节：回写文档里**没有** `### " + s.section + "` 这一段（manifest 写了 `rule_section = " + s.section + "`）—— 对不上");
+
+		// ── 边 2：节点（两份对照）
+		const agree = leg ? (leg.node === s.node || leg.frame.indexOf(s.node) >= 0 || s.node === "") : false;
+		if (leg) ev.push("设计节点：manifest 写 `" + s.node + "`｜图例索引 caption 写 `Frame " + leg.frame + "`（「" + leg.caption + "」）⇒ " + (agree ? "两份一致" : "**两份不一致**"));
+		else ev.push("设计节点：manifest 写 `" + s.node + "`｜图例索引里**没有这一张** ⇒ 只有一份依据");
+		if (!agree && leg) nodeDisagree++;
+
+		// ── 边 3：定稿 §5
+		const docs: MapRow["docs"] = [];
+		// 归属：块头点名的 `UI-M*` 最硬；块头没有才退到**条目行**里第一个（`子节点 ↳ 父节点` 那种）
+		const want = blk.headUis.length ? blk.headUis : blk.itemUis;
+		const how = blk.headUis.length
+			? "块头（L" + blk.headLine + "「" + blk.head + "」）**点名**了 `" + blk.headUis.join("` / `") + "`"
+			: ("块头没点名 `UI-M*`，但条目行里写着 `" + blk.itemUis.join("` / `") + "`");
+		if (want.length) {
+			for (const u of want) {
+				const g = groupImgs[u] || null;
+				const has = !!(g && g.images.some((x) => imgKeyOf(x) === imgKeyOf(s.file)));
+				if (g) {
+					docs.push({
+						ref: "§5 " + u, images: g.images.slice(), has: has,
+						why: "归属依据：" + how + "；" +
+							(blk.node ? "这一块写着 `Figma " + blk.node + "`（= 这一张的节点号），" : "") +
+							"⇒ 这一张是 `§5 " + u + "`（L" + g.line + " " + g.title + "）的图源"
+					});
+				} else {
+					docs.push({
+						ref: "§5 " + u, images: [], has: false,
+						why: "归属依据：" + how + "；但当前定稿 §5 里**没有 `" + u + "` 这个界面组**（或定稿读不到）⇒ 落地位置对不上"
+					});
+				}
+				if (has) inFinal++;
+			}
+		} else if (blk.head) {
+			ev.push("定稿 §5：这张图在回写文档里落在 L" + blk.headLine + " 的块「" + blk.head + "」，但块头与条目行里**都没点名 `UI-M*`** ⇒ 面板推不出它属于哪个界面组（不猜）");
+		}
+
+		// ── status + miss（四档：三边齐全且两份节点一致 = ok；齐全但不一致 = agree；缺 = partial/unmapped）
+		const m: string[] = [];
+		if (!sec) m.push("回写文档里没有 `### " + s.section + "` 这一段");
+		if (!docs.length) m.push("推不出它该落到哪个界面组");
+		if (docs.length && !docs.some((d) => d.has)) m.push("§5 里那" + (docs.length > 1 ? "些" : "个") + "界面组的图与该截图**文件名都不同**（文件名一致才算「就是这一张」；面板不判「像不像」）");
+		const status: MapRow["status"] = m.length
+			? ((!sec && !docs.length) ? "unmapped" : "partial")
+			: ((!agree && leg) ? "agree" : "ok");
+		const miss = m.length ? m.join("；") : "";
+
+		rows.push({
+			no: no, file: s.file, abs: dir === "" ? "" : dir + "\\" + winOf(s.file),
+			doc: { section: s.section, title: sec ? sec.title : "", line: sec ? sec.line : 0, matched: !!sec },
+			node: {
+				manifest: s.node, legend: leg ? leg.node : "", agree: agree, frame: s.frame,
+				legendFrame: leg ? leg.frame : "",
+				page: (man.figmaFile || "") + (man.pageName ? " " + man.pageName : "") + (man.pageId ? "（" + man.pageId + "）" : "")
+			},
+			docs: docs, status: status, miss: miss, evidence: ev
+		});
+	}
+	rows.sort((a, b) => (a.no < b.no ? -1 : (a.no > b.no ? 1 : 0)));
+
+	const counts = { total: rows.length, ok: 0, partial: 0, unmapped: 0, nodeDisagree: nodeDisagree, inFinal: inFinal };
+	for (const r of rows) counts[r.status === "agree" ? "ok" : r.status] += 1;
+	const inFinalRows = rows.filter((r) => r.docs.some((d) => d.has)).length;
+	const summary = "④ 三方映射：" + rows.length + " 张截图 ｜ 三边齐全 " + (rows.length - counts.partial - counts.unmapped) +
+		" 张（其中 " + inFinalRows + " 张的图**已经在 §5 里就位**）｜ 缺一边 " + counts.partial + " 张 ｜ 只有截图本身 " + counts.unmapped + " 张" +
+		(nodeDisagree ? " ｜ ★ " + nodeDisagree + " 张的节点号两份依据**不一致**（图例索引 vs manifest）" : "") +
+		" ｜ 源：" + (figma.file || "（manifest 没写 Figma 源）") + (figma.pageId ? " Page " + figma.pageId : "") +
+		(figma.ruleNode ? " · 规则节点 " + figma.ruleNode : "");
+	notes.push("节点那一列**原样引用** `manifest.json` 的 `screenshots[].node_id`；图例索引 caption 里那一份只用来**复核**（两份不一致就如实标，不取其一当真）。");
+	notes.push("「已经在 §5 里就位」= 定稿 §5 那个界面组里的 `<img src>` 与这一张**文件名相同**；不同就是不同（面板不判'像不像'）。");
+
+	return { rows: rows, figma: figma, summary: summary, counts: counts, notes: notes };
 }
 
 // ════════════════════════════════════════════════════════════════

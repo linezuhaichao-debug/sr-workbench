@@ -115,10 +115,12 @@ test("planReload：按**桶**判定该重读什么（只重读受影响的那几
 	assert.deepEqual(at("evidence\\readback_A079_联盟悬赏_20261001.md").parts, ["detail", "ledger", "draft"]);
 	// ★ 工单 24：`gdd\` 顶层多挂 `draft`（成稿与定稿 §6 都在这儿）
 	// ★ 工单 28：顶层再多挂 `derived` —— 改定稿要**立刻**把派生物标过期（比对基准就是它的指纹）
-	assert.deepEqual(at("gdd\\联盟悬赏_20260923_定稿.md").parts, ["detail", "final", "ui", "draft", "derived"]);
-	assert.deepEqual(at("gdd\\联盟悬赏_20260918.md").parts, ["detail", "final", "ui", "draft", "derived"], "成稿也是 gdd 顶层的文件");
-	assert.deepEqual(at("gdd\\UI\\UI-M1 联盟悬赏主面板.png").parts, ["detail", "ui"], "gdd 的子目录只管界面图，不必重读定稿全文");
-	// ★ 工单 26：`source\` 是外部交付包的归档位（`source\UE交付_<日期>\`）⇒ 多挂 ueintake（①②③ 跟着重读）
+	assert.deepEqual(at("gdd\\联盟悬赏_20260923_定稿.md").parts, ["detail", "final", "ui", "draft", "derived", "ueintake"]);
+	assert.deepEqual(at("gdd\\联盟悬赏_20260918.md").parts, ["detail", "final", "ui", "draft", "derived", "ueintake"], "成稿也是 gdd 顶层的文件");
+	// ★ 工单 27：`gdd\UI\` 变了（换图/删图）⇒ ⑤ 的替换对照要重算（它拿"图在不在"与 §5 的 `<img>` 对照）
+	assert.deepEqual(at("gdd\\UI\\UI-M1 联盟悬赏主面板.png").parts, ["detail", "ui", "ueintake"],
+		"gdd 的子目录只管界面图 —— 不必重读定稿全文，但 ⑤ 的替换对照要重算（工单 27）");
+	// ★ 工单 26/27：`source\` 是外部交付包的归档位（`source\UE交付_<日期>\`）⇒ 多挂 ueintake（①②③④⑤ 跟着重读）
 	assert.deepEqual(at("source\\UE交付_20260928\\manifest.json").parts, ["detail", "ueintake"]);
 	assert.deepEqual(at("source\\UE交付_20260928").parts, ["detail", "ueintake"]);
 	assert.deepEqual(at("source\\录屏.mp4").parts, ["detail", "ueintake"], "source 桶里的任何改动都重读这一屏（口径只有一条）");
@@ -129,7 +131,7 @@ test("planReload：按**桶**判定该重读什么（只重读受影响的那几
 
 	// 目录目标（帧里的路径就是被订阅的那个目录）走同一条判据
 	assert.deepEqual(planReload({ path: FEATURE + "\\analysis" }, { root: FEATURE }).parts, ["detail", "brain"]);
-	assert.deepEqual(planReload({ path: FEATURE + "\\gdd" }, { root: FEATURE }).parts, ["detail", "final", "ui", "draft", "derived"]);
+	assert.deepEqual(planReload({ path: FEATURE + "\\gdd" }, { root: FEATURE }).parts, ["detail", "final", "ui", "draft", "derived", "ueintake"]);
 	assert.deepEqual(planReload({ path: FEATURE + "\\delivery" }, { root: FEATURE }).parts, ["detail", "derived"]);
 	assert.deepEqual(planReload({ path: FEATURE + "\\evidence" }, { root: FEATURE }).parts, ["detail", "ledger", "draft"]);
 	assert.deepEqual(planReload({ path: FEATURE }, { root: FEATURE }).parts, ["detail", "board"], "功能根自己变了 → 卡片也要重算");
@@ -159,16 +161,16 @@ test("unionParts：一批变更 → 部件并集（顺序稳定，便于断言�
 		planReload({ path: FEATURE + "\\gdd\\b_定稿.md" }, { root: FEATURE }),
 		planReload({ path: FEATURE + "\\analysis\\c.md" }, { root: FEATURE })
 	];
-	assert.deepEqual(unionParts(plans), ["detail", "brain", "final", "ui", "draft", "derived"]);
+	assert.deepEqual(unionParts(plans), ["detail", "brain", "final", "ui", "draft", "derived", "ueintake"]);
 	assert.deepEqual(unionParts([]), []);
 	// ★ 工单 24：新部件在**全集**里（手动刷新会重读它）+ 顺序稳定（`RELOAD_PARTS` 是唯一顺序出处）
 	assert.deepEqual(RELOAD_PARTS, ["board", "detail", "ledger", "brain", "final", "ui", "draft", "derived", "ueintake"]);
 	assert.ok(RELOAD_PARTS.indexOf("draft") >= 0, "文档生成工作面在「全部部件」里 —— 手动刷新不许漏它");
 	assert.ok(RELOAD_PARTS.indexOf("derived") >= 0, "派生物面在「全部部件」里 —— 手动刷新不许漏它（工单 28）");
-	assert.ok(RELOAD_PARTS.indexOf("ueintake") >= 0, "外部输入合入 ①②③ 在「全部部件」里 —— 手动刷新不许漏它（工单 26）");
+	assert.ok(RELOAD_PARTS.indexOf("ueintake") >= 0, "外部输入合入 ①②③④⑤ 在「全部部件」里 —— 手动刷新不许漏它（工单 26/27）");
 	// 单桶各自的并集（一条 analysis 帧不该牵到 draft；一条 gdd 帧要牵到）
 	assert.deepEqual(unionParts([planReload({ path: FEATURE + "\\analysis\\a.md" }, { root: FEATURE })]), ["detail", "brain"]);
-	assert.deepEqual(unionParts([planReload({ path: FEATURE + "\\gdd" }, { root: FEATURE })]), ["detail", "final", "ui", "draft", "derived"]);
+	assert.deepEqual(unionParts([planReload({ path: FEATURE + "\\gdd" }, { root: FEATURE })]), ["detail", "final", "ui", "draft", "derived", "ueintake"]);
 	// 一条 delivery 帧只牵 detail + derived（不该把 39 KB 的成稿/定稿全文也白读一遍）
 	assert.deepEqual(unionParts([planReload({ path: FEATURE + "\\delivery\\x.html" }, { root: FEATURE })]), ["detail", "derived"]);
 });

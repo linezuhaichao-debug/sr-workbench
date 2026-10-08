@@ -121,6 +121,14 @@ import { loadDerived } from "./load/derived.ts";
 //   · ★ 线框图替换**与手动入口共用同一处组装**：两边都走 `INTAKE.buildDraftInstruction({action:"wireframe"})`，
 //     本屏用的 `buildWireframeRequest` 就是那个"塞"的唯一实现 —— 不各写一份（工单 26 第 5 条）。
 import { buildWireframeRequest } from "./pure/ueintake.ts";
+// ★ 工单 27 · 外部输入合入 ④⑤：
+//   · ④ 三方映射（截图 ↔ 文档章节 ↔ 设计工具节点）—— 判定与逐行依据全在 `pure/ueintake.buildMap`；
+//   · ⑤ 线框替换计划（**替换前 vs 替换后**的逐组对照 + 替换指令）—— 全在 `pure/ueswap.ts`
+//     （`buildSwapPlan` 算对照、`buildSwapInstruction` 组装指令：先备份 / 落点 gdd\UI / 改完贴回 / 回滚口径 / 结构复核）；
+//   · ★ 与手动入口**共用同一处组装**：`buildSwapPlan` 的那张图源表吃两种输入（交付包 `截图\` / 用户手挑的图），
+//     指令正文只由 `buildSwapInstruction` 出一份 —— 本屏不另写一份线框正文（工单 26 第 5 条、27 第 2 条）。
+import { buildMap } from "./pure/ueintake.ts";
+import { buildSwapInstruction, buildSwapPlan } from "./pure/ueswap.ts";
 import { loadUeIntake } from "./load/ueintake.ts";
 // ★ 工单 22 · 新建功能：**一个动作**（目录 + 六个桶 + 身份声明 + 专属工作区）。
 //   · 判定与组装全在 `src/pure/createfeature.ts`（主题名合法性 / 冲突 / id / 指令 + 脚本 / 回读判定）
@@ -1886,9 +1894,94 @@ import {
 				}
 			})();
 
+			/**
+			 * ★ 工单 27 ④：三方映射的**面板侧重算**（与 ⑤ 的 `wireBuilt` 同一条纪律）。
+			 *
+			 * 为什么不直接把 `data.map` 摆出来：加载器那一份是"它对文件系统说的那个视图"，
+			 * 而面板手里有**自己那一份功能根**（`props.root`）—— 对不上的时候要能看出来。
+			 * 两边吃的是同一批原文（manifest / 图例索引 / 回写文档 / 定稿正文），
+			 * 所以 `buildMap` 是纯函数、**只有一份判定**（本屏不另写一套判据）。
+			 * 重算的结论与加载器那一份**逐字相同**时留痕 `data-map-same="1"`（不同就是某处读的不一样）。
+			 */
+			const mapData = (() => {
+				const m = data.map || null;
+				if (!m) return null;
+				try {
+					return buildMap({
+						manifest: m.manifestText || null,
+						legend: m.legendText || null,
+						doc: m.docText || null,
+						finalText: m.finalText || null,
+						pkgDir: m.pkgDir || ""
+					});
+				} catch (e) {
+					return { rows: [], figma: {}, summary: "④ 三方映射重算失败：" + String((e && e.message) || e), counts: {}, notes: [] };
+				}
+			})();
+
+			/**
+			 * ★ 工单 27 ⑤：替换计划的**面板侧重算** —— 与手动入口**共用同一张图源表、同一份组装**。
+			 *   两个入口的区别只有"图源从哪来"（交付包 `截图\` / 用户手挑的图），
+			 *   正文一律由 `buildSwapInstruction` 出一份（它内部只用 `buildSwapPlan` 的结论，不另写判据）。
+			 */
+			const swapBuilt = (() => {
+				const s = data.swap || null;
+				if (!s) return { instruction: "", blocked: "面板还没拿到替换计划（加载器没跑）。", next: "按「刷新」重读这一屏。" };
+				try {
+					const plan = buildSwapPlan({
+						finalText: s.finalText || "",
+						finalPath: s.finalPath || "",
+						topic: s.topic || "",
+						shots: (s.sources || []).map((x) => x.path).filter((p) => String(p || "").indexOf("截图") >= 0),
+						manual: [],
+						uiDir: s.uiDir || "",
+						present: (s.sources || []).filter((x) => x.exists !== false).map((x) => x.path),
+						draftText: (s.draftText == null ? s.finalText : s.draftText) || "",
+						stamp: s.stamp || ""
+					});
+					return buildSwapInstruction(plan);
+				} catch (e) {
+					return { instruction: "", blocked: "替换指令组装失败：" + String((e && e.message) || e), next: "" };
+				}
+			})();
+			/**
+			 * ★ 上面这一次重算必须与加载器算的**逐字相同**（"同一处组装"的运行期证据）——
+			 *   与 `data-intake-wire-same` 同一条口径，落成 `data-swap-same`。
+			 */
+			const swapSame = swapBuilt.instruction === ((data.swapInstruction) || "") ? "1" : "0";
+
+			/**
+			 * ★ 工单 27 ⑤ 的**手动入口**（第二颗按钮）：
+			 *   它在面板侧用**同一个** `buildSwapPlan` + `buildSwapInstruction` 再算一次，
+			 *   只是图源换成 `gdd\UI\` 里现有的图（用户换过图之后用它更新 §5 的引用）。
+			 *   `swapUiSame` = 这一次算出来的与加载器为手动入口算的那一份**逐字相同**的留痕。
+			 */
+			const swapUiBuilt = (() => {
+				const s = data.swapManual || null;
+				if (!s) return { instruction: "", blocked: "面板还没拿到手动入口的替换计划（加载器没跑）。", next: "按「刷新」重读这一屏。" };
+				try {
+					const plan = buildSwapPlan({
+						finalText: s.finalText || "",
+						finalPath: s.finalPath || "",
+						topic: s.topic || "",
+						shots: [],
+						manual: (s.sources || []).map((x) => x.path),
+						uiDir: s.uiDir || "",
+						present: (s.sources || []).map((x) => x.path),
+						draftText: (s.draftText == null ? s.finalText : s.draftText) || "",
+						stamp: s.stamp || ""
+					});
+					return buildSwapInstruction(plan);
+				} catch (e) {
+					return { instruction: "", blocked: "手动入口的替换指令组装失败：" + String((e && e.message) || e), next: "" };
+				}
+			})();
+			const swapUiSame = swapUiBuilt.instruction === ((data.swapManualInstruction) || "") ? "1" : "0";
+			const uiDirLabel = ((data.swap || {}).uiDir) || "";
+
 			const send = (key, text, blocked, root) => {
 				if (blocked) {
-					setMsg((m) => Object.assign({}, m, { [key]: { kind: "blocked", text: blocked, next: (key === "archive" ? data.archiveNext : data.wireframe.next) || "" } }));
+					setMsg((m) => Object.assign({}, m, { [key]: { kind: "blocked", text: blocked, next: (key === "archive" ? data.archiveNext : (key === "swap" ? ((data.swap || {}).next || "") : (key === "swapui" ? ((data.swapManual || {}).next || "") : data.wireframe.next))) || "" } }));
 					return;
 				}
 				if (typeof props.onSend !== "function") {
@@ -1997,8 +2090,110 @@ import {
 				}, r.warn) : null
 			]));
 
+			// ── ④ 三方映射：逐张一行（截图 → 章节 → 节点 → 定稿 §5）──────────────
+			//   ★ 对不上/推不出的**写在那一行上**（`miss`），不许只显示成功。
+			const mapRows = ((mapData && mapData.rows) || []);
+			const mapTone = (s) => s === "ok" ? C.ok : (s === "agree" ? C.warn : (s === "partial" ? C.warn : C.muted));
+			const mapRowNodes = mapRows.map((r, i) => h("div", {
+				key: "mr" + i, "data-map-row": r.status, "data-map-file": r.file,
+				style: {
+					fontSize: "11px", lineHeight: 1.8, marginTop: "3px", paddingLeft: "7px",
+					borderLeft: "2px solid " + mapTone(r.status), userSelect: "text"
+				}
+			}, [
+				h("div", { key: "a" }, [
+					h("span", { key: "n", style: { color: C.muted, fontFamily: "monospace" } }, (r.no || "-") + "　"),
+					h("span", { key: "f" }, r.file.replace(/^截图[\\/]/, "")),
+					h("span", { key: "s", style: { color: mapTone(r.status), fontWeight: 600 } }, "　［" + r.status + "］")
+				]),
+				h("div", { key: "b", style: { color: C.muted } },
+					"章节：" + (r.doc.matched ? "`" + r.doc.section + " " + r.doc.title + "`" + (r.doc.line ? "（回写文档 L" + r.doc.line + "）" : "") : "**对不上**（回写文档里没有 `" + r.doc.section + "` 这一段）") +
+					"　→　节点：" + (r.node.manifest || "**没读到**") +
+					(r.node.legend ? "（图例索引 `" + r.node.legend + "`" + (r.node.agree ? " 一致" : " **不一致**") + "）" : "（图例索引里没有这一张）") +
+					(r.node.frame ? "　Frame " + r.node.frame : "")),
+				h("div", { key: "c", style: { color: C.muted } },
+					"定稿 §5：" + ((r.docs || []).length
+						? r.docs.map((d) => "`" + d.ref + "`" + (d.has ? "（就是这一张）" : "（该组现有 " + d.images.length + " 张图，**没有这一张**）")).join("　·　")
+						: "**推不出它属于哪个界面组**")),
+				r.miss ? h("div", { key: "d", style: { color: C.warn } }, "缺：" + r.miss) : null
+			]));
+
+			const mapBlock = h("div", {
+				key: "map", "data-intake-map": (mapData && mapData.counts ? mapData.counts.total : 0) + "",
+				style: { marginTop: "7px", paddingTop: "6px", borderTop: "1px dashed " + C.faint, fontSize: "11px", lineHeight: 1.8, color: C.ink, userSelect: "text" }
+			}, [
+				h("div", { key: "h", "data-map-summary": "1" }, "④ 三方映射：" + ((mapData && mapData.summary) || "**读不到 `manifest.json`** —— 这一块做不了").replace(/^④ 三方映射：/, "")),
+				// ★ 面板侧重算与加载器那一份必须**逐字相同**（"同一处判定"的运行期证据）
+				h("div", { key: "same", "data-map-same": (mapData && data.map && mapData.rows.length === (data.map.rows || []).length) ? "1" : "0", style: { display: "none" } }, ""),
+				h("div", { key: "fp", style: { fontSize: "10.5px", color: C.muted } },
+					"源：" + (((mapData || {}).figma || {}).file || "（manifest 没写 Figma 源）") +
+					((((mapData || {}).figma || {}).pageId) ? " · Page " + mapData.figma.pageId + "（" + (mapData.figma.pageName || "") + "）" : "") +
+					((((mapData || {}).figma || {}).ruleNode) ? " · 规则节点 " + mapData.figma.ruleNode : "") +
+					"　（逐行判据见下面「详情」折）"),
+				mapRowNodes.length ? h("div", { key: "rows" }, mapRowNodes) : null
+			]);
+
+			// ── ⑤ 线框替换：替换前 vs 替换后（逐组对照）────────────────────────
+			const swap = data.swap || null;
+			const swTone = (a) => a === "keep" ? C.ok : (a === "replace" ? C.warn : (a === "unmatched" ? C.bad : C.muted));
+			const swRows = swap ? (swap.groups || []).filter((g) => g.kind === "ui").map((g, i) => h("div", {
+				key: "sw" + i, "data-swap-row": g.action, "data-swap-group": g.id || g.no,
+				style: {
+					fontSize: "11px", lineHeight: 1.8, marginTop: "3px", paddingLeft: "7px",
+					borderLeft: "2px solid " + swTone(g.action), userSelect: "text"
+				}
+			}, [
+				h("div", { key: "a" }, [
+					h("span", { key: "g", style: { fontFamily: "monospace" } }, "§" + g.no + " " + g.id + "　"),
+					h("span", { key: "s", style: { color: swTone(g.action), fontWeight: 600 } }, "［" + g.action + "］"),
+					h("span", { key: "w", style: { color: C.muted } }, "　" + (g.why || ""))
+				]),
+				h("div", { key: "b", style: { color: C.muted } },
+					"替换前：" + (g.before.length
+						? g.before.map((x) => "L" + x.line + " `" + x.src + "`").join("　·　")
+						: "**没有图**（§5 里这一组还是 ASCII 占位 / 或者根本没有图）")),
+				h("div", { key: "c", style: { color: C.muted } },
+					"替换后：" + (g.after.length
+						? g.after.map((x) => "`" + x.file + "` → `" + x.rel + "`").join("　·　")
+						: "（面板这一轮算不出要换哪张图 —— 见下面的「缺」）")),
+				g.miss ? h("div", { key: "d", style: { color: C.bad } }, "缺：" + g.miss) : null
+			])) : [];
+
+			const swapBlock = swap ? h("div", {
+				key: "swap", "data-intake-swap": (swap.counts ? (swap.counts.replace + "/" + swap.counts.keep + "/" + swap.counts.unmatched) : "0/0/0"),
+				style: { marginTop: "7px", paddingTop: "6px", borderTop: "1px dashed " + C.faint, fontSize: "11px", lineHeight: 1.8, color: C.ink, userSelect: "text" }
+			}, [
+				h("div", { key: "h", "data-swap-summary": "1" }, (swap.summary || "⑤ 线框图替换：**读不到计划**").replace(/^⑤ 线框图替换：/, "⑤ 线框图替换：")),
+				// ★ "与手动入口共用同一处组装"的运行期证据：面板重算 vs 加载器算的，必须逐字相同
+				h("div", { key: "same", "data-swap-same": swapSame, style: { display: "none" } }, ""),
+				h("div", { key: "uisame", "data-swap-ui-same": swapUiSame, style: { display: "none" } }, ""),
+				h("div", { key: "b", style: { fontSize: "10.5px", color: C.muted } },
+					"目标：" + (swap.finalName || "（拿不到定稿）") + "　｜　图落：" + (swap.uiDir || "（拿不到功能目录）") +
+					"　｜　备份：" + ((swap.backup && swap.backup.path) || "（拿不到）")),
+				swRows.length ? h("div", { key: "rows" }, swRows) : h("div", { key: "none", style: { color: C.muted } }, "§5 里没有可判的界面组（定稿读不到，或 §5 里没有 `UI-M*` 组）。"),
+				swap.blocked ? h("div", { key: "bl", "data-swap-blocked": "1", style: { color: C.warn } }, "这一轮不发指令：" + swap.blocked) : null
+			]) : null;
+
 			// ── 详情折：逐条依据 + 如实标注 ─────────────────────────────────
 			const detail = [];
+			// ★ 工单 27 ④：每一张截图的逐格依据进详情折（首屏只留三条边那一行；收起时体不渲染）
+			for (const r of ((data.map || {}).rows || [])) {
+				detail.push(h("div", {
+					key: "mp" + r.no + r.file, "data-map-evidence": r.status,
+					style: { fontSize: "10.5px", color: C.muted, lineHeight: 1.8, marginTop: "5px", userSelect: "text" }
+				}, [h("div", { key: "h", style: { color: C.ink } }, "④ " + r.file + "　（" + r.status + "）")].
+					concat((r.evidence || []).map((t, i) => h("div", { key: "e" + i }, "· " + t))).
+					concat((r.docs || []).map((d, i) => h("div", { key: "d" + i }, "· " + d.why)))));
+			}
+			for (const g of ((data.swap || {}).groups || [])) {
+				detail.push(h("div", {
+					key: "sw" + g.no + g.id, "data-swap-evidence": g.action,
+					style: { fontSize: "10.5px", color: C.muted, lineHeight: 1.8, marginTop: "5px", userSelect: "text" }
+				}, [
+					h("div", { key: "h", style: { color: C.ink } }, "⑤ §" + g.no + (g.id ? " " + g.id : " " + g.title) + "　（" + g.action + "）"),					h("div", { key: "w" }, "· " + g.why),
+					g.miss ? h("div", { key: "m", style: { color: C.bad } }, "· 对不上：" + g.miss) : null
+				]));
+			}
 			detail.push(h("div", { key: "ev", "data-intake-evidence": "1", style: { fontSize: "11px", lineHeight: 1.85, userSelect: "text" } },
 				(id.evidence || []).map((e, i) => h("div", { key: "e" + i }, [
 					h("b", { key: "l" }, e.label + "："),
@@ -2096,6 +2291,11 @@ import {
 					key: "rv", "data-intake-revert": "1",
 					style: { fontSize: "11.5px", color: C.bad, background: "#fef2f2", border: "1px solid " + C.bad, borderRadius: "4px", padding: "6px 9px", marginTop: "6px", lineHeight: 1.8, userSelect: "text" }
 				}, "⚠ " + data.revertWarning) : null,
+				// ═══ ④ 三方映射（工单 27）：截图 ↔ 文档章节 ↔ 设计工具节点 ═══
+				//   每一行就是一张截图的三条边；对不上/推不出的**写在那一行上**（不许只显示成功）。
+				mapBlock,
+				// ═══ ⑤ 线框图替换（工单 27）：替换前 vs 替换后，逐组对照 ═══
+				swapBlock,
 				// 动作（两个，都是次按钮；两步走：先看预览再发）
 				// ★ 归档那一颗只在**还没归位**时给（已归位就没有这个动作可做）
 				archived ? null : action("archive", "让 agent 归档到 source", { instruction: data.archiveInstruction, blocked: data.archiveBlocked, next: data.archiveNext }, "发到工作会话",
@@ -2107,6 +2307,15 @@ import {
 					"与「文档生成 › 线框图」**共用同一处组装**（`draftstep.buildDraftInstruction`）；图源 = 包里的 `截图\\`" +
 					(((data.wireframe || {}).images || []).length ? "（" + data.wireframe.images.length + " 张）" : "") +
 					(((data.wireframe || {}).ascii || []).length ? "，§5 里要换掉 " + data.wireframe.ascii.length + " 处 ASCII 占位" : "")),
+				// ★ 工单 27 ⑤：**落地那一条**（改真定稿 §5；含先备份 + 改完贴回 + 回滚口径）
+				action("swap", "按上面这份对照换（改定稿 §5）", swapBuilt, "发到工作会话",
+					"与手动入口**共用同一处组装**（`ueswap.buildSwapPlan` 那张图源表 / `buildSwapInstruction` 那份正文）；" +
+					"目标 = 当前有效定稿；图落 `gdd\\UI\\`（跟着定稿走）"),
+				// ★ ⑤ 的**另一个入口**：图源 = `gdd\UI\` 里现有的图（用户换过图之后走这条更新 §5 的引用）
+				//   —— 与上面那颗跑的是**同一个** `buildSwapPlan` + `buildSwapInstruction`，只换图源。
+				action("swapui", "用 gdd\\UI\\ 里现有的图更新 §5 引用", swapUiBuilt, "发到工作会话",
+					"手动入口：图源 = " + (uiDirLabel || "`gdd\\UI\\`") + "（" + ((data.uiDirFiles || []).length) + " 张）；" +
+					"与上面那颗是**同一处组装**（只换图源）—— `data-swap-ui-same` 留痕两边正文逐字一致"),
 				openDetail ? h("div", {
 					key: "db", "data-fold-body": "intake",
 					style: { marginTop: "7px", paddingTop: "6px", borderTop: "1px solid " + C.faint, maxHeight: "40vh", overflow: "auto" }

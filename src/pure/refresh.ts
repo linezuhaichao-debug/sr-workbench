@@ -211,13 +211,17 @@ export function planReload(notice: { path: unknown; absent?: boolean }, scope: {
 		// 「顶层」= `gdd` 目录自己（rel 只有一段）或 `gdd\<文件>`（两段）
 		// ★ 工单 24：顶层多挂 `draft`（成稿与定稿 §6 都在这儿）；子目录只管界面图，不必重读那两样
 		// ★ 工单 28：顶层再多挂 `derived` —— 改定稿要**立刻**把派生物标成过期（比对基准就是它的指纹）
-		if (depth <= 2) return { parts: ["detail", "final", "ui", "draft", "derived"], reason: "gdd 顶层变了（当前定稿 / 成稿 / 界面图都从这儿来；派生物的过期判定也跟着变）" + suffix };
-		return { parts: ["detail", "ui"], reason: "gdd 里的子目录变了（界面图）" + suffix };
+		// ★ 工单 27：顶层与子目录**都**多挂 `ueintake` —— ⑤ 的替换对照读的是**定稿 §5 的图引用**
+		//   （顶层那份定稿改了要重算）与 `gdd\UI\` 里图**在不在**（换图/删图也要重算）；
+		//   ④ 的三方映射同样拿定稿正文做第 3 条边的对照，所以两边都要跟着重读。
+		if (depth <= 2) return { parts: ["detail", "final", "ui", "draft", "derived", "ueintake"], reason: "gdd 顶层变了（当前定稿 / 成稿 / 界面图都从这儿来；派生物的过期判定与 ④⑤ 的对照也跟着变）" + suffix };
+		return { parts: ["detail", "ui", "ueintake"], reason: "gdd 里的子目录变了（界面图 —— ⑤ 的替换对照要重算）" + suffix };
 	}
 	if (BUCKETS.indexOf(seg) >= 0) {
-		// ★ 工单 26：`source\` 桶多挂 `ueintake` —— 外部交付包归位到 `source\UE交付_<日期>\` 之后，
-		//   ①②③（包识别 / 基线校验 / 回写清单）要跟着重读；**不**顺手重读别的屏。
-		if (seg === "source") return { parts: ["detail", "ueintake"], reason: seg + " 桶变了（外部交付包的归档位；①②③ 跟着重读）" + suffix };
+		// ★ 工单 26/27：`source\` 桶多挂 `ueintake` —— 外部交付包归位到 `source\UE交付_<日期>\` 之后，
+		//   ①②③④⑤（包识别 / 基线校验 / 回写清单 / 三方映射 / 线框图替换）要跟着重读；
+		//   **不**顺手重读别的屏。
+		if (seg === "source") return { parts: ["detail", "ueintake"], reason: seg + " 桶变了（外部交付包的归档位；①②③④⑤ 跟着重读）" + suffix };
 		return { parts: ["detail"], reason: seg + " 桶变了（只影响产物清单）" + suffix };
 	}
 	return { parts: ["detail"], reason: "功能目录里的其它改动" + suffix };
