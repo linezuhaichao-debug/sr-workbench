@@ -7826,16 +7826,15 @@ import {
 				 *   （host 把目录列举圈定在会话 cwd 之内）。`config_root` 就在外面，而看板的配置表清单、
 				 *   配置支线的"工作簿有没有同名文件"都要列它 —— 所以这里借一条 **cwd 覆盖它** 的只读会话。
 				 *   ★ 只是**列举**用的兜底：不订阅、不发指令、不显示；认领的纪律（标题 + 自己写的缓存）不变。
+				 *   ★ 挑的时机在**下面那次 session.list 合并之后**（候选行的 cwd 齐全了再挑，免得漏掉候选）。
 				 */
-				LIST_SID = "";
-				if (cfgRoot !== "" && !containsPath(root, cfgRoot)) {
+				const pickLister = () => {
+					LIST_SID = "";
+					if (cfgRoot === "" || containsPath(root, cfgRoot)) return;
 					const lh = pickListingSession(rows, cfgRoot, { archived: arch.ids });
-					if (lh) {
-						LIST_SID = lh.id;
-					} else {
-						note.push(noListingSessionNote(cfgRoot));
-					}
-				}
+					if (lh) LIST_SID = lh.id;
+					else note.push(noListingSessionNote(cfgRoot));
+				};
 
 				// 3) 正式认领：**先 store 行 → 认不着就拉一次列表 → 再认**（标题是投影，可能还没下来）
 				const pickOwn = () => pickIndexSession(rows, root, { cachedId: ownCachedSid, archived: arch.ids });
@@ -7850,6 +7849,7 @@ import {
 						note.push("会话列表读取失败：" + humanError(L));
 					}
 				}
+				pickLister();
 				if (hit) {
 					if (hit.others > 0) {
 						note.push("侧边栏里有 " + (hit.others + 1) + " 条索引会话（多半是并行刷新时各建了一条）：" +
