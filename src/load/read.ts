@@ -57,6 +57,20 @@ export async function readHead(port: WorkspacePort, path: string, signal?: Abort
 	}
 }
 
+/**
+ * 读一份**身份声明**（`features\<主题>\feature.json`）。
+ * ★ 窗口给到 60 行：写出来只有 6 行，但**别名多的功能**（合并/多次改名）行数会长，
+ *   14 行那种 frontmatter 窗口会把 JSON 截断成"读不出来"（假缺件）。读不到返回 `null`。
+ */
+export async function readIdentityText(port: WorkspacePort, root: string, signal?: AbortSignal): Promise<string | null> {
+	try {
+		const r = await port.readText(String(root).replace(/[\\/]+$/, "") + "/feature.json", { offset: 1, limit: 60 }, signal);
+		return r && typeof r.text === "string" ? r.text : null;
+	} catch (e) {
+		return null;
+	}
+}
+
 /** 分页读完整文本（读了半截就失败时，返回已经读到的部分，口径与迁移前一致）。 */
 export async function readAllText(
 	port: WorkspacePort,

@@ -10,10 +10,12 @@
 
 import { checkFinals, parseFrontmatter } from "../pure/finalgdd.ts";
 import { BUCKET_FIELD, DIR_BUCKET, artifactBucket } from "../pure/buckets.ts";
+import { BUCKET_ORDER } from "../pure/createfeature.ts";
+import { identityOf } from "../pure/featureid.ts";
 import { dateOf, isNoise, topicOf } from "../pure/topic.ts";
 import type { WorkspacePort } from "../port/types.ts";
 import { loadSrPaths } from "./paths.ts";
-import { listDirs, listFiles, readHead } from "./read.ts";
+import { listDirs, listFiles, readHead, readIdentityText } from "./read.ts";
 
 /** sr 工作区与配置表目录，相对会话 workspace 根（读不到 sr 配置时的兜底） */
 export const SR_WS = "GameDesignOS/workspace";
@@ -85,6 +87,14 @@ export async function loadDashboardInner(
 		// ② 功能根下的设计台账（§7.2：台账在功能根，不在任何子目录）
 		const rootFiles = await listFiles(port, root, signal, true);
 		f.ledgerFile = rootFiles.filter((n) => /^设计台账.*\.md$/i.test(n))[0] || null;
+		// ★ 工单 22：**身份声明**（只放身份不放进度，spec.md:131-137）。
+		//   本机真实数据一个都没有（迁移票 21 才补）⇒ `present:false`，界面**如实标注
+		//   "没有身份声明"并按目录名认功能**（不假装有 id，也不报错）。
+		f.identity = identityOf(await readIdentityText(port, root, signal), t);
+		// ★ 工单 22：六个桶**建全了没有**（缺桶是真实缺陷，卡片上只说缺哪几个）
+		const subdirs = await listDirs(port, root, signal, true);
+		const haveSub = new Set(subdirs.map((d) => d.toLowerCase()));
+		f.bucketsMissing = BUCKET_ORDER.filter((b) => !haveSub.has(b.toLowerCase()));
 		// ③ 证据包（`evidence\<名字>\` 这种子目录）
 		for (const d of await listDirs(port, root + "/evidence", signal, true)) {
 			const inside = await listFiles(port, root + "/evidence/" + d, signal, true);
@@ -134,6 +144,9 @@ export async function loadDashboardInner(
 			topic: f.topic,
 			root: f.root, // ★ 功能的根目录 —— 一切读取都从它出发
 			ledgerFile: f.ledgerFile, // ★ 功能根下的设计台账（§7.2）
+			// ★ 工单 22：身份（`feature.json`）+ 桶齐不齐 —— 卡片的诚实标注靠这两个字段
+			identity: f.identity,
+			bucketsMissing: f.bucketsMissing,
 			docType: head ? head.doc_type : null,
 			status: head ? head.status : null,
 			finalCheck: finalCheck, // ★ 定稿有效性（§6.1 / §8 V1）

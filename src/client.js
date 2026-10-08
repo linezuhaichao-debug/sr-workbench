@@ -99,6 +99,23 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 //   ★ 指令组装器与动作表**不在 client.js 里再抄一份**：`INTAKE` 暴露 `buildDraftInstruction` /
 //     `DRAFT_ACTIONS`（`src/pure/intake.ts` 从 `draftstep.ts` re-export），与头脑风暴那条路同口径。
 import { loadDraftWorkface } from "./load/draft.ts";
+// ★ 工单 22 · 新建功能：**一个动作**（目录 + 六个桶 + 身份声明 + 专属工作区）。
+//   · 判定与组装全在 `src/pure/createfeature.ts`（主题名合法性 / 冲突 / id / 指令 + 脚本 / 回读判定）
+//     与 `src/pure/featureid.ts`（身份声明的形状与解析）—— 面板**不写盘**，它只算、只发、只回读；
+//   · 只读那两侧（建前事实 / 建后窄回读）在 `src/load/create.ts`（只吃 port）；
+//   · 优雅退化（没有 `feature.json` 的已有功能按目录名认 + 如实标注）也走这里。
+import { compactDate, dashedDate, identityLabel, identityOf } from "./pure/featureid.ts";
+import {
+	BUCKET_ORDER,
+	bucketsNote,
+	cardStateOf,
+	createCancelNotice,
+	createDoneNotice,
+	createSentNotice,
+	createTimeoutNotice,
+	planNewFeature
+} from "./pure/createfeature.ts";
+import { loadCreateFacts, readBackCreated } from "./load/create.ts";
 // ★ 工单 16 · 自动刷新与版本指纹 —— 判定全在 `src/pure/refresh.ts`（`test/pure-refresh.test.ts` 覆盖的就是它）：
 //   帧怎么认（`parseFrame`）· 盯哪些目标（`watchPlan`）· 这一帧要重读哪些部件（`planReload` / `unionParts`）
 //   · 自激防护（`acceptFrame`）· 指纹与"是不是最新"（`fingerprintOf` / `freshnessOf`）· 去抖合批（`shouldFlush`）
@@ -398,7 +415,16 @@ import {
 		 */
 		function portOf(ctx, sid, read) {
 			return {
-				listDir: (absPath, signal) => listEntries(ctx, sid, absPath, signal),
+				// ★ 工单 22：列举先试本会话，失败再试**借来的只读会话**（`LIST_SID`）——
+				//   与 `listDir` 的通道①①' 同口径：新建功能的"回读"要在目录刚出现的那一刻就列得到。
+				listDir: async (absPath, signal) => {
+					try {
+						return await listEntries(ctx, sid, absPath, signal);
+					} catch (e) {
+						if (LIST_SID && LIST_SID !== sid) return await listEntries(ctx, LIST_SID, absPath, signal);
+						throw e;
+					}
+				},
 				readText: async (path, range, signal) => {
 					const r = await read(sid, path, range, signal);
 					if (!r || r.ok !== true) {
@@ -659,6 +685,12 @@ import {
 				// ② 功能根下的设计台账（§7.2：台账在功能根，不在任何子目录）
 				const rootFiles = await listDir(ctx, sid, root, signal, true);
 				f.ledgerFile = rootFiles.filter((n) => /^设计台账.*\.md$/i.test(n))[0] || null;
+				// ★ 工单 22：身份声明 + 六个桶齐不齐（**与 `src/load/dashboard.ts` 同一处改动** ——
+				//   工单 32 把看板接到模块那份之前，这两处必须一起改；判定全在纯函数里，这里只是读）。
+				f.identity = identityOf(await readAllText(read, sid, root + "/feature.json", signal, 60), t);
+				const subdirs = await listDirs(ctx, sid, root, signal, true);
+				const haveSub = new Set(subdirs.map((d) => String(d).toLowerCase()));
+				f.bucketsMissing = BUCKET_ORDER.filter((b) => !haveSub.has(b.toLowerCase()));
 				// ③ 证据包（`evidence\<名字>\` 这种子目录）
 				for (const d of await listDirs(ctx, sid, root + "/evidence", signal, true)) {
 					const inside = await listDir(ctx, sid, root + "/evidence/" + d, signal, true);
@@ -708,6 +740,9 @@ import {
 					topic: f.topic,
 					root: f.root,                    // ★ 功能的根目录 —— 一切读取都从它出发
 					ledgerFile: f.ledgerFile,        // ★ 功能根下的设计台账（§7.2）
+					// ★ 工单 22：身份（`feature.json`）+ 桶齐不齐
+					identity: f.identity,
+					bucketsMissing: f.bucketsMissing,
 					docType: head ? head.doc_type : null,
 					status: head ? head.status : null,
 					finalCheck: finalCheck,          // ★ 定稿有效性（§6.1 / §8 V1）
@@ -824,9 +859,10 @@ import {
 			const clickable = !!f.openPath;
 			const finalActive = f.status === "active";
 			const waiting = props.attention === "pending";
-			const stuck = !f.latestFinal
-				? "卡在：尚未出定稿"
-				: (finalActive ? "已定稿 · 可交程序" : "最终版状态：" + (f.status || "?"));
+			// ★ 工单 22：卡片那行状态改由**纯函数**给（"新建、还没有任何产物"要说人话；口径只有一份）
+			const card = cardStateOf(f);
+			const bucketNote = bucketsNote(f);
+			const tone = card.tone === "ok" ? C.ok : card.tone === "new" ? C.link : C.muted;
 
 			// ★ 整张卡片**不可点**——只有底部的文件链接可点（对齐 DSH 会话里的文件链接习惯）
 			return h("div", {
@@ -859,10 +895,17 @@ import {
 					h("b", { key: "t", style: { fontSize: "13px" } }, f.topic),
 					f.docType
 						? badge(f.docType + " / " + (f.status || "?"), finalActive ? "ok" : null)
-						: badge("无定稿", "warn")
+						: badge("无定稿", "warn"),
+					// ★ 工单 22：身份声明 —— 没有就**如实标注**（不假装有 id）；
+					//   有、而且身份名和目录名不一样，就把"当前身份名"说出来（改名是正常业务，目录名只是标签）
+					!f.identity || !f.identity.present
+						? badge("没有身份声明")
+						: (f.identity.name && f.identity.name !== f.topic ? badge("身份名：" + f.identity.name) : null)
 				]),
 				h(StageBar, { key: "s", stages: f.stages }),
-				h("div", { key: "m", style: { fontSize: "11px", color: finalActive ? C.ok : C.muted, marginBottom: "5px" } }, stuck),
+				h("div", { key: "m", style: { fontSize: "11px", color: tone, marginBottom: "5px" } }, card.line),
+				// ★ 工单 22：桶没建全就说（只在真缺时说一句话，正常功能一个字都不多说）
+				bucketNote ? h("div", { key: "bk", style: { fontSize: "11px", color: C.warn, marginBottom: "5px" } }, bucketNote) : null,
 				h("div", { key: "c", style: { fontSize: "11px", color: C.muted } },
 					"定稿 " + f.finals + " · 审查 " + f.reviews + " · 宣讲 " + f.speeches +
 					" · 配置表 " + f.configs.length + " · 决策 " + f.decisions),
@@ -970,6 +1013,124 @@ import {
 					marginBottom: "12px", fontWeight: (bad || waiting.length) ? 600 : 400
 				}
 			}, items.join(" · "));
+		}
+
+		/**
+		 * ★ 工单 22 · 「新建功能」表单（看板上**唯一的主按钮**就在这一块里）。
+		 *
+		 * 形态纪律（24c / 24b 延续）：首屏只留**人话** ——
+		 *   · 一行说清"建什么"：功能目录 + 六个桶 + 身份声明 + 专属工作区，**一个动作**；
+		 *   · 一个输入框（主题名）+ 一个主按钮〔建立〕+ 一个次按钮〔取消〕；
+		 *   · 机器口径（`feature_id` 的规则、目录全路径、**将要发出去的指令全文**）折在后面，默认收起；
+		 *   · 校验不过：只说那一句人话 + 下一步，并且**主按钮是禁用的**（发不出去 = 一个字节都不写）。
+		 *   · 正在建的那一段只显示**进度人话**（已看到：目录 ✓ ／ 六个桶 n/6 ／ 身份声明 —）。
+		 */
+		function CreateFeatureForm(props) {
+			const plan = props.plan || { ok: false, message: "", next: "", topic: "", root: "", id: "", instruction: "" };
+			const creating = props.creating || null;
+			const [showIns, setShowIns] = React.useState(false);
+			const topic = props.topic || "";
+			const disabled = !plan.ok || !!creating || !!props.busy;
+			const IN = {
+				flex: "1 1 240px", font: "inherit", fontSize: "12px", padding: "5px 8px",
+				border: "1px solid " + C.soft, borderRadius: "4px", boxSizing: "border-box"
+			};
+			const btn = (key, label, kind, onClick, off, send) => h("button", {
+				key: key, type: "button", "data-btn": kind, "data-send": send || null, disabled: !!off,
+				onClick: off ? null : onClick,
+				style: {
+					font: "inherit", fontSize: "12px", padding: kind === "primary" ? "5px 14px" : "5px 10px",
+					border: "1px solid " + (kind === "primary" ? C.ink : (kind === "link" ? "transparent" : C.soft)),
+					background: kind === "primary" ? (off ? C.soft : C.ink) : "#fff",
+					color: kind === "primary" ? "#fff" : (kind === "link" ? C.muted : C.ink),
+					borderRadius: "4px", cursor: off ? "default" : "pointer",
+					textDecoration: kind === "link" ? "underline" : "none"
+				}
+			}, label);
+			// 折叠：**收起时里面的字根本不渲染**（24c 的口径，机器口径不许回首屏）
+			const foldIns = h("div", { key: "fi", style: { marginTop: "8px" } }, [
+				h("button", {
+					key: "s", type: "button", "data-fold": "newfeature-instruction", "data-open": showIns ? "1" : "0",
+					"data-btn": "link", onClick: () => setShowIns(!showIns), "aria-expanded": showIns ? "true" : "false",
+					style: {
+						font: "inherit", fontSize: "12px", border: "1px solid transparent", background: "#fff",
+						padding: 0, color: C.muted, textDecoration: "underline", cursor: "pointer", textAlign: "left"
+					}
+				}, (showIns ? "▾ " : "▸ ") + "看将要发出去的指令（逐字）"),
+				showIns ? h("pre", {
+					key: "b", "data-fold-body": "newfeature-instruction",
+					style: {
+						marginTop: "7px", marginBottom: 0, padding: "9px", fontSize: "11px", whiteSpace: "pre-wrap",
+						background: C.bg, border: "1px solid " + C.faint, borderRadius: "3px",
+						fontFamily: "monospace", lineHeight: 1.6, userSelect: "text", maxHeight: "260px", overflow: "auto"
+					}
+				}, plan.instruction || "(还没算出来：先输一个主题名)") : null
+			]);
+
+			const head = h("div", { key: "h", style: { fontSize: "12.5px", marginBottom: "7px", lineHeight: 1.7 } }, [
+				h("b", { key: "t" }, "新建功能"),
+				h("span", { key: "s", style: { color: C.muted } },
+					"　一个动作：功能目录 + 六个桶 + 身份声明，并登记成它的专属工作区。")
+			]);
+
+			if (creating) {
+				return h("div", {
+					key: "newf", "data-newfeature": "creating", "data-create": creating.state || "sent",
+					style: {
+						border: "1px solid " + C.soft, borderLeft: "3px solid " + C.ink, borderRadius: "4px",
+						padding: "10px 12px", marginBottom: "12px", background: "#fff"
+					}
+				}, [
+					head,
+					h("div", { key: "p", "data-say": "create-progress", style: { fontSize: "12px", lineHeight: 1.8 } },
+						"正在建「" + creating.topic + "」…　" + (creating.progress || "已看到：功能目录 —（还在建）")),
+					h("div", { key: "n", style: { fontSize: "11px", color: C.muted, marginTop: "3px" } },
+						"不用刷新 —— 目录一出现，这张卡就会自己出现在下面，工作区与工作会话也一并建好。"),
+					h("div", { key: "b", style: { marginTop: "8px", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, [
+						creating.sid ? btn("go", "打开工作会话", "ghost", () => props.onOpenSession(), false) : null,
+						btn("stop", "不再等", "link", () => props.onStopWaiting(), false)
+					])
+				]);
+			}
+
+			return h("div", {
+				key: "newf", "data-newfeature": "form",
+				style: {
+					border: "1px solid " + C.soft, borderLeft: "3px solid " + C.ink, borderRadius: "4px",
+					padding: "10px 12px", marginBottom: "12px", background: "#fff"
+				}
+			}, [
+				head,
+				h("div", { key: "row", style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, [
+					h("input", {
+						key: "i", "data-input": "topic", value: topic, placeholder: "主题名（会成为目录名），例如：联盟讨伐",
+						onChange: (e) => props.onTopic(e.target.value), style: IN
+					}),
+					btn("ok", props.busy ? "建立中…" : "建立", "primary", () => props.onSubmit(), disabled, "create"),
+					btn("no", "取消", "link", () => props.onCancel(), false)
+				]),
+				topic.trim() === ""
+					? h("div", { key: "hint", style: { fontSize: "11px", color: C.muted, marginTop: "6px" } },
+						"一个主题名就够了 —— 目录名、六个桶、身份声明、专属工作区都由这一个动作建出来。")
+					: (plan.ok
+						? h("div", {
+							key: "v", "data-create": "ok",
+							style: { fontSize: "11.5px", color: C.ok, marginTop: "7px" }
+						}, "可以建：" + plan.topic + "（" + plan.id + "）")
+						: h("div", {
+							key: "v", "data-create": "bad",
+							style: { fontSize: "11.5px", color: C.bad, marginTop: "7px", lineHeight: 1.8 }
+						}, [
+							h("div", { key: "a" }, "⚠ " + plan.message),
+							h("div", { key: "b", style: { color: C.muted } }, "下一步：" + plan.next)
+						])),
+				h("div", {
+					key: "w", style: { fontSize: "11px", color: C.muted, marginTop: "6px", fontFamily: "monospace", wordBreak: "break-all" }
+				}, "建在哪：" + (plan.root || "(先输主题名)") + "\\　（六个桶：" + BUCKET_ORDER.join(" / ") + "）"),
+				plan.ok && plan.id ? h("div", { key: "id", style: { fontSize: "11px", color: C.muted, marginTop: "2px" } },
+					"将写入 feature_id：" + plan.id + "（可读、ASCII、终身不变 —— 以后改名叫什么都还是它）") : null,
+				plan.instruction ? foldIns : null
+			]);
 		}
 
 		/** 错误边界：任何渲染异常都显示在面板里，而不是白屏 */
@@ -5619,6 +5780,22 @@ import {
 			// ★ 工单 24：文档生成工作面的数据（成稿的两大部分与左树 + 配置支线走到哪）
 			const [draft, setDraft] = React.useState(null);
 			/**
+			 * ★ 工单 22 · 新建功能（**一个动作**）的四份状态：
+			 *   `newOpen` 表单开着没有 · `newTopic` 输的主题名 · `newBusy` 正在提交（拉事实 + 发送）
+			 *   · `creating` 已经交给工作会话、正在**窄轮询回读**的那一份（`{topic,id,root,sid,state,progress}`）
+			 *   · `created` 建好了（给一句"已经可以用了" + 〔进详情 ›〕）。
+			 */
+			const [newOpen, setNewOpen] = React.useState(false);
+			const [newTopic, setNewTopic] = React.useState("");
+			const [newBusy, setNewBusy] = React.useState(false);
+			const [creating, setCreating] = React.useState(null);
+			const [created, setCreated] = React.useState(null);
+			/** 窄轮询的定时器与"这一轮还算不算数"的令牌（取消/收工后，迟到的回读不许再排下一轮） */
+			const createTimer = React.useRef(null);
+			const createToken = React.useRef("");
+			/** 目录刚出现时只重读一次看板（那一刻卡片就该出现） */
+			const createSawDir = React.useRef(false);
+			/**
 			 * ★ 工单 16：详情里每一份数据都盖一个"这是哪个功能的"戳（`__topic`），渲染时对不上
 			 *   当前功能就**不当数**。两个作用合在一起：
 			 *     ① 换功能时**不需要任何清空动作**（旧数据自动失效，不会闪一个上一个功能的内容）；
@@ -5886,6 +6063,171 @@ import {
 			 *   所以这个按钮**任何状态下都在**，降级时界面上会明说"用「刷新」或 F5"。
 			 */
 			const onManualRefresh = () => applyReload(RELOAD_PARTS);
+
+			// ════════════════════════════════════════════════════════════════
+			// ★ 工单 22 · 新建功能（一个动作）
+			//   面板在这条路上**不写盘**（`CONTEXT.md`「面板只读 / agent 执行」）：
+			//     ① 校验（纯函数 + 只读事实）→ 不过就**一个字节都不写、连指令都不发**；
+			//     ② 把算好的指令发给**无归属工作会话**（cwd = SR 工作区根；功能专属工作区此刻还不存在）；
+			//     ③ **窄轮询回读**：列功能根 + 读 feature.json（两次调用）→ 判定在纯函数 `verifyCreated` 里；
+			//     ④ 目录一出现就看板重读（**卡片立刻出现，不用 F5**）；建全了再登记专属工作区 + 建工作会话。
+			//   ★ 为什么"建"这件事必须由 agent 做：Remote 层只有读 + 指令侧五法，**没有写文件的能力**
+			//     （`lib/client.js` 的端口注释与 spec 的 Out of Scope「编辑文件」都写着这一条）。
+			// ════════════════════════════════════════════════════════════════
+			/** 轮询节奏：1.5 秒一次，最多 200 次（5 分钟）——agent 侧建目录通常几秒到十几秒 */
+			const CREATE_POLL_MS = 1500;
+			const CREATE_POLL_MAX = 200;
+
+			const stopCreateTimer = () => {
+				if (createTimer.current) { clearTimeout(createTimer.current); createTimer.current = null; }
+			};
+
+			/** 建好之后的收口：登记专属工作区 + 建专属工作会话（走工单 07 的统一出口） */
+			const finishCreate = (info, verdict) => {
+				stopCreateTimer();
+				createToken.current = "";
+				setCreating(null);
+				setCreated({ topic: info.topic, root: info.root, sid: info.sid || "", note: verdict ? verdict.note : "" });
+				setNotice({ kind: "ok", text: createDoneNotice(info.topic, info.id, info.root) });
+				reloadBoard();      // ★ 卡片立刻出现（不用 F5）
+				if (typeof props.__ensureWork !== "function") return;
+				props.__ensureWork(info.root, sessionRows, {}).then(
+					(got) => {
+						if (got && got.ok) {
+							setCreated((prev) => (prev && prev.topic === info.topic ? Object.assign({}, prev, { sid: got.sid || prev.sid }) : prev));
+							return;
+						}
+						setNotice({
+							kind: "err",
+							text: "功能建好了，但它的**专属工作区/工作会话**没建起来：" + ((got && got.error) || "原因未知") +
+								"　下一步：刷新页面再进它的详情 —— 面板会按路径 + 标题重新认领或新建（不会落进「未分组」）。"
+						});
+					},
+					(e) => setNotice({
+						kind: "err",
+						text: "功能建好了，但建它的专属工作会话时抛错：" + String((e && e.message) || e) +
+							"　下一步：刷新页面再进它的详情（面板会按路径 + 标题重新认领/新建）。"
+					})
+				);
+			};
+
+			/** 一次窄回读（列功能根 + 读 feature.json）→ 判定；建全了就收口，否则排下一次 */
+			const pollCreate = (info, tries, token) => {
+				if (createToken.current !== token) return;
+				const p = typeof props.__readBack === "function"
+					? props.__readBack(sessionId, info.root, info.id)
+					: Promise.reject(new Error("面板拿不到回读通道（__readBack 没挂上）"));
+				p.then(
+					(verdict) => {
+						if (createToken.current !== token) return;
+						const v = verdict || null;
+						if (v && v.state !== "absent" && !createSawDir.current) {
+							createSawDir.current = true;
+							reloadBoard();      // ★ 目录一出现就看板重读 —— 这一刻卡片就该出现在下面
+						}
+						if (v && v.state === "done") { finishCreate(info, v); return; }
+						setCreating(Object.assign({}, info, {
+							state: v ? v.state : "absent",
+							progress: v ? v.progress : info.progress,
+							note: v ? v.note : ""
+						}));
+						if (tries + 1 >= CREATE_POLL_MAX) {
+							stopCreateTimer();
+							createToken.current = "";
+							setCreating(null);
+							setNotice({ kind: "err", text: createTimeoutNotice(info.topic, v, info.sid) });
+							return;
+						}
+						createTimer.current = setTimeout(() => pollCreate(info, tries + 1, token), CREATE_POLL_MS);
+					},
+					() => {
+						// 回读本身失败（列举/读取通道坏了）：**不当成建完**，接着等下一轮（超时那一刻会如实说）
+						if (createToken.current !== token) return;
+						createTimer.current = setTimeout(() => pollCreate(info, tries + 1, token), CREATE_POLL_MS);
+					}
+				);
+			};
+
+			/** 〔建立〕：**先校验后创建** ——
+			 *  ① 提交时再拉一次最新事实（看板数据可能已经旧了）并重新校验；不过就只显示话术、**不发指令**；
+			 *  ② 发出去之后开始窄轮询回读。 */
+			const submitCreate = (plan, srWs, wsPathsNow) => {
+				if (newBusy || creating) return;
+				if (!plan || !plan.ok) {
+					setNotice({ kind: "err", text: (plan && plan.message ? plan.message + "　" + plan.next : "这条建不了。") });
+					return;
+				}
+				if (typeof props.__createFacts !== "function" || typeof props.__createFeature !== "function") {
+					setNotice({ kind: "err", text: "面板拿不到「新建功能」的通道（__createFacts / __createFeature 没挂上）—— 刷新页面再试。" });
+					return;
+				}
+				setNewBusy(true);
+				props.__createFacts(sessionId, srWs).then(
+					(fresh) => {
+						if (fresh && fresh.note) {
+							// 事实都读不到 ⇒ **不发**（宁可让人先解决"读不到"，也不冒"建重了"的风险）
+							setNewBusy(false);
+							setNotice({ kind: "err", text: fresh.note + "　下一步：先让面板能列出 sr 工作区（确认锚点与索引会话），再点「建立」。" });
+							return;
+						}
+						const facts = {
+							dirNames: (fresh && fresh.dirNames) || [],
+							features: (fresh && fresh.features) || [],
+							wsPaths: (wsPathsNow || []).slice(),
+							compact: compactDate(Date.now()),
+							created: dashedDate(Date.now()),
+							srWs: srWs
+						};
+						const verdict = planNewFeature(plan.topic, facts, srWs);
+						if (!verdict.ok) {
+							setNewBusy(false);
+							setNotice({ kind: "err", text: verdict.message + "　下一步：" + verdict.next });
+							return;
+						}
+						props.__createFeature(verdict, { srWs: srWs, rows: sessionRows }).then(
+							(res) => {
+								setNewBusy(false);
+								if (!res || !res.ok) {
+									setNotice({
+										kind: "err",
+										text: ((res && res.message) || "发送失败。") + (res && res.next ? "　下一步：" + res.next : "")
+									});
+									return;
+								}
+								setNewOpen(false);
+								createSawDir.current = false;
+								const token = "c" + Date.now() + "-" + Math.random().toString(36).slice(2, 7);
+								createToken.current = token;
+								const info = {
+									topic: verdict.topic, id: verdict.id, root: verdict.root, sid: res.sid || "",
+									state: "sent", progress: "已看到：功能目录 —（还在建）", note: ""
+								};
+								setCreating(info);
+								setCreated(null);
+								setNotice({ kind: null, text: createSentNotice(verdict.topic) + (res.note ? "　" + res.note : "") });
+								createTimer.current = setTimeout(() => pollCreate(info, 0, token), CREATE_POLL_MS);
+							},
+							(e) => {
+								setNewBusy(false);
+								setNotice({ kind: "err", text: "发送失败：" + String((e && e.message) || e) + "　下一步：刷新页面再点一次「建立」。" });
+							}
+						);
+					},
+					(e) => {
+						setNewBusy(false);
+						setNotice({ kind: "err", text: "读已有的功能目录失败：" + String((e && e.message) || e) + "　下一步：先让面板能列工作区，再点「建立」。" });
+					}
+				);
+			};
+
+			/** 〔不再等〕：停轮询 + 如实说"它建好了的话点刷新就看得到" */
+			const stopWaiting = () => {
+				const info = creating;
+				stopCreateTimer();
+				createToken.current = "";
+				setCreating(null);
+				if (info) setNotice({ kind: null, text: createCancelNotice(info.topic, { progress: info.progress } ) });
+			};
 
 			/** 版本袋 → "已应用"，并按当前清单刷新指纹 */
 			const commitBag = (detailData) => {
@@ -6393,6 +6735,12 @@ import {
 							style: { font: "inherit", fontSize: "12px", padding: "3px 9px", border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer" }
 						}, "‹ 返回功能看板"),
 						f ? badge(f.docType ? f.docType + " / " + (f.status || "?") : "无定稿", f.status === "active" ? "ok" : null) : null,
+						// ★ 工单 22：身份**如实标注** —— 没有 `feature.json` 就写出来（真实数据 4 个功能现在都没有，
+						//   迁移票 21 才补），有就显示 id（改名不改它）
+						f ? h("span", {
+							key: "idn", "data-identity": f.identity && f.identity.present ? "present" : "absent",
+							style: { fontSize: "10.5px", color: C.muted, fontFamily: "monospace" }
+						}, identityLabel(f.identity)) : null,
 						f && f.latestFinal ? h("span", { key: "v", style: { fontSize: "11px", color: C.muted, fontFamily: "monospace" } }, "最终版 " + f.latestFinal) : null,
 						f && f.openPath ? h("button", {
 							key: "open", type: "button",
@@ -6532,6 +6880,18 @@ import {
 
 			const filtered = q ? d.features.filter((f) => f.topic.toLowerCase().indexOf(q.toLowerCase()) >= 0) : d.features;
 
+			// ★ 工单 22：新建功能的**实时校验**（纯函数、看板刚扫到的真实事实）——
+			//   显示的就是它；提交时会再拉一次最新事实重算（先校验后创建）。
+			const newFacts = {
+				dirNames: d.features.map((f) => f.topic),
+				features: d.features.map((f) => ({ topic: f.topic, root: f.root, identity: f.identity })),
+				wsPaths: (wsPaths || []).slice(),
+				compact: compactDate(Date.now()),
+				created: dashedDate(Date.now()),
+				srWs: d.srWs
+			};
+			const newPlan = planNewFeature(newTopic, newFacts, d.srWs);
+
 			return shell([
 				head("功能看板 · A1"),
 				// ① 顶栏：锚点路径（来自 sr 配置）+ 搜索
@@ -6560,8 +6920,49 @@ import {
 						onClick: () => onManualRefresh(),
 						title: "重读工作区（看板 + 当前功能）",
 						style: { font: "inherit", fontSize: "11px", padding: "3px 9px", border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer" }
-					}, "刷新看板")
+					}, "刷新看板"),
+					// ★ 工单 22：**看板上唯一的主按钮**（24c 形态纪律：一屏一个主按钮）
+					h("button", {
+						key: "nw", type: "button", "data-btn": "primary", "data-newfeature": "open",
+						onClick: () => { setNewOpen(true); setCreated(null); setNotice(null); },
+						title: "新建功能：功能目录 + 六个桶 + 身份声明，并登记成它的专属工作区",
+						style: {
+							font: "inherit", fontSize: "11.5px", padding: "4px 12px", border: "1px solid " + C.ink,
+							background: C.ink, color: "#fff", borderRadius: "4px", cursor: "pointer"
+						}
+					}, "＋ 新建功能")
 				]),
+				// ② 新建功能（表单 / 正在建 / 建好了三态，同一块地方）
+				newOpen || creating ? h(CreateFeatureForm, {
+					key: "new",
+					topic: newTopic, plan: newPlan, creating: creating, busy: newBusy,
+					onTopic: (v) => { setNewTopic(v); setNotice(null); },
+					onCancel: () => { setNewOpen(false); setNewTopic(""); },
+					onSubmit: () => submitCreate(newPlan, d.srWs, wsPaths),
+					onOpenSession: () => { const sid = (creating && creating.sid) || (created && created.sid) || ""; if (sid) probe.openSession(sid); },
+					onStopWaiting: () => stopWaiting()
+				}) : null,
+				// ③ 刚建好的那一个功能：一句"已经可以用了" + 直接进去（次按钮，主按钮仍是「＋ 新建功能」）
+				created ? h("div", {
+					key: "cd", "data-created": created.topic,
+					style: {
+						display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap",
+						border: "1px solid " + C.ok, borderLeft: "3px solid " + C.ok, borderRadius: "4px",
+						padding: "8px 11px", marginBottom: "12px", background: "#fff", fontSize: "12px"
+					}
+				}, [
+					h("span", { key: "t", style: { color: C.ok } }, "「" + created.topic + "」可以用了"),
+					h("button", {
+						key: "d", type: "button", "data-btn": "ghost", "data-go": created.topic,
+						onClick: () => { setDetailTopic(created.topic); setDtab(ENTRY_TAB); setView("detail"); },
+						style: { font: "inherit", fontSize: "11px", padding: "3px 10px", border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer" }
+					}, "进详情 ›"),
+					created.sid ? h("button", {
+						key: "s", type: "button", "data-btn": "link",
+						onClick: () => probe.openSession(created.sid),
+						style: { font: "inherit", fontSize: "11px", padding: "3px 6px", border: "1px solid transparent", background: "#fff", color: C.muted, textDecoration: "underline", cursor: "pointer" }
+					}, "打开它的工作会话") : null
+				]) : null,
 				// ② 打开结果提示（含失败时的通道诊断）
 				h(NoticeBar, { key: "nt", notice: notice }),
 				// ③ 风险条
@@ -6578,7 +6979,10 @@ import {
 							onDetail: (x) => { setDetailTopic(x.topic); setDtab(ENTRY_TAB); setView("detail"); },
 							onAttention: (x) => { setDetailTopic(x.topic); setDtab("pipeline"); setView("detail"); }
 						}))
-						: [h("div", { key: "none", style: { color: C.muted, fontSize: "12px" } }, "没有匹配的功能。")]),
+						: [h("div", { key: "none", style: { color: C.muted, fontSize: "12px" } },
+							d.features.length === 0
+								? "还没有功能 —— 点上面的「＋ 新建功能」建第一个（一个动作建出目录 + 六个桶 + 身份声明）。"
+								: "没有匹配的功能。")]),
 				// ⑤ 来源说明
 				h("div", { key: "foot", style: { marginTop: "16px", fontSize: "11px", color: C.muted, lineHeight: 1.8 } }, [
 					h("div", { key: "a" }, "锚点：sr 配置 " + (d.configFile || "?") + (d.pathNote ? " · " + d.pathNote : "")),
@@ -7124,6 +7528,54 @@ import {
 					//   一并显示 —— 缺陷修复的诚实口径：**不许装成"侧边栏已经刷新了"**。
 					note: "已交给工作会话。" + (a.got.running ? "它正在跑别的活，这条指令排在队列里。" : "") +
 						(a.got.note && a.got.note.length ? "　" + a.got.note.join("；") : "")
+				};
+			};
+
+			/**
+			 * ═══ 工单 22 · 「新建功能」的三条通道（面板在这条路上**不写盘**）═══
+			 *
+			 *   ① `createFactsRunner`   —— 建之前的**只读事实**（`src/load/create.ts`：列 `features\`
+			 *      + 逐个读 `feature.json`）。提交时重新拉一次 ⇒ "先校验后创建"用的是**当下**的事实，
+			 *      不是看板屏幕上那份可能已经旧了的。
+			 *   ② `createFeatureRunner` —— 把**算好的指令**发给「无归属工作会话」（cwd = SR 工作区根，
+			 *      工单 07 建的那条）。为什么是它：功能专属工作区**此刻还不存在**，而这条指令的工作
+			 *      就是把那个目录建出来；这条会话本来就叫「策划工作台·工作（SR 工作区）」。
+			 *   ③ `readBackRunner`      —— 建之后的**窄回读**（列功能根 + 读 `feature.json`，两次调用）。
+			 *      判定（桶齐不齐 / 身份认不认得出 / id 是不是算好那个）在纯函数 `verifyCreated` 里。
+			 *
+			 * ★ 回读**不是**"看一眼就当成了"：`feature.json` 不在、桶缺、id 对不上，都如实说，
+			 *   绝不当作建好（`verifyCreated` 的五个状态）。
+			 */
+			const createFactsRunner = (sid, srWs, signal) => loadCreateFacts(portOf(ctx, sid, read), { srWs: srWs, signal: signal });
+			const readBackRunner = (sid, root, expectId, signal) => readBackCreated(portOf(ctx, sid, read), root, expectId, signal);
+
+			const createFeatureRunner = async (plan, opts) => {
+				const o = opts || {};
+				const text = String((plan && plan.instruction) || "");
+				if (!plan || !plan.ok || text === "") {
+					return {
+						ok: false, sid: "", sent: text,
+						message: (plan && plan.message) || "这条新建指令是空的（面板没算出来）。",
+						next: (plan && plan.next) || "刷新页面，重新输一次主题名。"
+					};
+				}
+				const got = await ensureWorkSession(o.srWs);
+				if (!got.sid) {
+					return {
+						ok: false, sid: "", sent: text,
+						message: "拿不到「SR 工作区」的工作会话：" + (got.error || "原因未知"),
+						next: "先确认会话列表能用（侧边栏有没有会话都行），再点一次「建立」。"
+					};
+				}
+				const r = await probe.prompt(got.sid, text);
+				if (!r || r.ok !== true) {
+					const f = explainSendFailure(r);
+					return { ok: false, sid: got.sid, sent: text, message: f.message, next: f.next };
+				}
+				return {
+					ok: true, sid: got.sid, sent: text,
+					target: { root: o.srWs || "", title: WORK_ROOT_TITLE, source: got.source || "" },
+					note: (got.note || []).filter(Boolean).join("；")
 				};
 			};
 
@@ -7912,6 +8364,10 @@ import {
 						//   资产索引刷新、收件箱导入）都走它 —— 不再各写一份建会话的代码
 						//   （各写一份就会漏掉标题/归属/权限，改前正是这样）。
 						__ensureWork: ensureFeatureWorkSession,
+						// ★ 工单 22：新建功能（一个动作）的三条通道 —— 只读事实 / 发送 / 窄回读
+						__createFacts: createFactsRunner,
+						__createFeature: createFeatureRunner,
+						__readBack: readBackRunner,
 						// ★ 工单 16：变更订阅 / 版本 stat（面板的自动刷新与指纹就靠这两个出口）
 						__watch: watchTargets, __statMany: statMany,
 						__refreshIndex: refreshIndex, __readText: readTextFile,
