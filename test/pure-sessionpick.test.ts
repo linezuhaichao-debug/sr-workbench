@@ -1,8 +1,10 @@
 /**
- * 索引会话选择（工单 32 · DSH 0.2.0 兼容）—— 纯函数用例。
+ * 索引会话 / 工作会话的选择（工单 32 · DSH 0.2.0 兼容；工单 07 收紧所有权）—— 纯函数用例。
  *
  * 覆盖的是**两种 store 形状**（0.1.5 的 `current` / 0.2.0 的 `retainedBy.mainView`）、
- * 标题认领、cwd 覆盖 sr 根这个硬条件，以及"绝不挑一条列不出 sr 根的会话"这条纪律。
+ * 标题认领、cwd 覆盖 sr 根这个硬条件、"绝不挑一条列不出 sr 根的会话"这条纪律，
+ * 以及工单 07 的两条新纪律：**索引会话只能靠标题 / 自己写的缓存认领**（绝不借用户的会话）、
+ * **建完工作会话能读回权限预设**。
  */
 
 import assert from "node:assert/strict";
@@ -10,26 +12,41 @@ import test from "node:test";
 
 import {
 	ARCHIVED_CACHED_NOTE,
+	FOREIGN_CACHE_NOTE,
 	INDEX_TITLE,
 	NO_ARCHIVE_INFO_NOTE,
+	PERMISSION_FULL,
 	WORK_TITLE,
 	archivedFromSnapshot,
 	archivedIdSet,
 	configPathCandidates,
 	containsPath,
 	featureTopicOf,
+	indexCacheOwned,
+	indexCacheParse,
+	indexCacheSerialize,
 	indexCacheKey,
 	indexTitleFor,
 	isArchivedId,
 	isIndexTitle,
 	isWorkTitle,
 	mergeRows,
+	needsFullAccess,
 	normPath,
+	noListingSessionNote,
+	permissionCommandLine,
+	permissionPlanOf,
+	permissionResultNote,
 	pickIndexSession,
+	pickListingSession,
 	pickWorkSession,
+	presetOfProjections,
+	presetOfRow,
 	rowsFromList,
 	rowsFromStore,
 	samePath,
+	staleIndexNote,
+	staleIndexRows,
 	titleOf,
 	withoutArchived,
 	workCacheDrop,
@@ -147,20 +164,38 @@ test("pickIndexSession：① 标题认领优先，cwd 与 sr 根相等者先于�
 	assert.equal(hit && hit.source, "title");
 });
 
-test("pickIndexSession：标题认领里「没有任何一条覆盖 sr 根」时退到 cwd 覆盖的那条", () => {
+test("pickIndexSession：⓪ 标题认领里「没有任何一条能列出 sr 根」时**不许借用户的会话**（工单 07 第 1 条）", () => {
 	const rows = [
 		row({ id: "stale", title: INDEX_TITLE, cwd: "E:\\别的仓库" }),
-		row({ id: "ok", title: "用户自己的会话", cwd: SR_ROOT, updatedAt: 2 }),
+		// cwd 是 sr 根的**祖先**（用户自己的会话就在 D:\TimeMachine）—— "覆盖"不等于"归我所有"
+		row({ id: "user", title: "用户自己的会话", cwd: TM_ROOT, updatedAt: 999 }),
+		row({ id: "user2", title: "我希望重新思考策划工作台插件", cwd: TM_ROOT, updatedAt: 1000 }),
 	];
-	const hit = pickIndexSession(rows, SR_ROOT);
-	assert.equal(hit && hit.id, "ok");
-	assert.equal(hit && hit.source, "cwd");
+	// 正式认领：一条自己的都没有 ⇒ null（调用方去**新建**，绝不把指令/扫描口径挂到用户的会话上）
+	assert.equal(pickIndexSession(rows, SR_ROOT), null);
+	// ★ 标题里**含**「策划工作台」也不算（只认前缀）——用户自己的会话就叫这个名字
+	assert.equal(pickIndexSession([row({ id: "user2", title: "我希望重新思考策划工作台插件", cwd: TM_ROOT })], SR_ROOT), null);
+	// 借用的口子只留给 boot（它只 read 配置文件，不扫描、不订阅、不发指令）
+	const boot = pickIndexSession(rows, SR_ROOT, { borrow: true });
+	assert.equal(boot && boot.id, "user2");
+	assert.equal(boot && boot.source, "cwd");
 });
 
-test("pickIndexSession：② 缓存命中（且覆盖 sr 根）时优先于标题与 cwd", () => {
+test("pickIndexSession：①-2 缓存只在「自己的」里挑 —— 借来的那条写进缓存也不算数", () => {
+	const rows = [
+		row({ id: "named", title: INDEX_TITLE + "（workspace）", cwd: SR_ROOT, updatedAt: 50 }),
+		// 旧版本（工单 32）会把这种"借来的"写进缓存：它不该被当成所有权凭据
+		row({ id: "borrowed", title: "普通会话", cwd: TM_ROOT, updatedAt: 1 }),
+	];
+	const hit = pickIndexSession(rows, SR_ROOT, { cachedId: "borrowed" });
+	assert.equal(hit && hit.id, "named", "缓存指着一条不是我们的会话 ⇒ 改按标题认领");
+	assert.equal(hit && hit.source, "title");
+});
+
+test("pickIndexSession：② 缓存命中（自己的标题 + 覆盖 sr 根）时优先于标题", () => {
 	const rows = [
 		row({ id: "named", title: INDEX_TITLE, cwd: SR_ROOT, updatedAt: 50 }),
-		row({ id: "cached", title: "普通会话", cwd: TM_ROOT, updatedAt: 1 }),
+		row({ id: "cached", title: INDEX_TITLE + "（workspace）", cwd: SR_ROOT, updatedAt: 1 }),
 	];
 	const hit = pickIndexSession(rows, SR_ROOT, { cachedId: "cached" });
 	assert.equal(hit && hit.id, "cached");
@@ -169,12 +204,14 @@ test("pickIndexSession：② 缓存命中（且覆盖 sr 根）时优先于标�
 
 test("pickIndexSession：缓存那条**不覆盖** sr 根时不许认（否则一定列不出目录）", () => {
 	const rows = [
-		row({ id: "cached", cwd: "E:\\别的仓库" }),
-		row({ id: "ok", cwd: SR_ROOT, updatedAt: 3 }),
+		row({ id: "cached", title: INDEX_TITLE, cwd: "E:\\别的仓库" }),
+		row({ id: "ok", title: INDEX_TITLE + "（workspace）", cwd: SR_ROOT, updatedAt: 3 }),
 	];
 	const hit = pickIndexSession(rows, SR_ROOT, { cachedId: "cached" });
 	assert.equal(hit && hit.id, "ok");
-	assert.equal(hit && hit.source, "cwd");
+	assert.equal(hit && hit.source, "title");
+	// 两条自己的都不能用 ⇒ null（去新建），不是退回"最近更新的一条"
+	assert.equal(pickIndexSession([row({ id: "cached", title: INDEX_TITLE, cwd: "E:\\别的仓库" })], SR_ROOT), null);
 });
 
 test("pickIndexSession：③ 给了 sr 根时**绝不**退回「最近更新的一条」（会静默 0 个功能）", () => {
@@ -198,10 +235,135 @@ test("pickIndexSession：④ 没给 sr 根时按「当前选中 → 最近更新
 	assert.equal(pickIndexSession(noMain, "", { allowForeign: true })?.id, "b");
 });
 
+test("pickIndexSession：others —— 同一条凭据下还有几条（用来如实说「发现 2 条」）", () => {
+	const rows = [
+		row({ id: "a", title: INDEX_TITLE, cwd: SR_ROOT, updatedAt: 1 }),
+		row({ id: "b", title: INDEX_TITLE + "（workspace）", cwd: SR_ROOT, updatedAt: 2 }),
+	];
+	const hit = pickIndexSession(rows, SR_ROOT);
+	assert.equal(hit && hit.id, "b", "取最近更新的那条（收敛口径固定，两个标签页选同一条）");
+	assert.equal(hit && hit.others, 1);
+	assert.equal(pickIndexSession([rows[0]], SR_ROOT)?.others, 0);
+});
+
+test("staleIndexRows / staleIndexNote：cwd 落不到 sr 根上的旧索引会话能被认出来并如实说明", () => {
+	const rows = [
+		row({ id: "old", title: INDEX_TITLE, cwd: "E:\\别的仓库" }),
+		row({ id: "now", title: INDEX_TITLE + "（workspace）", cwd: SR_ROOT }),
+		// ★ 注意：cwd = D:\TimeMachine 的会话**不算** stale —— 它确实列得出 sr 根
+		//   （祖先目录覆盖子目录）。它的问题是"不是我的"，那是 `pickIndexSession` 管的（返回 null）。
+		row({ id: "ancestor", title: INDEX_TITLE, cwd: TM_ROOT }),
+		row({ id: "user", title: "用户自己的会话", cwd: TM_ROOT }),
+	];
+	const stale = staleIndexRows(rows, SR_ROOT);
+	assert.deepEqual(stale.map((r) => r.id), ["old"], "只点我们自己的、且列不出 sr 根的那条");
+	assert.equal(containsPath(TM_ROOT, SR_ROOT), true, "祖先目录那条不 stale（前提别写错）");
+	assert.ok(staleIndexNote("E:\\别的仓库").includes("E:\\别的仓库"));
+	assert.ok(staleIndexNote("E:\\别的仓库").includes("归档"));
+	assert.deepEqual(staleIndexRows(rows, SR_ROOT, ["old"]), [], "归档的状态照旧优先（它是显示过滤）");
+	assert.deepEqual(staleIndexRows(rows, ""), []);
+});
+
 test("pickIndexSession：空候选 → null（调用方据此去建会话）", () => {
 	assert.equal(pickIndexSession([], SR_ROOT, { allowForeign: true }), null);
 	assert.equal(pickIndexSession([row({ id: "" })], SR_ROOT), null);
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// 索引会话的缓存（工单 07 第 3 条：所有权凭据 = 标题 + **自己写的**缓存）
+// ════════════════════════════════════════════════════════════════════════════
+
+test("pickListingSession：为「列 SR 工作区之外的目录」借一条只读会话（最贴近的祖先优先）", () => {
+	const CFG = "D:\\TimeMachine\\planner\\策划配置";
+	const rows = [
+		row({ id: "root", cwd: SR_ROOT, updatedAt: 9 }),            // 覆盖不到配置目录
+		row({ id: "tm", cwd: TM_ROOT, updatedAt: 3 }),              // 公共祖先：能列
+		row({ id: "planner", cwd: "D:\\TimeMachine\\planner", updatedAt: 1 }), // 更贴近：优先
+		row({ id: "else", cwd: "E:\\别的仓库", updatedAt: 99 })
+	];
+	const hit = pickListingSession(rows, CFG);
+	assert.equal(hit && hit.id, "planner", "取**最长（最贴近）**的覆盖者，暴露面最小");
+	assert.equal(pickListingSession(rows, SR_ROOT)?.id, "root", "SR 根自己也能当列举会话（精确=覆盖）");
+	assert.equal(pickListingSession(rows, "E:\\别的仓库\\x")?.id, "else");
+	assert.equal(pickListingSession(rows, "F:\\谁都不覆盖"), null, "一条都没有 ⇒ null（调用方如实说「核不了」）");
+	assert.equal(pickListingSession(rows, ""), null, "没给路径 ⇒ null");
+	assert.equal(pickListingSession(rows, CFG, { archived: ["planner", "tm"] }), null, "归档的不算可用");
+	assert.equal(pickListingSession(rows, CFG, { exclude: "planner" })?.id, "tm", "可以排除指定的那条");
+	// 并列时取最近更新的那条
+	const tie = [row({ id: "a", cwd: "D:\\TimeMachine\\planner", updatedAt: 1 }), row({ id: "b", cwd: "D:\\TimeMachine\\planner", updatedAt: 5 })];
+	assert.equal(pickListingSession(tie, CFG)?.id, "b");
+	assert.ok(noListingSessionNote(CFG).includes(CFG) && noListingSessionNote(CFG).includes("核不了"));
+});
+
+test("indexCache：只有 mine:true 才算所有权凭据（旧版本写的缓存自动作废，不用手清 localStorage）", () => {
+	const mine = indexCacheParse(indexCacheSerialize(SR_ROOT, "s1", INDEX_TITLE));
+	assert.equal(mine && mine.sid, "s1");
+	assert.equal(indexCacheOwned(mine), true);
+	// 旧版本（工单 32）写下的形状：没有 mine —— 它可能正指着用户自己的会话
+	const legacy = indexCacheParse(JSON.stringify({ srWs: SR_ROOT, sid: "user-session" }));
+	assert.equal(legacy && legacy.sid, "user-session");
+	assert.equal(indexCacheOwned(legacy), false);
+	assert.equal(indexCacheOwned(null), false);
+	assert.equal(indexCacheParse("不是 JSON"), null);
+	assert.equal(indexCacheParse(JSON.stringify({ srWs: SR_ROOT })), null, "没有 sid 等于没有缓存");
+	assert.ok(FOREIGN_CACHE_NOTE.includes("不是面板自己建的"));
+});
+
+test("presetOfProjections：三种形状都读得出来（读不到 = 空串，不许当成「不动」）", () => {
+	// ① `session/list` 的行：projections.values.permissions.currentValue
+	assert.equal(presetOfProjections({ projections: { values: { permissions: { currentValue: "danger-full-access" } } } }), "danger-full-access");
+	assert.equal(presetOfProjections({ values: { permissions: { currentValue: "danger-full-access" } } }), "danger-full-access");
+	// ② 0.2.0 客户端 store 的行：projectionValues（扁平的 键→视图 表）
+	assert.equal(presetOfProjections({ projectionValues: { permissions: { currentValue: "workspace-write" } } }), "workspace-write");
+	// ③ 视图本体 / 裸字符串
+	assert.equal(presetOfProjections({ permissions: "read-only" }), "read-only");
+	assert.equal(presetOfProjections({ values: {} }), "");
+	assert.equal(presetOfProjections(null), "");
+	assert.equal(presetOfRow(row({ id: "x", preset: "danger-full-access" })), "danger-full-access");
+	assert.equal(presetOfRow(row({ id: "x" })), "");
+	// 走一遍真入口：列表行与 store 行都要读得出来（读回证据就靠它）
+	const listed = rowsFromList({ items: [{ sessionId: "s1", projections: { values: { title: INDEX_TITLE, permissions: { currentValue: "danger-full-access" } } } }] });
+	assert.equal(presetOfRow(listed[0]), "danger-full-access");
+	const stored = rowsFromStore({ ids: ["s1"], byId: { s1: { id: "s1", projectionValues: { permissions: { currentValue: "danger-full-access" } } } } });
+	assert.equal(presetOfRow(stored[0]), "danger-full-access");
+});
+
+test("permissionPlanOf：默认已是完全权限 ⇒ 不动手（本机就是这种，有 permission.defaultPreset 证据）", () => {
+	const p = permissionPlanOf({ options: [], defaultOptions: [], defaultPreset: "danger-full-access" });
+	assert.equal(p.needed, false);
+	assert.equal(p.why, "default=danger-full-access");
+	assert.ok(p.note.includes("permission.defaultPreset"));
+	// 默认不是完全权限 ⇒ 切一次，并把"为什么"说清（功能文件夹之外的产出会被拦）
+	const q = permissionPlanOf({ defaultPreset: "workspace-write" });
+	assert.equal(q.needed, true);
+	assert.equal(q.why, "default=workspace-write");
+	assert.ok(q.note.includes("config_root") && q.note.includes("完全权限"));
+	// 读不到 ⇒ 按最坏情况切（宁可多一条命令，也不要静默被拦）
+	const r = permissionPlanOf(null);
+	assert.equal(r.needed, true);
+	assert.equal(r.why, "unreadable");
+	assert.equal(permissionPlanOf({})?.why, "unreadable");
+});
+
+test("permissionCommandLine / needsFullAccess / permissionResultNote：命令与读回证据", () => {
+	assert.equal(permissionCommandLine(PERMISSION_FULL), "/permission danger-full-access");
+	assert.equal(permissionCommandLine(""), "/permission danger-full-access", "空值兜到完全权限");
+	assert.equal(needsFullAccess("workspace-write"), true);
+	assert.equal(needsFullAccess("danger-full-access"), false);
+	assert.equal(needsFullAccess(""), false, "读不到 = 不动（每次发送都塞命令会污染会话日志）");
+	// 读回 = 完全权限：说成功，并把读回值写出来（这是证据，不是口号）
+	const okNote = permissionResultNote(true, "preset danger-full-access", "danger-full-access");
+	assert.ok(okNote.includes("danger-full-access") && okNote.includes("读回"));
+	// 读回还是别的：以读回为准
+	assert.ok(permissionResultNote(true, "preset danger-full-access", "workspace-write").includes("以读回为准"));
+	// 读不回来：如实说读不回来 + 给人下一步
+	const unknown = permissionResultNote(true, "preset danger-full-access", "");
+	assert.ok(unknown.includes("读不回") && unknown.includes("/permission danger-full-access"));
+	// 命令失败：给人下一步，不装成功
+	const bad = permissionResultNote(false, "session not found", "");
+	assert.ok(bad.includes("没能") && bad.includes("手动"));
+});
+
 
 test("isIndexTitle / titleOf / indexTitleFor：前缀认领与展示名退让", () => {
 	assert.equal(isIndexTitle(INDEX_TITLE), true);
@@ -392,20 +554,23 @@ test("pickWorkSession：同功能的旧条目被归档时，仍能认回**没被
 	assert.equal(pickWorkSession(rows, FEATURE, { cachedId: "old", archived: ["old"] })?.id, "live");
 });
 
-test("pickIndexSession：归档的会话从四条认领路径（缓存 / 标题 / cwd / 当前选中 / recent）里全部出局", () => {
+test("pickIndexSession：归档的会话从**每一条**认领路径（缓存 / 标题 / 借用的 cwd / 借用的当前选中）里全部出局", () => {
 	const rows = [
-		row({ id: "cached", cwd: TM_ROOT, updatedAt: 1 }),
-		row({ id: "named", title: INDEX_TITLE, cwd: SR_ROOT, updatedAt: 50 }),
+		row({ id: "cached", title: INDEX_TITLE, cwd: SR_ROOT, updatedAt: 1 }),
+		row({ id: "named", title: INDEX_TITLE + "（workspace）", cwd: SR_ROOT, updatedAt: 50 }),
 		row({ id: "bycwd", cwd: SR_ROOT, updatedAt: 40 }),
 		row({ id: "main", cwd: TM_ROOT, updatedAt: 30, main: true }),
 	];
 	const all = ["cached", "named", "bycwd", "main"];
 	assert.equal(pickIndexSession(rows, SR_ROOT, { cachedId: "cached", archived: all }), null);
 	assert.equal(pickIndexSession(rows, "", { cachedId: "cached", allowForeign: true, archived: all }), null);
-	// 只归档一部分：缓存与标题出局后，退到 cwd 覆盖那条
+	assert.equal(pickIndexSession(rows, SR_ROOT, { borrow: true, archived: all }), null, "借用那条路也排除归档");
+	// 只归档一部分：缓存（已归档）出局后按标题认回另一条**自己的**
 	const hit = pickIndexSession(rows, SR_ROOT, { cachedId: "cached", archived: ["cached", "named"] });
-	assert.equal(hit && hit.id, "bycwd");
-	assert.equal(hit && hit.source, "cwd");
+	assert.equal(hit, null, "自己的两条都出局 ⇒ 去新建（不退回借用的 bycwd）");
+	const hit2 = pickIndexSession(rows, SR_ROOT, { cachedId: "cached", archived: ["cached"] });
+	assert.equal(hit2 && hit2.id, "named");
+	assert.equal(hit2 && hit2.source, "title");
 	// 向后兼容：不传 = 旧行为；拿不到（null）= 旧行为
 	assert.equal(pickIndexSession(rows, SR_ROOT, { cachedId: "cached" })?.id, "cached");
 	assert.equal(pickIndexSession(rows, SR_ROOT, { cachedId: "cached", archived: null })?.id, "cached");

@@ -32,19 +32,34 @@ import { loadFeatureDetail } from "./load/feature.ts";
 import { ledgerOf } from "./pure/ledger.ts";
 import {
 	ARCHIVED_CACHED_NOTE,
+	FOREIGN_CACHE_NOTE,
 	NO_ARCHIVE_INFO_NOTE,
+	PERMISSION_FULL,
+	WORK_ROOT_TITLE,
 	archivedFromSnapshot,
 	configPathCandidates,
 	containsPath,
 	indexCacheKey,
+	indexCacheOwned,
+	indexCacheParse,
+	indexCacheSerialize,
 	indexTitleFor,
 	isArchivedId,
 	mergeRows,
+	needsFullAccess,
+	noListingSessionNote,
 	normPath,
+	permissionCommandLine,
+	permissionPlanOf,
+	permissionResultNote,
 	pickIndexSession,
+	pickListingSession,
 	pickWorkSession,
+	presetOfRow,
 	rowsFromList,
 	rowsFromStore,
+	staleIndexNote,
+	staleIndexRows,
 	titleOf,
 	workCacheDrop,
 	workCacheGet,
@@ -368,6 +383,14 @@ import {
 		}
 
 		/**
+		 * `workspaceFiles.list` 被 host 圈定在**会话 cwd** 之内（见 `listDir` 的注释），
+		 * 而面板的索引会话 cwd = SR 工作区根 —— 所以 SR 工作区**之外**的目录
+		 * （本机就是 `config_root` = `D:\TimeMachine\planner\策划配置`）要另借一条只读会话来列。
+		 * 这个变量就是那条会话的 id（由 `resolveIndexSession` 每次解析时刷新；空 = 借不到）。
+		 */
+		let LIST_SID = "";
+
+		/**
 		 * 组合根适配：把 ctx 的远程通道包成载入层要的 `WorkspacePort` **文件侧**形状。
 		 * ★ 这是组合根该干的事（`src/client.js` 是唯一知道 ctx 的地方）；载入层因此能
 		 *   与测试用同一个端口跑同一份实现（工单 32 的方向）。
@@ -412,17 +435,27 @@ import {
 		}
 
 		/**
-		 * 目录列举：两条通道都试。
-		 *   ① workspaceFiles.list(sessionId, path) —— 会话端口，**仅当该目录在会话工作区内**才可列
-		 *   ② workspace.list(path) —— 工作区无关端口（若部署提供）
+		 * 目录列举：三条通道依次试。
+		 *   ① workspaceFiles.list(sessionId, path) —— 会话端口，**仅当该目录在该会话的 cwd 之内**才可列
+		 *      （host：`workspaceRoot = header.cwd ?? sandboxPolicy.workspaceRoot`，
+		 *       `dsh-api-workspace-files/lib/index.js:411` / `:500`；越界报 `workspace-file/outside-workspace`）
+		 *   ①' workspaceFiles.list(LIST_SID, path) —— **借来的只读会话**，只为列 SR 工作区**之外**的目录
+		 *      （`config_root` 就是这种；工单 07 把索引会话的 cwd 收紧到 SR 根之后才需要这一刀，
+		 *       它是**列举**的兜底，不是认领：见 `pickListingSession`）
+		 *   ② workspace.list(path) —— 工作区无关端口（**本机 0.2.0 没有这个方法**：`workspace` 命名空间
+		 *      只有 archiveSession/create/delete/follow/… 没有 list，所以这一条按"有就用"处理）
 		 */
 		async function listDir(ctx, sid, absPath, signal, optional) {
 			const ns = (ctx && ctx.remote) || {};
 			if (ns.workspaceFiles && typeof ns.workspaceFiles.list === "function") {
-				try {
-					const r = await ns.workspaceFiles.list(sid, absPath, signal);
-					if (r && r.ok === true) return fileNamesOf(r.value);
-				} catch (e) { /* 落到通道② */ }
+				const sids = [sid];
+				if (LIST_SID && LIST_SID !== sid) sids.push(LIST_SID);
+				for (const one of sids) {
+					try {
+						const r = await ns.workspaceFiles.list(one, absPath, signal);
+						if (r && r.ok === true) return fileNamesOf(r.value);
+					} catch (e) { /* 换下一条会话（越界就是这里被拒） */ }
+				}
 			}
 			if (ns.workspace && typeof ns.workspace.list === "function") {
 				try {
@@ -5319,7 +5352,6 @@ import {
 			const f = props.feature;
 			const probe = props.probe;
 			const presetId = props.presetId || "sr-workbench";
-			const cwd = props.cwd;
 			const projectRoot = props.projectRoot || "";
 			const cacheKey = workKey(presetId, f ? f.topic : "");
 			const [workSid, setWorkSidState] = React.useState(() => WORK_SESSIONS.get(cacheKey) || "");
@@ -5350,59 +5382,51 @@ import {
 				setMsg({ kind: "pending", text: "正在准备…" });
 				setDetail("");
 
-				// ★ 建会话时必须带 workspaceId，否则会话落进左侧「未分组」而不是项目分组。
-				//   工作区 id 用 workspace.create({path}) 按路径查（已存在时返回 created:false）。
-				// ★ 会话必须带 workspaceId，否则落进左侧「未分组」。
-				//   优先用「当前会话所属的工作区」（与 DSH 新会话按钮同源）；
-				//   退而用配置的 projectRoot 按路径查；都没有才用 cwd 兜底。
-				const createInProject = () => {
-					const info = probe.workspaceInfo();
-					// ★ 建完一律补一次「并进客户端 store」（侧边栏立刻看得见，不用 F5）——
-					//   判定与理由见组合根的 `syncSidebarStores`（这里经 `probe.syncSidebar` 调它）；
-					//   结果（`cr`）原样返回，下面那条链一字不动。
-					const createdIn = (path, p) => Promise.resolve(p).then(
-						(cr) => (cr && cr.ok && typeof probe.syncSidebar === "function"
-							? probe.syncSidebar(path || "").then(() => cr)
-							: cr)
-					);
-					if (info && info.id) {
-						setWsNote("当前会话的工作区：「" + (info.title || info.id) + "」（" + (info.path || "?") + "）");
-						return createdIn(info.path, probe.create(info.id, "", presetId));
-					}
-					if (projectRoot) {
-						return probe.ensureWorkspace(projectRoot).then((wr) => {
-							if (!wr.ok) {
-								setWsNote("按 projectRoot 查工作区失败：" + humanError(wr));
-								return wr;
-							}
-							const w = wr.value && wr.value.workspace;
-							if (!w || !w.workspaceId) {
-								setWsNote("工作区已登记但没拿到 workspaceId");
-								return { ok: false, error: { message: "工作区已登记但没拿到 workspaceId" } };
-							}
-							setWsNote("按 projectRoot " + (wr.value.created ? "新建" : "匹配到") + "工作区「" + w.title + "」");
-							return createdIn(projectRoot, probe.create(w.workspaceId, "", presetId));
-						});
-					}
-					setWsNote("未识别当前会话的工作区 —— 会话可能落进「未分组」" +
-						(info && info.error ? "（读取异常：" + info.error + "）" : ""));
-					return createdIn(cwd, probe.create("", cwd, presetId));
-				};
-
+				/**
+				 * ★ 工单 07：工作会话的创建/认领**只走统一出口**（`__ensureWork` =
+				 *   组合根的 `ensureFeatureWorkSession`）—— 这样它一定有可识别标题
+				 *   （`策划工作台·工作（主题）`）、有 workspace 归属（不落「未分组」）、
+				 *   建完切「完全权限」，而且**刷新后按标题认回来**（不再每次点都新建一条）。
+				 *
+				 *   改前这里是**另一份**建会话代码（`probe.create(当前会话的工作区 id, …)`）：
+				 *   没有标题 ⇒ 认不回来；用当前会话的工作区 ⇒ 可能落进用户当时所在的分组。
+				 */
 				const ensure = workSid
 					? Promise.resolve({ ok: true, value: { sessionId: workSid } })
-					: createInProject();
+					: (typeof props.__ensureWork === "function"
+						? props.__ensureWork(f.root, props.rows || [], {}).then((got) => {
+							if (got && got.ok && got.sid) {
+								// ★ 建完的降级/权限说明一并显示（"工作区归属：" 那一行）——
+								//   不许装成"什么都没发生"（工单 07 第 7 条的读回证据就落在这里）
+								setWsNote((got.source === "created" ? "新建于 " : "复用 ") + winPath(f.root) +
+									((got.note || []).length ? "　" + got.note.join("；") : ""));
+								return { ok: true, value: { sessionId: got.sid }, note: (got.note || []).join("；") };
+							}
+							return {
+								ok: false,
+								error: { message: (got && got.error) || "拿不到该功能的工作会话。" },
+								note: ((got && got.note) || []).join("；")
+							};
+						})
+						: Promise.resolve({
+							ok: false,
+							error: { message: "统一的工作会话通道没挂上（__ensureWork 缺失）—— 刷新页面再试。" },
+							note: ""
+						}));
 
 				ensure.then((cr) => {
 					if (!cr.ok) {
 						setBusy(false);
 						setErr("无法为工作台创建会话：" + humanError(cr) +
-							"（工作区 " + (projectRoot || "(未配置 projectRoot)") + "）。",
+							"（工作区 " + (projectRoot || "(未配置 projectRoot)") + "）。" +
+							(cr.note ? "　" + cr.note : ""),
 							JSON.stringify(cr, null, 1));
 						return;
 					}
 					const sid = idText(cr.value && cr.value.sessionId) || workSid;
 					setWorkSid(sid);
+					// ★ `wsNote`（"工作区归属：" 那一行）已在上面的 `__ensureWork` 分支里写好：
+					//   "新建于/复用 <path>　<降级或权限说明>" —— 这里**不要再覆盖它**。
 
 					const line = meta.cmd + " " + f.topic;
 					setMsg({ kind: "pending", text: "已启动「" + meta.label + "」，正在把 " + line + " 交给会话…" });
@@ -6434,7 +6458,10 @@ import {
 							? h(PipelinePanel, {
 								key: "pp-" + (f ? f.topic : ""),
 								feature: f, probe: probe,
-								sessionId: sessionId, cwd: cwd, projectRoot: props.__projectRoot,
+								projectRoot: props.__projectRoot,
+								// ★ 工单 07：工作会话的创建/认领走统一出口（标题 + workspace 归属 + 权限）
+								__ensureWork: props.__ensureWork,
+								rows: sessionRows,
 								useSessions: props.useSessions,
 								useSessionPendingInteraction: props.useSessionPendingInteraction
 							})
@@ -6772,11 +6799,112 @@ import {
 			};
 
 			/**
-			 * 低层：在 `root` 这个目录上**建一条带可识别标题的会话**（工作区 → 会话 → 改名）。
+			 * ═══ 工单 07 · 会话地基：三类会话，一套「认领 → 新建」流程 ═══
+			 *
+			 * 三层会话（CONTEXT.md「索引会话 / 工作会话」）与它们的**所有权凭据**：
+			 *
+			 * | 会话 | cwd | 标题 | 认领凭据 | 收指令？ |
+			 * | --- | --- | --- | --- | --- |
+			 * | 索引会话 | SR workspace 根 | `策划工作台·索引（<工作区名>）` | 标题前缀 / 自己写的缓存 | ✗（只读+订阅） |
+			 * | 功能工作会话 | `features\<主题>\` | `策划工作台·工作（<主题>）` | 标题前缀 / 功能缓存 | ✓ |
+			 * | 无归属工作会话 | SR workspace 根 | `策划工作台·工作（SR 工作区）` | 标题前缀 | ✓ |
+			 *
+			 * ★ 为什么所有权只能靠**标题 + 自己写的缓存**（工单第 3 条）：会话列表里
+			 *   `agentPreset` 不下发，而"cwd 相同/覆盖"根本不是所有权证据 ——
+			 *   用户自己的会话 cwd = `D:\TimeMachine`，它**是** SR 根的祖先目录，
+			 *   一样"覆盖 sr 根"。旧版本按"cwd 覆盖"认领，于是把**用户的会话**当成了
+			 *   面板的扫描口径（2026-10-08 实测）。现在：cwd 只是"**能不能用**"的条件
+			 *   （`list` 限定在会话工作区内），"是不是我的"只看标题与缓存。
+			 */
+
+			/**
+			 * 单航班锁（工单第 5 条：连点两次 / 同一页两次挂载 ⇒ 只建一条）。
+			 *
+			 * ★ 为什么必须有：`ensureFeatureWorkSession` 是"查缓存 → 查列表 → 建"的三段异步 —
+			 *   两次调用交错时会**都**走到"建"，于是堆出两条同名会话（改前实测形状）。
+			 *   同一个 key 的后来者直接**复用同一个 promise**（连结果对象都是同一个）。
+			 * ★ 它只在**一个页面实例内**有效（模块级 Map）。跨标签页只靠"每次建之前先拉一次
+			 *   列表现场认领"收敛：真正的并发首建（两个标签页同一毫秒）无法在客户端彻底排除，
+			 *   见报告「残留风险」；这里至少有两条防线 —— 认领优先、重复时收敛到**最新那条**。
+			 */
+			const INFLIGHT = new Map();
+			const singleFlight = (key, fn) => {
+				const prev = INFLIGHT.get(key);
+				if (prev) return prev;
+				const p = Promise.resolve()
+					.then(fn)
+					.then(
+						(v) => { INFLIGHT.delete(key); return v; },
+						(e) => { INFLIGHT.delete(key); throw e; }
+					);
+				INFLIGHT.set(key, p);
+				return p;
+			};
+
+			/**
+			 * 本机的权限预设目录（`remote.permissionPresets.catalog()`）。
+			 * 返回 promise；**拿不到就 `null`** —— 调用方按最坏情况处理（切一次），不装"我知道"。
+			 * ★ 一次页面只读一次（它在一页里不会变），结果缓存在这个变量里。
+			 */
+			let permCatalog = null;
+			let permCatalogDone = false;
+			const permissionCatalog = () => {
+				if (permCatalogDone) return Promise.resolve(permCatalog);
+				let p = null;
+				try {
+					const ns = (ctx && ctx.remote) || {};
+					const svc = ns.permissionPresets;
+					p = svc && typeof svc.catalog === "function" ? svc.catalog() : null;
+				} catch (e) { p = null; }
+				return Promise.resolve(p).then(
+					(v) => {
+						permCatalogDone = true;
+						permCatalog = (v && v.ok === true) ? v.value : (v && typeof v === "object" && v.ok === undefined ? v : null);
+						return permCatalog;
+					},
+					() => { permCatalogDone = true; permCatalog = null; return null; }
+				);
+			};
+
+			/**
+			 * 把一条会话切到「完全权限」并**读回**结果（工单第 7 条）。
+			 *
+			 * 通道：官方注册的斜杠命令 `/permission <preset>`（依据见纯函数 `permissionCommandLine`）
+			 * —— `commands.execute(sid, line, [])`，与官方 plan 插件同一用法。
+			 * 读回：命令返回后**再拉一次会话列表**，读这条会话的 `permissions` 投影 ——
+			 * "切没切成功"以读回为准（`permissionResultNote`），不是"命令没报错就算了"。
+			 *
+			 * @param sid   要切的那条会话
+			 * @param plan  `permissionPlanOf(catalog)` 的结论（`needed:false` 时原样返回它那句人话）
+			 * @returns 一句给人看的话（空 = 没什么可说）
+			 */
+			const ensureFullAccess = async (sid, plan, signal) => {
+				const p = plan || { needed: true, preset: PERMISSION_FULL, note: "" };
+				if (!sid || !p.needed) return p.note || "";
+				const r = await probe.exec(sid, permissionCommandLine(p.preset));
+				const execText = r && r.ok
+					? ((r.value && (r.value.text || r.value.kind)) || "")
+					: humanError(r);
+				let back = "";
+				try {
+					const L = await probe.listSessions(signal);
+					if (L.ok) {
+						const found = rowsFromList(L.value).filter((x) => x.id === sid)[0];
+						back = presetOfRow(found);
+					}
+				} catch (e) { back = ""; }
+				return permissionResultNote(!!(r && r.ok), execText, back);
+			};
+
+			/**
+			 * 低层：在 `root` 这个目录上**建一条带可识别标题的会话**（工作区 → 会话 → 改名 → 权限）。
 			 * ★ 顺序里踩过的坑只留一处（开发笔记坑 8）：`session.create` 的 `workspaceId` 与 `cwd`
 			 *   **互斥** —— 拿不到 workspaceId 时才退回给 cwd（会话会落进「未分组」，但可用）。
+			 * ★ 工单 07：三类会话**都走这里**（唯一的建会话出口），于是"按 workspace 归属建"
+			 *   与"建完切权限"只有一份实现 —— 不会某一条路漏掉。
 			 */
-			const createSessionAt = async (root, title, preset) => {
+			const createSessionAt = async (root, title, preset, opts) => {
+				const o = opts || {};
 				const note = [];
 				const ws = await probe.ensureWorkspace(root);
 				const wsId = ws.ok && ws.value && ws.value.workspace ? ws.value.workspace.workspaceId : "";
@@ -6789,8 +6917,17 @@ import {
 					const rn = await probe.renameSession(sid, title);
 					if (!rn.ok) note.push("会话建好了但改名失败（下次按缓存认回来）：" + humanError(rn));
 				}
+				// ★ 工单 07 第 7 条：**会收到指令的**工作会话要能写功能文件夹之外的产出
+				//   （配置支线写 config_root、gtgenerator 工作目录）⇒ 建完按本机默认预设决定要不要切。
+				//   ★ 索引会话不切（它只被读、被订阅，不接任何指令）—— 权限面越小越好。
+				if (o.fullAccess) {
+					const cat = await permissionCatalog();
+					const perm = await ensureFullAccess(sid, permissionPlanOf(cat), o.signal);
+					if (perm) note.push(perm);
+				}
 				// ★ 建完补一次「并进客户端 store」（官方那两刀）——不补的话侧边栏要按 F5 才看得见
 				//   （2026-09-30 实测缺陷；判定与理由见 `syncSidebarStores` 的注释）。
+				//   顺序：先切权限、再并 store ⇒ 侧边栏那一行连权限投影一起就是新的。
 				const sync = await syncSidebarStores(root);
 				for (const n of sync.notes) note.push(n);
 				return { sid: sid, error: "", outcome: cr, note: note, title: title || "" };
@@ -6811,8 +6948,25 @@ import {
 			 */
 			const ensureFeatureWorkSession = async (root, rowsIn, opts) => {
 				const o = opts || {};
+				// ★ 单航班锁（工单 07 第 5 条）：同一个目录同时只跑一个"认领 → 新建"流程。
+				//   连点两次发送 / 同一页两次挂载都复用同一个 promise ⇒ **不会堆两条同名会话**。
+				const key0 = normPath(root);
+				if (key0 === "") return { ok: false, sid: "", error: "算不出这个功能的工作目录。", root: root, note: [] };
+				return await singleFlight("work:" + key0, async () => {
+					try {
+						return await withFeatureWorkSession(root, rowsIn, o);
+					} catch (e) {
+						return { ok: false, sid: "", error: "认领/创建工作会话失败：" + String((e && e.message) || e), root: root, note: [] };
+					}
+				});
+			};
+
+			/** 上面那把锁里的正文（单独一个函数只为"抛错也要把锁解开"，语义与 15 那一版一致） */
+			const withFeatureWorkSession = async (root, rowsIn, o) => {
 				const note = [];
-				const title = workTitleFor(root);
+				// ★ 工单 07：标题可覆盖 —— 「无归属工作会话」（资产索引 / 收件箱）用
+				//   `WORK_ROOT_TITLE`，功能工作会话用 `workTitleFor(root)`。
+				const title = o.title || workTitleFor(root);
 				const key = workKey("sr-workbench", root);
 				// ★ 归档集（侧边栏看不见的会话**不算可用**）—— 认了它 = 指令发进去、界面什么也没有
 				//   （2026-09-30 实测缺陷；取值与降级见 `sidebarArchived`）。
@@ -6855,12 +7009,24 @@ import {
 				if (hit) {
 					setWorkSession(key, hit.id);
 					workCacheSet(root, hit.id);
+					// ★ 老会话的权限预设**不是**完全权限时补切一刀（工单 07 第 7 条）：
+					//   只在"读到了预设且它不是完全权限"时才动手 —— 读不到就不动
+					//   （否则每次发送都会往会话日志里塞一条命令）。
+					if (needsFullAccess(hit.row.preset)) {
+						const perm = await ensureFullAccess(hit.id, { needed: true, preset: PERMISSION_FULL, note: "" }, o.signal);
+						if (perm) note.push(perm);
+					}
+					if (hit.others > 0) {
+						note.push("侧边栏里有 " + (hit.others + 1) + " 条「" + title + "」（多半是并行刷新时各建了一条）：" +
+							"这次用**最近更新的那条**（" + hit.id + "），其余几条可在侧边栏归档。");
+					}
 					return {
 						ok: true, sid: hit.id, source: hit.source, root: root,
 						title: titleOf(hit.row) || title, running: !!hit.row.running, row: hit.row, note: note
 					};
 				}
-				const made = await createSessionAt(root, title, "sr-workbench");
+				// ★ 会收指令的工作会话：建完切「完全权限」（理由与通道见 `createSessionAt`）
+				const made = await createSessionAt(root, title, "sr-workbench", { fullAccess: true, signal: o.signal });
 				for (const n of made.note) note.push(n);
 				if (made.error) return { ok: false, sid: "", error: made.error, outcome: made.outcome, root: root, note: note };
 				setWorkSession(key, made.sid);
@@ -6874,40 +7040,31 @@ import {
 			 *   只能把意图交给 agent，由它用工具去写。
 			 */
 			/**
-			 * 确保有一个可用的「工作会话」（按 preset + 主题缓存复用）。
-			 * ★ 建会话用 workspaceId，**不要再给 cwd** —— host 明确拒绝两者同时给。
-			 * ★ 这一条服务于**不属于任何功能**的入口（资产索引刷新 / 收件箱导入），
-			 *   所以它的 cwd 是 sr 工作区根；**功能里的"就地改这条"走
-			 *   `ensureFeatureWorkSession`**（cwd = 功能目录，工单 15）。
+			 * 确保有一个可用的「无归属工作会话」（不属于任何功能的入口专用：
+			 * 资产索引刷新 / 收件箱导入 / 人工补充）。
+			 *
+			 * ★ 工单 07 第 2/3 条把这一条也并进了统一链路：
+			 *   · 归属：`createSessionAt` 里先 `workspace.create({path = srWs})` 再
+			 *     `session.create({workspaceId})` —— 不再用"当前选中会话所属的工作区"
+			 *     （那会让它落进用户当时所在的分组，或干脆落进「未分组」）；
+			 *   · 标题：`策划工作台·工作（SR 工作区）` —— **认领凭据**。
+			 *     改前这条会话没有标题、也没有 localStorage 缓存（只有内存），
+			 *     于是**每次刷新页面后第一次点"刷新资产索引"都会新建一条**（实测形状：会话数只增不减）。
+			 *   · 权限：建完切「完全权限」（它会把索引写到 srWs 之外的地方，例如 gtgenerator 工作目录）。
+			 *
+			 * @returns `{ sid, error, note, source }`
 			 */
 			const ensureWorkSession = async (srWs) => {
 				try {
-					const info = workspaceInfo();
-					const wsId = info && info.id ? info.id : "";
-					// 绝对路径兜底：拿不到工作区 id 时用路径建（影响分组归属，不影响可用性）
-					const key = workKey("sr-workbench", wsId || srWs || "__assets__");
-					const mem = WORK_SESSIONS.get(key) || "";
-					// ★ 归档集：内存里记的那条若已被归档（侧边栏看不见）⇒ 不算可用，另建一条
-					//   （这条路径也会发指令；见 `sidebarArchived`）
-					if (mem && !isArchivedId(sidebarArchived().ids, mem)) return { sid: mem, error: "" };
-					if (mem) WORK_SESSIONS.delete(key);
-					if (wsId) {
-						// ★ 给了工作区 id 就**不能**再给 cwd（互斥）；cwd 由工作区自己的 path 决定
-						const cr = await probe.create(wsId, "", "sr-workbench");
-						if (!cr.ok) return { sid: "", error: "无法创建工作会话：" + humanError(cr) };
-						const sid = idText(cr.value && cr.value.sessionId);
-						if (!sid) return { sid: "", error: "会话已创建，但拿不到 sessionId。" };
-						setWorkSession(key, sid);
-						// ★ 建完补一次「并进客户端 store」（侧边栏立刻看得见；见 syncSidebarStores）
-						await syncSidebarStores((info && info.path) || srWs || "");
-						return { sid: sid, error: "" };
+					const root = String(srWs || "").replace(/[\\/]+$/, "");
+					if (root === "") return { sid: "", error: "拿不到 sr 工作区路径（工作台锚点配置读不到）。", note: [] };
+					const got = await ensureFeatureWorkSession(root, [], { title: WORK_ROOT_TITLE });
+					if (!got || !got.ok) {
+						return { sid: "", error: (got && got.error) || "拿不到工作会话。", note: (got && got.note) || [] };
 					}
-					const made = await createSessionAt(srWs || "", "", "sr-workbench");
-					if (made.error) return { sid: "", error: made.error };
-					setWorkSession(key, made.sid);
-					return { sid: made.sid, error: "" };
+					return { sid: got.sid, error: "", note: got.note || [], source: got.source };
 				} catch (e) {
-					return { sid: "", error: "建会话失败：" + String((e && e.message) || e) };
+					return { sid: "", error: "建会话失败：" + String((e && e.message) || e), note: [] };
 				}
 			};
 
@@ -7067,34 +7224,21 @@ import {
 				return sendFeatureInstruction(root, text, c);
 			};
 
-			const runInWorkSession = async (instruction) => {
+			/**
+			 * 在「无归属工作会话」里跑一条指令（资产索引刷新 / 导入旧文档 / 人工补充）。
+			 * ★ 工单 07：这里原来**自己又建一遍会话**（`probe.create(info.id, …)`，没有标题、
+			 *   没有认领、没有权限切换）—— 现在只剩"调 `ensureWorkSession` + prompt"。
+			 *   会话的归属/标题/认领/权限**只有一份实现**（见 `createSessionAt`）。
+			 */
+			const runInWorkSession = async (instruction, srWs) => {
 				try {
-					const info = workspaceInfo();
-					const key = workKey("sr-workbench", "__assets__");
-					let sid = WORK_SESSIONS.get(key) || "";
-					let syncNotes = [];
-					// ★ 归档集：内存里记的那条若已被归档（侧边栏看不见）⇒ 不算可用，另建一条
-					//   （这条路径会发指令；同 `ensureFeatureWorkSession` 的口径）
-					if (sid && isArchivedId(sidebarArchived().ids, sid)) {
-						WORK_SESSIONS.delete(key);
-						sid = "";
-					}
-					if (!sid) {
-						const cr = info && info.id
-							? await probe.create(info.id, "", "sr-workbench")
-							: await probe.create("", "", "sr-workbench");
-						if (!cr.ok) return "无法创建工作会话：" + humanError(cr);
-						sid = idText(cr.value && cr.value.sessionId);
-						if (!sid) return "会话已创建，但拿不到 sessionId。";
-						setWorkSession(key, sid);
-						// ★ 建完补一次「并进客户端 store」（侧边栏立刻看得见；见 syncSidebarStores）
-						const sync = await syncSidebarStores((info && info.path) || "");
-						syncNotes = sync.notes;
-					}
-					const r = await probe.prompt(sid, instruction);
+					const got = await ensureWorkSession(srWs);
+					if (!got.sid) return got.error || "拿不到工作会话。";
+					const r = await probe.prompt(got.sid, instruction);
 					if (!r.ok) return "指令发送失败：" + humanError(r);
+					const note = (got.note || []).filter(Boolean);
 					return "已交给工作会话。跑完后回本页重进即可看到新索引。" +
-						(syncNotes.length ? "　" + syncNotes.join("；") : "");
+						(note.length ? "　" + note.join("；") : "");
 				} catch (e) {
 					return "失败：" + String((e && e.message) || e);
 				}
@@ -7106,7 +7250,7 @@ import {
 			/** 刷新资产索引 */
 			const refreshIndex = async (srWs) => {
 				if (!srWs) return "拿不到工作区路径，无法刷新。";
-				return runInWorkSession(REFRESH_LINE(String(srWs).replace(/\//g, "\\")));
+				return runInWorkSession(REFRESH_LINE(String(srWs).replace(/\//g, "\\")), srWs);
 			};
 
 			/** 方式 3 · 导入旧文档（落 inbox/imported/，只登记不提升） */
@@ -7120,7 +7264,7 @@ import {
 					"3) 报告导入了哪些文件、索引新增了几条。\n" +
 					"注意：导入件只登记为 inbox / needs_review，**不要**提升为正式资产，也**不要**改动任何 sr skill。" +
 					(note ? "\n补充说明：" + note : "");
-				return runInWorkSession(line);
+				return runInWorkSession(line, srWs);
 			};
 
 			/** 方式 4 · 人工补充（落 inbox/manual/，只登记不提升） */
@@ -7134,7 +7278,7 @@ import {
 					(upstream ? "\nupstream_asset: " + upstream : "") + "\n---\n\n" + String(body) + "\n\n" +
 					"然后运行 `python scripts/refresh_asset_index.py` 重新生成索引，并报告新增条目。" +
 					"\n注意：只登记为 inbox / needs_review，**不要**提升为正式资产，也**不要**改动任何 sr skill。";
-				return runInWorkSession(line);
+				return runInWorkSession(line, srWs);
 			};
 
 			/**
@@ -7542,21 +7686,24 @@ import {
 			/** 索引会话用的预设（随包分发，见 cordis.patch.yml 的 sr-workbench 行） */
 			const INDEX_PRESET = "sr-workbench";
 
-			/** 上一次用的索引会话（按 sr 根记；隐私模式/无 localStorage 时静默降级成"每次都重新认"）。 */
-			const cacheRead = () => {
+			/**
+			 * 上一次用的索引会话。形状与判定**全在纯函数里**
+			 * （`indexCacheParse` / `indexCacheOwned` / `indexCacheSerialize`），这里只碰 localStorage。
+			 * ★ 关键：只有**面板自己写的**（`mine:true`）缓存才算所有权凭据 ——
+			 *   旧版本（工单 32）在"cwd 覆盖 sr 根"命中时也写过缓存，而那可能正是**用户的会话**。
+			 */
+			const cacheRaw = () => {
 				try {
 					if (typeof localStorage === "undefined" || !localStorage) return null;
-					const raw = localStorage.getItem(indexCacheKey());
-					if (!raw) return null;
-					const v = JSON.parse(raw);
-					return v && typeof v.sid === "string" && v.sid ? v : null;
+					return localStorage.getItem(indexCacheKey());
 				} catch (e) { return null; }
 			};
-			const cacheWrite = (srWs, sid) => {
+			/** 只在**自己建完**（或认领到自己的那条）之后写 —— 这就是 `mine` 的来源 */
+			const cacheWrite = (srWs, sid, title) => {
 				try {
 					if (typeof localStorage === "undefined" || !localStorage) return;
-					localStorage.setItem(indexCacheKey(), JSON.stringify({ srWs: srWs || "", sid: sid }));
-				} catch (e) { /* 无缓存也能用 */ }
+					localStorage.setItem(indexCacheKey(), indexCacheSerialize(srWs, sid, title || ""));
+				} catch (e) { /* 无缓存也能用（只是下次多认一次） */ }
 			};
 
 			/**
@@ -7588,15 +7735,26 @@ import {
 			const skillsRootOf = (p) => String(p).replace(/[\\/]sr-askme[\\/]config\.local\.json$/i, "");
 
 			/**
-			 * 解析「索引会话」—— 面板**不再依赖"用户当前选中的会话"**（ADR 0005 / 工单 07）。
+			 * 解析「索引会话」—— 面板**自己持有**它（ADR 0005 / 工单 07）。
 			 *
 			 * 顺序（每步都有理由，别简化）：
-			 *   1. 先挑一条**任何可用**的会话：只为读 sr 配置 —— `read` 不受工作区限制（坑 3）。
+			 *   1. 先借一条**任何可用**的会话：只为读 sr 配置 —— `read` 不受工作区限制（坑 3）。
+			 *      ★ "借"只在这**一步**允许，而且它只被 `read` 用：不显示、不订阅、不发指令。
 			 *   2. 按候选根读 `config.local.json`（绝对值优先）→ 拿到绝对锚点 `sr_workspace`。
-			 *   3. 索引会话必须**能列 root 下的目录** —— `workspaceFiles.list` 限定在会话的工作区内（坑 3），
-			 *      所以只从"cwd 覆盖 root"的那几条里认领：缓存 → 标题前缀 → cwd 覆盖 → 当前选中；
-			 *      一条都没有才**新建**（`workspace/create` 幂等 → `session.create({workspaceId})`
-			 *      → `session.rename` 起可识别标题，下次按标题认回来，不会每次刷新都新建）。
+			 *   3. **正式认领**：只有**面板自己的**会话才算（标题以 `策划工作台·索引` 开头，或
+			 *      自己写下的缓存），且必须**能列出 root**（`workspaceFiles.list` 限定在会话工作区内）。
+			 *      认不着时的顺序是"**先拉一次 `session.list`** → 再认 → 都没有才新建"——
+			 *      少了那一次 list 就会"每次刷新新建一条"：刷新后客户端 store 里
+			 *      `title` 还没投影下来（`SessionSummary.title` 是 absent until the host projects one），
+			 *      而标题正是唯一的认领凭据。
+			 *   4. 新建 = `createSessionAt(root, 索引标题, preset)` —— 与工作会话**同一条出口**
+			 *      （`workspace/create` → `session.create({workspaceId})` → `rename` → 并 store），
+			 *      所以它同样**不会落进「未分组」**、同样建完侧边栏立刻看得见。
+			 *      ★ 索引会话**不切权限预设**：它只被读、被订阅，不接任何指令（权限面越小越好）。
+			 *
+			 * ★ 为什么"cwd 覆盖 sr 根"**不再**是认领条件：用户自己的会话 cwd = `D:\TimeMachine`
+			 *   正是 sr 根的祖先目录 —— 旧版本就是这样把**用户的会话**当成了面板的扫描口径
+			 *   （2026-10-08 实测：`source = "cwd"`，sid 指向用户会话）。
 			 *
 			 * 返回：`{ ok, sid, cwd, root, srWs, source, extraPaths, configFile, skillsRoot, configRoot, note }`
 			 */
@@ -7605,15 +7763,19 @@ import {
 				const signal = o.signal;
 				const note = [];
 				let rows = (o.rows || []).filter((r) => r && r.id);
-				const cached = cacheRead();
 				const storeRowCount = rows.length;
 				// ★ 归档集：认领索引会话时也要排除（侧边栏看不见的会话不算可用）。
-				//   缓存里记的那条若已被归档 ⇒ 当作"不可用"（不指名它），下面按 ②③ 认别的或新建。
 				const arch = sidebarArchived();
 				if (arch.ids === null) note.push(NO_ARCHIVE_INFO_NOTE + "（" + arch.reason + "）");
+				// ★ 缓存：只认"面板自己写的"那条当所有权凭据（旧版本写的不算 —— 见 cacheRaw 的注释）
+				const cached = indexCacheParse(cacheRaw());
+				const cachedMine = indexCacheOwned(cached);
+				if (cached && !cachedMine) note.push(FOREIGN_CACHE_NOTE);
 				const cachedSid = cached && cached.sid ? String(cached.sid) : "";
 				const cachedArchived = isArchivedId(arch.ids, cachedSid);
-				if (cachedArchived) note.push(ARCHIVED_CACHED_NOTE);
+				if (cachedMine && cachedArchived) note.push(ARCHIVED_CACHED_NOTE);
+				// 正式认领只认"自己写的缓存"；boot 那一步（只读配置）可以用任何一条
+				const ownCachedSid = cachedMine && !cachedArchived ? cachedSid : "";
 
 				// 候选根：显式提示 → 工作区列表 → 会话 cwd → 本机兜底
 				const roots = [];
@@ -7636,7 +7798,7 @@ import {
 				//     "用户把会话都归档了"时读不到 sr 配置、把锚点退回默认根。只是缓存里那条
 				//     已归档时不再指名它。
 				const boot = pickIndexSession(rows, "", {
-					cachedId: cachedArchived ? "" : cachedSid, allowForeign: true
+					cachedId: cachedArchived ? "" : cachedSid, allowForeign: true, borrow: true
 				});
 
 				// 2) 读 sr 配置 → 绝对锚点
@@ -7655,20 +7817,52 @@ import {
 				}
 				const srWs = cfg ? String(cfg.sr_workspace).replace(/[\\/]+$/, "") : "";
 				const root = srWs || o.rootHint || DEFAULT_ROOT;
+				const cfgRoot = cfg ? String(cfg.config_root || "").replace(/[\\/]+$/, "") : "";
 				if (!cfg) note.push("没读到 sr 配置（试过 " + cands.length + " 个候选路径），锚点退回 " + root);
 				if (storeRowCount === 0) note.push("客户端会话快照为空，已走 remote.session.list。");
 
-				// 3) 索引会话：必须是"cwd 覆盖 root"的那一类，**且没被归档**（侧边栏看得见才算可用）
-				const able = rows.filter((r) => containsPath(r.cwd, root));
-				const hit = pickIndexSession(able, root, {
-					cachedId: cachedArchived ? "" : cachedSid, archived: arch.ids
-				});
+				/**
+				 * ★ 列举会话（工单 07）：索引会话的 cwd = SR 工作区根 ⇒ 它**列不出** SR 工作区之外的目录
+				 *   （host 把目录列举圈定在会话 cwd 之内）。`config_root` 就在外面，而看板的配置表清单、
+				 *   配置支线的"工作簿有没有同名文件"都要列它 —— 所以这里借一条 **cwd 覆盖它** 的只读会话。
+				 *   ★ 只是**列举**用的兜底：不订阅、不发指令、不显示；认领的纪律（标题 + 自己写的缓存）不变。
+				 */
+				LIST_SID = "";
+				if (cfgRoot !== "" && !containsPath(root, cfgRoot)) {
+					const lh = pickListingSession(rows, cfgRoot, { archived: arch.ids });
+					if (lh) {
+						LIST_SID = lh.id;
+					} else {
+						note.push(noListingSessionNote(cfgRoot));
+					}
+				}
+
+				// 3) 正式认领：**先 store 行 → 认不着就拉一次列表 → 再认**（标题是投影，可能还没下来）
+				const pickOwn = () => pickIndexSession(rows, root, { cachedId: ownCachedSid, archived: arch.ids });
+				let hit = pickOwn();
+				if (!hit) {
+					const L = await probe.listSessions(signal);
+					if (L.ok) {
+						rows = mergeRows(rows, rowsFromList(L.value));
+						listOk = true;
+						hit = pickOwn();
+					} else {
+						note.push("会话列表读取失败：" + humanError(L));
+					}
+				}
 				if (hit) {
-					cacheWrite(root, hit.id);
+					if (hit.others > 0) {
+						note.push("侧边栏里有 " + (hit.others + 1) + " 条索引会话（多半是并行刷新时各建了一条）：" +
+							"这次用**最近更新的那条**（" + hit.id + "），其余几条可在侧边栏归档。");
+					}
+					// 自己的旧条目（cwd 列不出这个 root）如实说一句 —— 不闷着
+					const stale = staleIndexRows(rows, root, arch.ids).filter((r) => r.id !== hit.id);
+					if (stale.length > 0) note.push(staleIndexNote(stale[0].cwd));
+					cacheWrite(root, hit.id, titleOf(hit.row));
 					return {
 						ok: true, sid: hit.id,
 						cwd: hit.row.cwd || root, root: root, srWs: srWs,
-						source: hit.source, sessionTitle: hit.row.title || "",
+						source: hit.source, sessionTitle: titleOf(hit.row),
 						extraPaths: cfgPath ? [cfgPath] : [],
 						configFile: cfgPath, skillsRoot: cfgPath ? skillsRootOf(cfgPath) : "",
 						configRoot: cfg ? String(cfg.config_root || "").replace(/[\\/]+$/, "") : "",
@@ -7676,35 +7870,26 @@ import {
 					};
 				}
 
-				// 一条都没有 → 新建。★ 列表本身就读不到时**不许建**（不然会攒出一堆空会话）
+				// 一条自己的都没有 → 新建。★ 列表本身就读不到时**不许建**（不然会攒出一堆空会话）
 				if (!listOk) {
 					return { ok: false, sid: "", error: "读不到会话列表：" + note.join("；"), note: note };
 				}
-				const ws = await probe.ensureWorkspace(root);
-				const wsId = ws.ok && ws.value && ws.value.workspace ? ws.value.workspace.workspaceId : "";
-				if (!ws.ok) note.push("按路径登记工作区失败（改用 cwd 建会话）：" + humanError(ws));
-				// ★ workspaceId 与 cwd **互斥**（host 明确拒绝两者同时给）—— probe.create 内部已分流
-				const cr = await probe.create(wsId, root, INDEX_PRESET);
-				if (!cr.ok) {
-					return { ok: false, sid: "", error: "无法创建索引会话：" + humanError(cr), note: note };
-				}
-				const sid = idText(cr.value && cr.value.sessionId);
-				if (!sid) return { ok: false, sid: "", error: "会话已创建，但拿不到 sessionId。", note: note };
+				// ★ 单航班锁：同一页两个面板同时挂载时只建一条（工单 07 第 5 条）
 				const title = indexTitleFor(root);
-				const rn = await probe.renameSession(sid, title);
-				if (!rn.ok) note.push("索引会话建好了但改名失败（下次按 cwd 认回来）：" + humanError(rn));
-				cacheWrite(root, sid);
-				// ★ 索引会话也是"新工作区 + 新会话"，同样要补一刀（不然侧边栏要 F5 才出现）
-				const sync = await syncSidebarStores(root);
-				for (const n of sync.notes) note.push(n);
+				const made = await singleFlight("index:" + normPath(root), () =>
+					createSessionAt(root, title, INDEX_PRESET, { fullAccess: false, signal: signal }));
+				for (const n of made.note) note.push(n);
+				if (made.error) {
+					return { ok: false, sid: "", error: "无法创建索引会话：" + made.error, note: note };
+				}
+				cacheWrite(root, made.sid, title);
 				return {
-					ok: true, sid: sid, cwd: root, root: root, srWs: srWs,
-					source: "created", sessionTitle: rn.ok ? title : "",
+					ok: true, sid: made.sid, cwd: root, root: root, srWs: srWs,
+					source: "created", sessionTitle: title,
 					extraPaths: cfgPath ? [cfgPath] : [],
 					configFile: cfgPath, skillsRoot: cfgPath ? skillsRootOf(cfgPath) : "",
 					configRoot: cfg ? String(cfg.config_root || "").replace(/[\\/]+$/, "") : "",
-					note: note,
-					createdWorkspace: !!(ws.ok && ws.value && ws.value.created)
+					note: note
 				};
 			};
 
@@ -7722,6 +7907,11 @@ import {
 						__diagnose: diagnose, __probe: probe, __projectRoot: projectRoot,
 						__interfaces: interfaceLoader, __index: indexLoader, __detail: detailLoader,
 						__resolve: resolveIndexSession,
+						// ★ 工单 07：三类会话**唯一**的「认领 → 新建」出口。
+						//   面板里凡是要"给这个功能搞一条工作会话"的地方（A2 流水线的「推进一步」、
+						//   资产索引刷新、收件箱导入）都走它 —— 不再各写一份建会话的代码
+						//   （各写一份就会漏掉标题/归属/权限，改前正是这样）。
+						__ensureWork: ensureFeatureWorkSession,
 						// ★ 工单 16：变更订阅 / 版本 stat（面板的自动刷新与指纹就靠这两个出口）
 						__watch: watchTargets, __statMany: statMany,
 						__refreshIndex: refreshIndex, __readText: readTextFile,

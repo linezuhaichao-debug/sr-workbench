@@ -38,6 +38,15 @@ export interface SessionRow {
 	 * 排进收件箱，不是失败 —— 但面板不能装成"它立刻就开始改了"。
 	 */
 	running?: boolean;
+	/**
+	 * 这条会话**当前的权限预设**（`permission-presets` 插件的会话投影 `permissions` 的视图
+	 * `{ currentValue }`，取值见 `presetOfProjections`）。
+	 *
+	 * ★ 为什么收它（工单 07 第 7 条）：面板建完工作会话要把预设切到「完全权限」，
+	 *   而"切没切成功"**必须能读回来**才算证据（不能只凭命令没报错）。
+	 *   它是**可选**的：读不回来时如实说"读不回来"，不许当成"不动"。
+	 */
+	preset?: string;
 }
 
 /** 选择结果：挑了谁 + 为什么是它（"为什么"要显示给用户，不许闷着）。 */
@@ -45,6 +54,11 @@ export interface SessionPick {
 	id: string;
 	source: "cache" | "title" | "cwd" | "main" | "recent";
 	row: SessionRow;
+	/**
+	 * 同一凭据下**还有几条**（不含选中的这条）——用来如实说"发现 2 条同名会话，这次用最新的那条"。
+	 * `0` / `undefined` = 只有这一条（正常情况）。
+	 */
+	others?: number;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -180,6 +194,42 @@ export function titleOf(row: SessionRow | null | undefined): string {
 
 const num = (v: unknown): number => (typeof v === "number" && isFinite(v) ? v : 0);
 
+/**
+ * 会话行 / 列表项里的**权限预设**读法 —— 形状判据只有这一处。
+ *
+ * 三种形状（都实测过或由官方源码推出）：
+ *   · `session/list` 的行：`it.projections.values.permissions.currentValue`
+ *     （投影 `permissions` 的视图是 `selectionSchema = { currentValue: string }`，
+ *      见 `dsh-permission-presets/lib/index.js:187-201`）
+ *   · 0.2.0 客户端 store 的行：`row.projectionValues.permissions`（**扁平**的 键→视图 表，
+ *      见 `dsh-api-session-controller/lib/client.js:3511`）
+ *   · 退一步：`row.permissions`（视图本体或裸字符串）
+ *
+ * 读不到一律返回 `""` —— 调用方要如实说"读不回来"，**不许**把空值当成"它已经不动了"。
+ */
+export function presetOfProjections(p: unknown): string {
+	if (!p || typeof p !== "object") return "";
+	const bag = p as Record<string, any>;
+	const nested = bag.projections && typeof bag.projections === "object" ? (bag.projections as Record<string, any>).values : undefined;
+	const views = [bag.values, bag.projectionValues, nested, bag];
+	for (const v of views) {
+		if (!v || typeof v !== "object") continue;
+		const perm = (v as Record<string, any>).permissions;
+		if (typeof perm === "string" && perm !== "") return perm;
+		if (perm && typeof perm === "object") {
+			const cur = (perm as Record<string, any>).currentValue;
+			if (typeof cur === "string" && cur !== "") return cur;
+		}
+	}
+	return "";
+}
+
+/** 一条候选的权限预设（读不到 → `""`）。 */
+export function presetOfRow(row: SessionRow | null | undefined): string {
+	if (!row) return "";
+	return typeof row.preset === "string" ? row.preset : "";
+}
+
 /** 取 updatedAt 最大的一条（并列时保持原顺序，保证确定性）。 */
 function newest(rows: SessionRow[]): SessionRow | null {
 	let best: SessionRow | null = null;
@@ -221,6 +271,7 @@ export function rowsFromStore(state: any): SessionRow[] {
 			updatedAt: num(r.updatedAt),
 			blank: r.blank === true,
 			running: r.running === true,
+			preset: presetOfProjections(r),
 			// ★ 0.2.0 的"当前选中"：mainView 保留计数 > 0（layout / ui-workspace 同源口径）
 			main: id === current || !!(r.retainedBy && num(r.retainedBy.mainView) > 0),
 		});
@@ -247,6 +298,7 @@ export function rowsFromList(value: any): SessionRow[] {
 			updatedAt: num(it.updatedAt),
 			blank: it.blank === true,
 			running: it.running === true,
+			preset: presetOfProjections(it),
 			main: false,
 		});
 	}
@@ -268,7 +320,7 @@ export function mergeRows(primary: SessionRow[], extra: SessionRow[]): SessionRo
 	const at: Record<string, number> = {};
 	const fill = (dst: SessionRow, src: SessionRow): SessionRow => {
 		const merged: SessionRow = { id: dst.id };
-		for (const k of ["title", "display", "cwd", "updatedAt", "blank", "main", "running"] as const) {
+		for (const k of ["title", "display", "cwd", "updatedAt", "blank", "main", "running", "preset"] as const) {
 			const d = dst[k];
 			const s = src[k];
 			(merged as any)[k] = d === undefined || d === "" || d === null ? s : d;
@@ -286,45 +338,60 @@ export function mergeRows(primary: SessionRow[], extra: SessionRow[]): SessionRo
 /**
  * 挑一条索引会话。
  *
+ * ★ 工单 07 的核心纪律：**索引会话必须是"面板自己的"**。
+ *   所有权凭据只有两条（工单第 3 条：只能靠标题 + 缓存）：
+ *     ① 标题以 `INDEX_TITLE` 开头（`session.rename` 设定的显式标题）；
+ *     ② 缓存里那条 —— 而且必须是**面板自己写的**缓存（`mine`）。
+ *   为什么要"我自己写的"这个标记：旧版本（工单 32 那一版）在"cwd 覆盖 sr 根"命中时
+ *   **会把用户的会话写进缓存**（`缓存 = 借来的那条`），所以旧缓存不可信 —— 见 `IndexCache`。
+ *   "cwd 覆盖 sr 根"**不再是所有权凭据**：用户自己的会话（cwd = `D:\TimeMachine`）是
+ *   sr 根的祖先目录，一样"覆盖" —— 那正是本票要修的现象（面板借用户的会话当扫描口径）。
+ *
  * 顺序（前一条命中就不再往下走）：
- *   ⓪ `opts.archived` —— **先剔掉已归档的那些**（侧边栏看不见的会话不算可用；
- *      见 `ArchivedIds` 那段。不传 = 旧行为）；
- *   ① `opts.cachedId` —— 上次用的那条，**还在候选里且（给了 root 时）cwd 覆盖 root**；
- *   ② 标题认领 —— 标题以 `INDEX_TITLE` 开头（自己建的索引会话，跨浏览器/清缓存都能认回）；
- *   ③ cwd 覆盖 sr 根 —— 优先 cwd 与 root 完全相等，其次祖先目录；各自取 updatedAt 最新；
- *   ④ `main` —— 用户当前选中的那条（**只是兜底**，规格要的不是跟随它）；
- *   ⑤ `opts.allowForeign` 时的"最近更新的一条"——
- *      ★ 只有"还不知道 sr 根、只需要一条能读文件的会话"时才允许；
- *        知道 root 却挑一条列不出 root 的会话 = 必然 0 个功能（坑 3），所以那时宁可返回 null 去新建。
+ *   ⓪ `opts.archived` —— 先剔掉已归档的那些（侧边栏看不见的会话不算可用）；
+ *   ① `opts.cachedId` —— 上次用的那条，**在"自己的"里**、且（给了 root 时）cwd 覆盖 root；
+ *   ② 标题认领 —— 自己的标题 + cwd 覆盖 root（精确等于 root 的先于祖先目录），取最新；
+ *   ③ 一条自己的都没有 ⇒ **返回 null**（调用方去新建；**绝不借用户的会话**）；
+ *   ④ `opts.borrow` —— 允许"随便借一条"的兜底（只有 `boot` 用它：那一步只 `read` 配置文件，
+ *      不扫描、不订阅、不发指令 —— 借谁的都不影响结果）。借的顺序：cwd 覆盖 → 当前选中 → 最近更新。
  */
 export function pickIndexSession(
 	rows: SessionRow[],
 	srWs: string,
-	opts?: { cachedId?: string; allowForeign?: boolean; archived?: ArchivedIds },
+	opts?: { cachedId?: string; allowForeign?: boolean; archived?: ArchivedIds; borrow?: boolean },
 ): SessionPick | null {
 	const o = opts || {};
 	const live = withoutArchived(rows || [], o.archived);
 	if (live.length === 0) return null;
 
-	const covers = (r: SessionRow) => !srWs || containsPath(r.cwd, srWs);
+	// ⓪ 只有"标题是我的"才算自己的（所有权凭据①）
+	const own = live.filter((r) => isIndexTitle(titleOf(r)));
+	// 自己的里面，还得**能列出 sr 根**（`list` 限定在会话工作区内，见文件头）——这是"可用"，
+	// 与"所有权"是两回事
+	const able = srWs ? own.filter((r) => containsPath(r.cwd, srWs)) : own;
 
-	// ① 缓存
+	// ① 缓存（所有权凭据②：自己写的缓存；它只决定"用自己的哪一条"）
 	if (o.cachedId) {
-		const hit = live.filter((r) => r.id === o.cachedId && covers(r))[0];
-		if (hit) return { id: hit.id, source: "cache", row: hit };
+		const hit = able.filter((r) => r.id === o.cachedId)[0];
+		if (hit) return { id: hit.id, source: "cache", row: hit, others: Math.max(0, able.length - 1) };
 	}
 
 	// ② 标题认领
-	//    ★ 认领也得**同时满足 cwd 覆盖 sr 根**：认一条列不出 features\ 的旧索引会话，
-	//      等于把"看板 0 个功能"装成正常。宁可退到 ③（或去新建一条）。
-	const named = live.filter((r) => isIndexTitle(titleOf(r)));
-	if (named.length > 0) {
-		const pool = srWs ? named.filter((r) => containsPath(r.cwd, srWs)) : named;
-		const best = newest(srWs ? preferExactRoot(pool, srWs) : pool);
-		if (best) return { id: best.id, source: "title", row: best };
+	if (able.length > 0) {
+		const pool = srWs ? preferExactRoot(able, srWs) : able;
+		const best = newest(pool);
+		if (best) return { id: best.id, source: "title", row: best, others: Math.max(0, able.length - 1) };
 	}
 
-	// ③ cwd 覆盖 sr 根
+	// ③ 自己的那条存在、但列不出 sr 根（例如工作区换过地方）⇒ 也返回 null（去新建）：
+	//    认它 = 看板必然 0 个功能（静默坏掉），比多一条会话糟得多。
+	if (!(o.borrow || o.allowForeign)) return null;
+
+	// ④ 借用（boot 专用）
+	if (o.cachedId) {
+		const hit = live.filter((r) => r.id === o.cachedId)[0];
+		if (hit) return { id: hit.id, source: "cache", row: hit };
+	}
 	if (srWs) {
 		const inside = live.filter((r) => containsPath(r.cwd, srWs));
 		if (inside.length > 0) {
@@ -332,21 +399,82 @@ export function pickIndexSession(
 			if (best) return { id: best.id, source: "cwd", row: best };
 		}
 	}
-
-	// ④ 当前选中
 	const mains = live.filter((r) => r.main);
 	if (mains.length > 0) {
 		const best = newest(mains);
 		if (best) return { id: best.id, source: "main", row: best };
 	}
-
-	// ⑤ 最近更新（只在没有 sr 根硬要求时）
-	if (o.allowForeign) {
-		const best = newest(live);
-		if (best) return { id: best.id, source: "recent", row: best };
-	}
+	const best = newest(live);
+	if (best) return { id: best.id, source: "recent", row: best };
 	return null;
 }
+
+/**
+ * 面板自己的索引会话里，**cwd 列不出 sr 根**的那些（换过工作区地方之后留下的旧条目）。
+ * 调用方用它如实说一句"旧的那条没用了"，而不是闷着新建一条。
+ */
+export function staleIndexRows(rows: SessionRow[], srWs: unknown, archived?: ArchivedIds): SessionRow[] {
+	const live = withoutArchived(rows || [], archived);
+	const own = live.filter((r) => isIndexTitle(titleOf(r)));
+	if (!srWs) return [];
+	return own.filter((r) => !containsPath(r.cwd, srWs));
+}
+
+/** 旧索引会话失效时的那句话（归档 ≠ 删除，所以要说清"它还在，只是没用了"）。 */
+export function staleIndexNote(prevCwd: unknown): string {
+	const p = String(prevCwd === null || prevCwd === undefined ? "" : prevCwd);
+	return "以前那条索引会话（cwd = " + (p || "?") + "）不在 SR 工作区根里、" +
+		"从它那里列不出 `features\\`：这次没用它（它还在侧边栏，可直接归档）。";
+}
+
+/**
+ * 借一条会话，用来**列举 SR 工作区之外的目录**（只读）。
+ *
+ * ★ 为什么需要它（工单 07 实测出来的）：
+ *   索引会话的 cwd = **SR 工作区根**，而 host 侧的目录列举是**按会话 cwd 圈定**的 ——
+ *   `dsh-api-workspace-files/lib/index.js:411` 把 scope 定成
+ *   `workspaceRoot = header.cwd ?? sandboxPolicy.workspaceRoot`，`:500` `list` 再走
+ *   `confine(root, workspaceRoot, …)`，越界直接报
+ *   `workspace-file/outside-workspace`（"Directory is outside the workspace"）；
+ *   文件头也写着 "Directory listings and change observations remain workspace-scoped"
+ *   （**读**不受这个限制：`read` 走文件系统的读权限，可以读工作区之外）。
+ *   于是 `config_root`（本机 `D:\TimeMachine\planner\策划配置`，在 SR 工作区**之外**）
+ *   从索引会话里列不出来 ⇒ 看板的配置表清单、配置支线的"工作簿有没有同名文件"全都失明。
+ *   旧版本之所以没露出来，是因为它**借了用户的会话**（cwd = `D:\TimeMachine`，公共祖先）当扫描口径。
+ *
+ * ★ 这条会话只被 `list` 用（不订阅、不发指令、不显示）——所以这里明确**允许借**：
+ *   面板对"我的会话"的所有权纪律（标题 + 自己写的缓存）管的是**索引/工作会话的认领**，
+ *   不是"能不能借一条会话读文件"（读配置那一步本来就是借的，见 `resolveIndexSession` 第 1 步）。
+ *
+ * 挑法：cwd **覆盖** `needPath`（祖先或本身）的里面，取 **cwd 最长（最贴近、暴露面最小）** 的那条；
+ * 并列取 updatedAt 最新。一条都没有 → `null`（调用方如实说"列不了"，**不许**编缺件）。
+ */
+export function pickListingSession(
+	rows: SessionRow[],
+	needPath: unknown,
+	opts?: { archived?: ArchivedIds; exclude?: string },
+): SessionPick | null {
+	const live = withoutArchived(rows || [], opts && opts.archived)
+		.filter((r) => r && r.id && r.id !== (opts && opts.exclude));
+	if (!needPath) return null;
+	const covering = live.filter((r) => containsPath(r.cwd, needPath));
+	if (covering.length === 0) return null;
+	let best: SessionRow | null = null;
+	for (const r of covering) {
+		if (best === null) { best = r; continue; }
+		const a = normPath(r.cwd).length, b = normPath(best.cwd).length;
+		if (a > b || (a === b && num(r.updatedAt) > num(best.updatedAt))) best = r;
+	}
+	return best ? { id: best.id, source: "recent", row: best } : null;
+}
+
+/** 借不到"能列这个目录"的会话时的那句话（如实说清"核不了"，不编缺件）。 */
+export function noListingSessionNote(needPath: unknown): string {
+	return "没有一条会话的 cwd 覆盖 `" + String(needPath || "?") + "` ⇒ 这个目录（在 SR 工作区之外）列不出来：" +
+		"面板对其中文件的**存在性一律按「核不了」处理**（不编缺件；想让它可核，在左侧建一条 cwd 覆盖该目录的会话即可）。";
+}
+
+
 
 /** sr 配置的默认文件名（相对"工作区根"）。 */
 export const SR_CONFIG_REL = "\\.agents\\skills\\sr-askme\\config.local.json";
@@ -380,6 +508,67 @@ export function indexCacheKey(): string {
 	return "sr-wb.index.v1";
 }
 
+/**
+ * 索引会话的缓存条目。
+ *
+ * ★ `mine` 是**所有权凭据**的一部分，别小看这一个布尔（工单 07 第 3 条）：
+ *   旧版本（工单 32）在"cwd 覆盖 sr 根"命中时也会 `cacheWrite(root, hit.id)` ——
+ *   也就是说用户机器上的旧缓存**可能正指着用户自己的会话**。新代码只认 `mine: true`
+ *   （由自己创建成功后写入）的条目，于是旧缓存自动作废，不需要用户手清 localStorage。
+ */
+export interface IndexCacheEntry {
+	srWs: string;
+	sid: string;
+	/** 这条缓存是"面板自己建完写下的"（`true`）——旧版本写的不带这个标记 */
+	mine: boolean;
+	/** 建的时候用的标题（只是给人看的线索，认领仍以**列表现场读到的标题**为准） */
+	title?: string;
+}
+
+/** 缓存原文 → 条目；坏 JSON / 形状不对 → `null`（一律当成"没有缓存"，绝不抛）。 */
+export function indexCacheParse(raw: unknown): IndexCacheEntry | null {
+	if (typeof raw !== "string" || raw === "") return null;
+	try {
+		const v = JSON.parse(raw) as Record<string, unknown> | null;
+		if (!v || typeof v !== "object") return null;
+		const sid = typeof v.sid === "string" ? v.sid : "";
+		if (sid === "") return null;
+		return {
+			srWs: typeof v.srWs === "string" ? v.srWs : "",
+			sid: sid,
+			mine: v.mine === true,
+			title: typeof v.title === "string" ? v.title : ""
+		};
+	} catch (e) {
+		return null;
+	}
+}
+
+/** 写一条缓存（**只有自己建完才调它** —— 这就是 `mine` 的来源）。 */
+export function indexCacheSerialize(srWs: unknown, sid: unknown, title?: unknown): string {
+	const e: IndexCacheEntry = {
+		srWs: String(srWs === null || srWs === undefined ? "" : srWs),
+		sid: String(sid === null || sid === undefined ? "" : sid),
+		mine: true,
+		title: String(title === null || title === undefined ? "" : title)
+	};
+	return JSON.stringify(e);
+}
+
+/**
+ * 缓存里这条**能不能当所有权凭据**。
+ * ★ 只有 `mine: true` 才算（旧版本写的不算 —— 它可能是借来的用户会话）。
+ */
+export function indexCacheOwned(entry: IndexCacheEntry | null | undefined): boolean {
+	return !!(entry && entry.mine === true && entry.sid !== "");
+}
+
+/** 旧缓存作废时的那句话（说清"不是你的会话被删了"，而是"那条不是我的"）。 */
+export const FOREIGN_CACHE_NOTE =
+	"上次记的索引会话不是面板自己建的（旧版本曾按「cwd 覆盖」借用过你的会话）：这条缓存已作废，" +
+	"这次重新认领或新建一条属于面板的索引会话。";
+
+
 /** `session.rename` 的标题：带工作区名，便于人一眼看出这条会话是干什么的。 */
 export function indexTitleFor(srWs: unknown): string {
 	const base = normPath(srWs).split("\\").filter(Boolean).pop() || "";
@@ -396,6 +585,15 @@ export function indexTitleFor(srWs: unknown): string {
  *   工作会话的 cwd 是 `features\<主题>\`、只负责干活（规格「三层会话」）。
  */
 export const WORK_TITLE = "策划工作台·工作";
+
+/**
+ * 「不属于任何功能」的工作会话（资产索引刷新 / 收件箱导入）的标题。
+ * ★ 它是**第三类**：cwd = SR 工作区根（不是功能目录），但也**会收到指令**（不是索引会话）。
+ *   给它一个可识别标题的唯一目的是"下次还认得回来"—— 没有标题时面板每次刷新都会新建一条
+ *   （`ensureWorkSession` 只有内存缓存，刷新即丢）。
+ */
+export const WORK_ROOT_TITLE = "策划工作台·工作（SR 工作区）";
+
 
 /** 功能主题 = 功能目录名（`features\<主题>\` 的最后一段）。空值一律给空串。 */
 export function featureTopicOf(root: unknown): string {
@@ -444,13 +642,13 @@ export function pickWorkSession(
 	// ① 缓存
 	if (o.cachedId) {
 		const hit = live.filter((r) => r.id === o.cachedId)[0];
-		if (hit) return { id: hit.id, source: "cache", row: hit };
+		if (hit) return { id: hit.id, source: "cache", row: hit, others: Math.max(0, live.length - 1) };
 	}
 
 	// ② 标题认领（同 cwd 下可能有多条历史，取最近更新的那条）
 	const named = live.filter((r) => isWorkTitle(titleOf(r)));
 	const best = newest(named);
-	if (best) return { id: best.id, source: "title", row: best };
+	if (best) return { id: best.id, source: "title", row: best, others: Math.max(0, named.length - 1) };
 	return null;
 }
 
@@ -501,3 +699,103 @@ export function workCacheDrop(raw: unknown, featureRoot: unknown): string {
 	if (root !== "") delete t[root];
 	return JSON.stringify(t);
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// 权限预设（工单 07 第 7 条）—— 建完工作会话要能改到「完全权限」，并且**能读回来**
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 「完全权限」的机器值。
+ * 依据：`dsh-permission-presets/lib/index.js:151-156`（presets 里的 `danger-full-access`
+ * = sandbox `danger-full-access` + approval `never`），客户端标签见
+ * `dsh-client-ui-permission-presets/lib/client.js:231`（`FULL_ACCESS_PRESET`）。
+ */
+export const PERMISSION_FULL = "danger-full-access";
+
+/**
+ * 切预设的**唯一**通道：官方注册的斜杠命令 `/permission <preset>`。
+ *
+ * ★ 为什么是命令而不是某个 remote 方法：`dsh-permission-presets` 只对外暴露一个 remote
+ *   （`permissionPresets/catalog`，见 `.../typert.remote-client.js`）——**没有 set 方法**；
+ *   官方自己切预设就是那条命令（`lib/index.js:207-226` 注册 `permission` 命令，
+ *   官方 plan 插件也是这么发命令的：`dsh-client-ui-plan/lib/client.js:704`
+ *   `remote.commands.execute(sessionId, "/plan off", [])`）。
+ */
+export function permissionCommandLine(preset: unknown): string {
+	const p = typeof preset === "string" && preset !== "" ? preset : PERMISSION_FULL;
+	return "/permission " + p;
+}
+
+/** 这条会话**当前**是不是「完全权限」——`true` 才需要动手；读不到（`""`）一律不动。 */
+export function needsFullAccess(preset: unknown): boolean {
+	return typeof preset === "string" && preset !== "" && preset !== PERMISSION_FULL;
+}
+
+export interface PermissionPlan {
+	/** 要不要发那条命令 */
+	needed: boolean;
+	preset: string;
+	/** 为什么（机器口径，测试与报告用） */
+	why: string;
+	/** 给人看的一句话（空 = 不用说什么） */
+	note: string;
+}
+
+/**
+ * 由 `remote.permissionPresets.catalog()` 的返回（`{ options, defaultOptions, defaultPreset }`，
+ * 形状见 `dsh-permission-presets/lib/typert.remote-client.js`）决定**要不要切**。
+ *
+ * ★ 为什么以"进程默认预设"为准：新会话是**播种**默认预设的
+ *   （`lib/index.js:198-201` `ctx.on("session/created", pinInitialPermission)`），
+ *   所以默认已是完全权限时，新工作会话建出来就是完全权限，**面板不需要再切**——
+ *   这时如实说一句"本机默认就是完全权限"，而不是多发一条命令装样子。
+ * ★ 读不到（catalog 不可用 / 形状变了）时**按最坏情况切一次**：宁可在日志里多一条命令，
+ *   也不要让"配置支线写 config_root / gtgenerator 工作目录"被沙箱拦下来。
+ */
+export function permissionPlanOf(catalog: unknown): PermissionPlan {
+	const obj = catalog && typeof catalog === "object" ? (catalog as { defaultPreset?: unknown }) : null;
+	const def = obj && typeof obj.defaultPreset === "string" ? obj.defaultPreset : "";
+	if (def === PERMISSION_FULL) {
+		return {
+			needed: false, preset: PERMISSION_FULL, why: "default=" + PERMISSION_FULL,
+			note: "本机 profile 的默认权限预设已是「完全权限」（permission.defaultPreset = " +
+				PERMISSION_FULL + "）：新建的会话本身就是完全权限，不用再切。"
+		};
+	}
+	if (def === "") {
+		return {
+			needed: true, preset: PERMISSION_FULL, why: "unreadable",
+			note: "读不到本机的默认权限预设（`permissionPresets.catalog` 不可用或形状变了）：" +
+				"按最坏情况给这条工作会话切一次「完全权限」。"
+		};
+	}
+	return {
+		needed: true, preset: PERMISSION_FULL, why: "default=" + def,
+		note: "本机默认权限预设是「" + def + "」，不是完全权限：这条工作会话已切成「完全权限」——" +
+			"否则功能文件夹之外的产出（配置支线写 config_root、gtgenerator 工作目录）会被拦。"
+	};
+}
+
+/**
+ * 切完之后那句话（含**读回**证据）。
+ * @param execOk   命令本身成功没有
+ * @param execText 命令返回的人话（`preset danger-full-access` / 错误文本）
+ * @param readback 重新拉列表读回的该会话预设（`permissions.currentValue`，读不到 = `""`）
+ */
+export function permissionResultNote(execOk: boolean, execText: unknown, readback: unknown): string {
+	const want = PERMISSION_FULL;
+	const got = typeof readback === "string" ? readback : "";
+	const text = String(execText === null || execText === undefined ? "" : execText);
+	if (!execOk) {
+		return "没能把这条工作会话切到完全权限（" + (text || "命令失败") + "）：" +
+			"功能文件夹之外的产出可能被拦 —— 在左侧点开这条会话，手动发 `/permission " + want + "` 即可。";
+	}
+	if (got === want) return "已把这条工作会话切成「完全权限」（读回 permissions = " + got + "）。";
+	if (got !== "") {
+		return "切权限的命令返回成功，但读回仍是「" + got + "」（不是完全权限）：" +
+			"以读回为准，功能文件夹之外的产出可能被拦。";
+	}
+	return "已发切换命令（返回：" + (text || "无文本") + "），但**读不回**当前预设：" +
+		"如果产物被拦，在左侧点开这条会话手动发 `/permission " + want + "`。";
+}
+

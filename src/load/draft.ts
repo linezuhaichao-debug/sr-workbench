@@ -188,8 +188,16 @@ export async function loadDraftWorkface(port: WorkspacePort, options: DraftWorkf
 	/**
 	 * 配置表文件名：**以配置目录的实际列举为准**（`configRoot` 由看板从 sr 配置里取）。
 	 * 列不出来时退回看板按主题挂上来的那份，并在 `notes` 里如实说明 —— 不假装核过了。
+	 *
+	 * ★ 工单 07：这里多了 `configListed` 这一位 —— **列不出来时不许报"缺件"**。
+	 *   根因：host 的目录列举圈定在**会话 cwd** 之内（`dsh-api-workspace-files/lib/index.js:411/500`），
+	 *   而索引会话的 cwd = SR 工作区根，`config_root`（`D:\TimeMachine\planner\策划配置`）在它外面；
+	 *   列举失败时 `listFiles(…, optional=true)` 返回空数组（不抛），于是
+	 *   `referencedMissing` 会把**每一个** §6 工作簿都报成"配置目录里没有同名文件" ——
+	 *   正好和上面那句"按核不了处理（不编缺件）"相反。现在：没列出来 ⇒ 这一项按"核不了"处理（空数组）。
 	 */
 	let configFiles = ((options && options.configFiles) || []).map(String).filter((x) => x !== "");
+	let configListed = false;
 	const cfgRoot = String((options && options.configRoot) || "").replace(/[\\/]+$/, "");
 	if (cfgRoot !== "") {
 		try {
@@ -199,13 +207,18 @@ export async function loadDraftWorkface(port: WorkspacePort, options: DraftWorkf
 				notes.push("配置目录 `" + cfgRoot + "` 里一个工作簿都没列到 —— 工作簿存在性这一项按“核不了”处理（不编缺件）。");
 			} else {
 				configFiles = sheets;
+				configListed = true;
 			}
 		} catch (e) {
 			notes.push("配置目录 `" + cfgRoot + "` 列举失败：" + String((e && e.message) || e) + " —— 工作簿存在性退回看板给的清单。");
 		}
 	}
-	/** §6 引用的工作簿 → 配置目录里有没有同名文件（**只比文件名**，不解析工作簿） */
-	const referencedMissing = (contract.workbooks || []).filter((w) => configFiles.indexOf(w) < 0);
+	/**
+	 * §6 引用的工作簿 → 配置目录里有没有同名文件（**只比文件名**，不解析工作簿）。
+	 * ★ 只有**真的列过配置目录**（`configListed`）才敢报"缺件"；否则这一项一律空 —— 宁可不说，
+	 *   也不把"列不出来"说成"文件不存在"。
+	 */
+	const referencedMissing = configListed ? (contract.workbooks || []).filter((w) => configFiles.indexOf(w) < 0) : [];
 
 	const branch = configBranchState({
 		draft: {
