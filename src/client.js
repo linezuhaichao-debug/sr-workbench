@@ -114,6 +114,14 @@ import { loadDraftWorkface } from "./load/draft.ts";
 //   · 面板**不写盘**：产物与 provenance 侧车都是 agent 按指令写的，面板只读回、只判定。
 import { shortVersion } from "./pure/derived.ts";
 import { loadDerived } from "./load/derived.ts";
+// ★ 工单 26 · 外部输入合入 ①②③（设计 §4.3.5「UE 交互交付物的合入」）：
+//   · 判定全在 `src/pure/ueintake.ts`（包识别 · **基线校验（★）** · 回写清单 · 归档位 · 那句「这会把它改回来」）；
+//   · 只读那一侧在 `src/load/ueintake.ts`（列工作区根的 zip + 归档位、读 manifest / 回写文档 / 当前定稿 / 交付台账）；
+//   · 归档指令由面板组装、**agent 落盘**（面板只读：`CONTEXT.md`「面板只读 / agent 执行」）；
+//   · ★ 线框图替换**与手动入口共用同一处组装**：两边都走 `INTAKE.buildDraftInstruction({action:"wireframe"})`，
+//     本屏用的 `buildWireframeRequest` 就是那个"塞"的唯一实现 —— 不各写一份（工单 26 第 5 条）。
+import { buildWireframeRequest } from "./pure/ueintake.ts";
+import { loadUeIntake } from "./load/ueintake.ts";
 // ★ 工单 22 · 新建功能：**一个动作**（目录 + 六个桶 + 身份声明 + 专属工作区）。
 //   · 判定与组装全在 `src/pure/createfeature.ts`（主题名合法性 / 冲突 / id / 指令 + 脚本 / 回读判定）
 //     与 `src/pure/featureid.ts`（身份声明的形状与解析）—— 面板**不写盘**，它只算、只发、只回读；
@@ -1787,6 +1795,322 @@ import {
 						maxHeight: "34vh", overflow: "auto"
 					}
 				}, detailRows) : null
+			]);
+		}
+
+		/**
+		 * ═══ 工单 26 · 外部输入合入 ①②③（「产物」页签最上面那一块）═══
+		 *
+		 * 为什么落在「产物」页签：设计 §4.3.5 的归档位是 `features\<主题>\source\UE交付_<日期>\`
+		 *   —— 那是**原料桶**，而这一页正是逐个桶列产物的地方（归位之后在这里能看见）。
+		 *
+		 * 首屏（克制，人话；**一个主按钮都没有** —— 24c 的形态纪律：一屏一个主按钮是给 Y 形定的，
+		 *   这一屏本来就没有主按钮，`data-btn="primary"` 恒为 0）：
+		 *   · 一行「外部交付包 · 名称」+ 状态标签（是不是交付包 / 基线 最新·过期·看不到）
+		 *   · 一行**包识别**（对着哪个功能 + 一句依据）
+		 *   · 一行**基线校验（★）**（声明 vs 现在；过期时**拦下**那一句直接显示，不折）
+		 *   · 一行**回写清单**计数 + 若干条行（每条带条目引用 + 行号）
+		 *   · ★ **已删条目**：`status==="danger"` 的那些，逐条显示「这会把它改回来」（不静默接受）
+		 *   · 动作：〔让 agent 归档到 source〕（`data-send="intake:archive"`）/〔按交付包换线框图〕
+		 *     （`data-send="intake:wireframe"`）—— 两步走：点开先看**指令预览**，再发。
+		 *
+		 * 折起来的东西（机器口径）：逐条依据（判据原文）、3 条判据的机器口径、如实标注、包内文件清单。
+		 *   **收起时体根本不渲染**（与 DerivedBar 同一条纪律）。
+		 */
+		function IntakeBar(props) {
+			const data = props.data;
+			const [open, setOpen] = React.useState("");
+			const [openDetail, setOpenDetail] = React.useState(false);
+			const [msg, setMsg] = React.useState({});
+
+			const head = (children) => h("div", {
+				"data-intake-bar": "1",
+				style: {
+					border: "1px solid " + C.faint, borderLeft: "3px solid " + (data && !data.error ? C.link : C.soft),
+					background: "#fff", borderRadius: "4px", padding: "7px 11px", marginBottom: "10px"
+				}
+			}, children);
+
+			if (!data) return head(h("div", { style: { fontSize: "11.5px", color: C.muted } }, "正在读外部交付包…"));
+			if (data.error) {
+				return h("div", {
+					"data-intake-bar": "error",
+					style: {
+						fontSize: "11.5px", color: C.bad, marginBottom: "10px", padding: "7px 11px",
+						border: "1px solid " + C.faint, borderLeft: "3px solid " + C.bad, background: "#fef2f2", borderRadius: "4px"
+					}
+				}, data.error);
+			}
+
+			const id = data.identify || {};
+			const base = data.baseline || null;
+			const rows = data.rows || [];
+			const cur = (base && base.current) || { name: "", version: "", from: "", actives: [] };
+			const tone = (s) => s === "fresh" ? C.ok : (s === "stale" ? C.warn : (s === "unknown" ? C.bad : C.muted));
+			const baseTone = base ? tone(base.state) : C.muted;
+			const baseText = base
+				? (base.state === "fresh" ? "最新" : (base.state === "stale" ? "过期" : "看不到依据"))
+				: "看不到依据";
+			const archived = !!(data.archive && data.archive.archived);
+			/**
+			 * ★ 归档位用**面板自己那一份功能根**拼（`props.root`）——
+			 *   加载器算的 `data.archive.dir` 是它对文件系统说的那个根，两者在真机上相同；
+			 *   但指令正文里写的是 `props.root`，面板上显示的必须与**发出去的那一段**一致
+			 *   （"卡上看到的 = 发出去的"，工单 15/23/24/26 同一条纪律）。
+			 */
+			const archDir = (props.root || "")
+				? winPath(props.root) + "\\source\\" + ((data.archive && data.archive.name) || "UE交付_<日期>")
+				: ((data.archive && data.archive.dir) || "");
+			/**
+			 * ★ 工单 26 第 5 条「两个入口共用同一能力」在这**面板侧**也是同一条：
+			 *   面板不把 `data.wireframe.instruction` 直接发出去，而是拿加载器读好的输入
+			 *   （ASCII 现状 · 包里的截图 · 成稿路径）**再调一次同一个组装器**
+			 *   `buildWireframeRequest` —— 它转手交给 `draftstep.buildDraftInstruction({action:"wireframe"})`，
+			 *   与「文档生成 › 线框图」手动入口用的是**同一处组装**。
+			 *   ★ 三次调用的输入完全相同 ⇒ 结果逐字相同；下面发出去的永远是这一次算出来的那一份
+			 *   （`data.wireframe.instruction` 只用来给断言留痕：两边必须一致）。
+			 */
+			const wireBuilt = (() => {
+				const w = data.wireframe || {};
+				try {
+					return buildWireframeRequest({
+						root: props.root || "",
+						topic: id.topic || "",
+						draftPath: w.draftPath || "",
+						where: w.where || "",
+						images: w.images || [],
+						ascii: w.ascii || []
+					});
+				} catch (e) {
+					return { instruction: "", blocked: "线框图请求组装失败：" + String((e && e.message) || e), next: "" };
+				}
+			})();
+
+			const send = (key, text, blocked, root) => {
+				if (blocked) {
+					setMsg((m) => Object.assign({}, m, { [key]: { kind: "blocked", text: blocked, next: (key === "archive" ? data.archiveNext : data.wireframe.next) || "" } }));
+					return;
+				}
+				if (typeof props.onSend !== "function") {
+					setMsg((m) => Object.assign({}, m, { [key]: { kind: "err", text: "面板拿不到发送通道（onSend 没挂上）。", next: "刷新页面；仍失败就把这条发给开发者。" } }));
+					return;
+				}
+				setMsg((m) => Object.assign({}, m, { [key]: { kind: "pending", text: "正在发给该功能的专属工作会话…" } }));
+				props.onSend(key, { text: text, root: root || "" }).then(
+					(r) => setMsg((m) => Object.assign({}, m, {
+						[key]: r && r.ok
+							? { kind: "ok", text: "已交给工作会话。", sid: r.sid || "", target: r.target || null, healed: !!r.healed, queued: !!r.queued }
+							: { kind: "err", text: (r && (r.message || r.blocked)) || "发送失败", next: (r && r.next) || "再按一次；仍失败就把这条错误发给开发者。", sid: (r && r.sid) || "" }
+					})),
+					(e) => setMsg((m) => Object.assign({}, m, { [key]: { kind: "err", text: String((e && e.message) || e) } }))
+				);
+			};
+
+			/** 一条动作：按钮（次按钮）→ 展开指令预览 → 再点「发到工作会话」 */
+			const action = (key, label, built, goLabel, hint) => {
+				const isOpen = open === key;
+				const m = msg[key] || null;
+				return h("div", { key: "act-" + key, "data-intake-act": key, style: { marginTop: "6px" } }, [
+					h("div", { key: "r", style: { display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap" } }, [
+						h("button", {
+							key: "b", type: "button", "data-btn": "ghost", "data-intake-toggle": key,
+							onClick: () => setOpen(isOpen ? "" : key),
+							style: {
+								font: "inherit", fontSize: "11.5px", padding: "3px 10px", borderRadius: "4px",
+								border: "1px solid " + C.soft, background: "#fff", color: C.ink, cursor: "pointer"
+							}
+						}, (isOpen ? "收起 " : "") + label),
+						h("span", { key: "h", style: { fontSize: "10.5px", color: C.muted } }, hint)
+					]),
+					isOpen ? h("div", { key: "pv", style: { marginTop: "5px" } }, built.blocked
+						? h("div", {
+							key: "bl", "data-intake-blocked": key,
+							style: { fontSize: "11px", color: C.warn, lineHeight: 1.8, background: "#fffbeb", border: "1px solid " + C.faint, borderRadius: "3px", padding: "6px 8px", userSelect: "text" }
+						}, [
+							h("div", { key: "a" }, "不发：" + built.blocked),
+							h("div", { key: "b" }, "下一步：" + (built.next || "见上面的依据"))
+						])
+						: h("div", { key: "ok" }, [
+							h("div", { key: "t", style: { fontSize: "10.5px", color: C.muted, marginBottom: "3px" } },
+								"指令预览（下面这段就是发给该功能专属工作会话的原文）："),
+							h("pre", {
+								key: "v", "data-intake-preview": key,
+								style: {
+									margin: 0, padding: "6px 8px", background: C.bg, border: "1px solid " + C.faint,
+									borderRadius: "3px", fontFamily: "monospace", fontSize: "10.5px", lineHeight: 1.6,
+									whiteSpace: "pre-wrap", color: C.ink, userSelect: "text", maxHeight: "26vh", overflow: "auto"
+								}
+							}, built.instruction),
+							h("div", { key: "a", style: { display: "flex", gap: "6px", alignItems: "center", marginTop: "5px", flexWrap: "wrap" } }, [
+								h("button", {
+									key: "s", type: "button", "data-send": "intake:" + key,
+									onClick: () => send(key, built.instruction, "", props.root || ""),
+									style: {
+										font: "inherit", fontSize: "11.5px", padding: "4px 12px", borderRadius: "4px",
+										border: "1px solid " + C.link, background: C.link, color: "#fff", cursor: "pointer"
+									}
+								}, goLabel),
+								h("span", { key: "tg", "data-target": "work-session", style: { fontSize: "10px", color: C.muted, userSelect: "text" } },
+									"发到：本功能的专属工作会话" + (props.root ? "（cwd " + winPath(props.root) + "）" : "") + "　—— 面板随后只读回、只判定。")
+							])
+						])) : null,
+					m ? h("div", {
+						key: "m",
+						style: { fontSize: "11px", marginTop: "5px", lineHeight: 1.75, userSelect: "text", color: m.kind === "err" || m.kind === "blocked" ? C.bad : (m.kind === "ok" ? C.ok : C.muted) }
+					}, [
+						h("div", { key: "t" }, (m.kind === "ok" ? "✓ " : (m.kind === "pending" ? "" : "✗ ")) + m.text),
+						m.kind === "ok" ? h("div", { key: "d", "data-sent": "ok", style: { color: C.muted } }, [
+							"目标：" + ((m.target && m.target.title) || "工作会话") +
+							(m.sid ? "　会话 " + String(m.sid).slice(0, 12) + "…" : "") +
+							(m.healed ? "　（上一轮那条会话已不在，已重建）" : "") +
+							(m.queued ? "　（它正在跑别的活，这条排在队列里）" : ""),
+							h("div", { key: "n", style: { color: C.muted } }, "跑完之后按「刷新」回本屏 —— 面板只读回、只判定。")
+						]) : null,
+						m.kind === "err" || m.kind === "blocked" ? h("div", { key: "n", style: { color: C.ink } }, "下一步：" + (m.next || "再按一次。")) : null
+					]) : null
+				]);
+			};
+
+			// ── 回写清单：每条一行（**每条能定位回定稿**：条目引用 + 行号）──────────
+			const rowTone = (s) => s === "danger" ? C.bad : (s === "missing" ? C.warn : (s === "ok" ? C.ink : C.muted));
+			const wbRows = rows.map((r, i) => h("div", {
+				key: "wb" + i, "data-intake-row": r.status, "data-intake-src": String(r.srcLine),
+				style: {
+					fontSize: "11px", lineHeight: 1.8, marginTop: "4px", paddingLeft: "7px",
+					borderLeft: "2px solid " + rowTone(r.status), userSelect: "text"
+				}
+			}, [
+				h("div", { key: "t", style: { color: rowTone(r.status), fontWeight: r.status === "danger" ? 600 : 400 } }, [
+					h("span", { key: "k", style: { color: C.muted, fontFamily: "monospace" } }, "L" + r.srcLine + "　"),
+					h("span", { key: "a" }, r.target),
+					h("span", { key: "b", style: { color: C.muted } }, "　→　" + r.action + (r.basis ? "　（依据 " + r.basis + "）" : ""))
+				]),
+				h("div", { key: "l", style: { color: C.muted } },
+					"定位：" + (r.lines.length
+						? r.lines.map((x) => "`" + x.ref + "` L" + x.line).join("　·　")
+						: (r.refs.length ? r.refs.map((x) => "`" + x + "`").join("　·　") : "（这一条没有可定位的条目编号）")) +
+					(r.foundKeys.length ? "　｜　文本键在定稿 §7：" + r.foundKeys.map((k) => "`" + k + "`").join(" / ") : "") +
+					(r.newKeys.length ? "　｜　待新增（定稿里还没有）：" + r.newKeys.map((k) => "`" + k + "`").join(" / ") : "")),
+				r.warn ? h("div", {
+					key: "w", "data-intake-warn": r.goneKeys[0] || "1",
+					style: { color: C.bad, background: "#fef2f2", border: "1px solid " + C.faint, borderRadius: "3px", padding: "4px 7px", marginTop: "3px" }
+				}, r.warn) : null
+			]));
+
+			// ── 详情折：逐条依据 + 如实标注 ─────────────────────────────────
+			const detail = [];
+			detail.push(h("div", { key: "ev", "data-intake-evidence": "1", style: { fontSize: "11px", lineHeight: 1.85, userSelect: "text" } },
+				(id.evidence || []).map((e, i) => h("div", { key: "e" + i }, [
+					h("b", { key: "l" }, e.label + "："),
+					h("span", { key: "v", style: { color: C.muted } }, e.value)
+				]))));
+			/**
+			 * ★ 对比基准那一栏：**与「派生物」那一块同口径**把当前定稿的**版本指纹原文**摆出来
+			 *   （宿主 `stat` 的 `version`，工单 25 实测的形状）+ 它换算出来的人类时间。
+			 *   ② 的"是不是同一版"就靠这一栏核对 —— 机器口径不许只藏在判定里。
+			 */
+			if (base) {
+				detail.push(h("div", {
+					key: "fp", "data-intake-fingerprint": cur.version || "none",
+					style: { fontSize: "11px", lineHeight: 1.85, marginTop: "6px", userSelect: "text" }
+				}, [
+					h("b", { key: "l" }, "对比基准："),
+					h("span", { key: "a", style: { color: C.muted } },
+						(base.current && base.current.name ? "`" + base.current.name + "`（" +
+							(base.current.from === "active" ? "头部标了 `status: active`" : "没有 active，按日期取最新") + "）" : "（没有有效定稿）")),
+					h("div", { key: "b", style: { color: C.muted, fontFamily: "monospace", wordBreak: "break-all" } },
+						"版本指纹（宿主 `stat` 的 `version` 原文，工单 25 口径）：" + (cur.version || "（面板拿不到）") +
+						(cur.version ? "　⇒ " + shortVersion(cur.version) : ""))
+				]));
+			}
+			if (base) {
+				detail.push(h("div", { key: "be", "data-intake-baseline-evidence": base.state, style: { fontSize: "11px", lineHeight: 1.85, marginTop: "6px", userSelect: "text" } },
+					(base.evidence || []).map((e, i) => h("div", { key: "b" + i }, [
+						h("b", { key: "l" }, e.label + "："),
+						h("span", { key: "v", style: { color: C.muted } }, e.value)
+					]))));
+				detail.push(h("div", { key: "bw", style: { fontSize: "10.5px", color: C.muted, marginTop: "4px", userSelect: "text" } }, "判定依据：" + base.why));
+			}
+			for (const r of rows) {
+				detail.push(h("div", {
+					key: "rw" + r.srcLine, style: { fontSize: "10.5px", color: C.muted, lineHeight: 1.8, marginTop: "4px", userSelect: "text" }
+				}, (r.evidence || []).map((t, i) => h("div", { key: "a" + i }, "· " + t))));
+			}
+			for (const n of (data.notes || [])) {
+				detail.push(h("div", { key: "nt" + n.slice(0, 10), "data-intake-note": "1", style: { fontSize: "10.5px", color: C.muted, lineHeight: 1.85, marginTop: "4px", userSelect: "text" } }, "· " + n));
+			}
+
+			// ── 首屏 ─────────────────────────────────────────────────
+			return head([
+				h("div", { key: "h1", style: { display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap", fontSize: "11.5px" } }, [
+					h("b", { key: "t", style: { fontSize: "12px", color: C.ink } }, "外部交付包"),
+					h("span", {
+						key: "f", "data-intake-zip": id.file || "none",
+						style: { color: C.ink, fontFamily: "monospace", userSelect: "text" }
+					}, id.file || "（工作区根上没有交付包）"),
+					h("span", {
+						key: "k", "data-intake-kind": id.isDelivery ? "delivery" : "unknown",
+						style: { color: id.isDelivery ? C.ok : C.bad, fontWeight: 600 }
+					}, id.isDelivery ? "认成 UE 交互交付包" : "没认成交付包"),
+					h("span", {
+						key: "b", "data-intake-baseline": base ? base.state : "unknown",
+						style: { color: baseTone, fontWeight: base && base.state === "stale" ? 700 : 400 }
+					}, "基线：" + baseText),
+					h("span", { key: "d", "data-intake-archived": archived ? "1" : "0", style: { color: archived ? C.ok : C.warn } },
+						archived ? "已归位" : "还没归位"),
+					h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
+					h("button", {
+						key: "dt", type: "button", "data-btn": "link", "data-fold": "intake",
+						"data-open": openDetail ? "1" : "0", "aria-expanded": openDetail ? "true" : "false",
+						onClick: () => setOpenDetail(!openDetail),
+						style: { font: "inherit", fontSize: "11px", color: C.link, background: "transparent", border: "none", padding: 0, cursor: "pointer" }
+					}, openDetail ? "收起详情" : "详情（逐条依据 · 如实标注）")
+				]),
+				// ① 包识别
+				h("div", { key: "id", "data-intake-identify": id.feature && id.feature.topic ? id.feature.topic : "none",
+					style: { fontSize: "11px", color: C.ink, marginTop: "3px", lineHeight: 1.8, userSelect: "text" } },
+					"① 包识别：" + (id.feature && id.feature.topic
+						? "对着功能 `" + id.feature.topic + "`（" + (id.feature.why || []).join("；") + "）"
+						: "**没定下来对着哪个功能** —— " + ((id.feature && id.feature.need) || id.need || "依据不足")) +
+					(id.dupMark ? "　｜　文件名带 `(" + id.dupMark + ")`：浏览器重复下载的副本（同一包留一份就够）" : "")),
+				// ★ 两个入口共用同一处组装的**运行期证据**：这一次算出来的指令与加载器算的那一份
+				//   必须逐字相同（不同就是"各写了一份"）。`data-intake-wire-same` 供断言读。
+				h("div", {
+					key: "ws", "data-intake-wire-same": (wireBuilt.instruction === ((data.wireframe || {}).instruction || "")) ? "1" : "0",
+					style: { display: "none" }
+				}, ""),
+				// ② 基线校验（★）
+				base ? h("div", { key: "bs", "data-intake-baseline-text": "1", style: { fontSize: "11px", color: baseTone, marginTop: "3px", lineHeight: 1.8, userSelect: "text" } },
+					"② 基线校验：" + base.text + (base.block ? "　" + base.block : "")) : null,
+				// ③ 回写清单
+				h("div", { key: "cl", style: { fontSize: "11px", color: C.ink, marginTop: "3px", lineHeight: 1.8, userSelect: "text" } }, [
+					h("div", { key: "n", "data-intake-counts": rows.length + "/" + (data.counts ? data.counts.danger : 0) }, [
+						"③ 回写清单：" + (rows.length ? rows.length + " 条" : "**读不到**（回写文档没读到，或里面没有那张表）"),
+						data.counts && data.counts.danger ? "　｜　**其中 " + data.counts.danger + " 条是「已删条目」**" : "",
+						data.counts && data.counts.missing ? "　｜　" + data.counts.missing + " 条点名的条目在定稿里找不到" : ""
+					]),
+					wbRows
+				]),
+				// ★ 那条死规矩：合成句（与逐条 warn 同时出现，确保"不静默接受"）
+				data.revertWarning ? h("div", {
+					key: "rv", "data-intake-revert": "1",
+					style: { fontSize: "11.5px", color: C.bad, background: "#fef2f2", border: "1px solid " + C.bad, borderRadius: "4px", padding: "6px 9px", marginTop: "6px", lineHeight: 1.8, userSelect: "text" }
+				}, "⚠ " + data.revertWarning) : null,
+				// 动作（两个，都是次按钮；两步走：先看预览再发）
+				// ★ 归档那一颗只在**还没归位**时给（已归位就没有这个动作可做）
+				archived ? null : action("archive", "让 agent 归档到 source", { instruction: data.archiveInstruction, blocked: data.archiveBlocked, next: data.archiveNext }, "发到工作会话",
+					"把包解压到 `" + ((data.archive && data.archive.name) || "UE交付_<日期>") + "`（不带外层包名那一层），包本体也留一份"),
+				h("div", { key: "ar", "data-intake-archive": archDir || "none",
+					style: { fontSize: "10.5px", color: C.muted, marginTop: "4px", lineHeight: 1.7, userSelect: "text" } },
+					"归档位：" + (archDir || "（拿不到功能目录）") + "　—— " + ((data.archive && data.archive.why) || "")),
+				action("wireframe", "按交付包换线框图", wireBuilt, "发到工作会话",
+					"与「文档生成 › 线框图」**共用同一处组装**（`draftstep.buildDraftInstruction`）；图源 = 包里的 `截图\\`" +
+					(((data.wireframe || {}).images || []).length ? "（" + data.wireframe.images.length + " 张）" : "") +
+					(((data.wireframe || {}).ascii || []).length ? "，§5 里要换掉 " + data.wireframe.ascii.length + " 处 ASCII 占位" : "")),
+				openDetail ? h("div", {
+					key: "db", "data-fold-body": "intake",
+					style: { marginTop: "7px", paddingTop: "6px", borderTop: "1px solid " + C.faint, maxHeight: "40vh", overflow: "auto" }
+				}, detail) : null
 			]);
 		}
 
@@ -4167,7 +4491,8 @@ import {
 				"data-reloads": String(live.reloads || 0),
 				"data-skipped": String(skipped),
 				// 各部件"被点名重读"的次数（只增不减）—— 验收"只重读受影响的部分"看的就是它
-				"data-rev": ["detail", "ledger", "final", "ui", "brain", "draft", "derived"].map((p) => p + ":" + (((props.rev || {})[p]) || 0)).join(","),
+				// （工单 26 把 `ueintake` 也列上：`source\` 桶那一帧点名它）
+				"data-rev": ["detail", "ledger", "final", "ui", "brain", "draft", "derived", "ueintake"].map((p) => p + ":" + (((props.rev || {})[p]) || 0)).join(","),
 				style: {
 					display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap",
 					border: "1px solid " + C.faint, borderLeft: "3px solid " + tone,
@@ -5029,6 +5354,8 @@ import {
 			const [draft, setDraft] = React.useState(null);
 			// ★ 工单 28：派生物的数据（交付桶里的产物 + 它们的 provenance 侧车 + 过期判定）
 			const [derived, setDerived] = React.useState(null);
+			// ★ 工单 26：外部交付包 ①②③ 的数据（包识别 / 基线校验 / 回写清单 + 归档位）
+			const [ueIntake, setUeIntake] = React.useState(null);
 			/**
 			 * ★ 工单 22 · 新建功能（**一个动作**）的四份状态：
 			 *   `newOpen` 表单开着没有 · `newTopic` 输的主题名 · `newBusy` 正在提交（拉事实 + 发送）
@@ -5064,7 +5391,7 @@ import {
 			//   · 四个 ref（版本袋 / 已应用版本 / 待落批 / 定时器）。
 			//   判定全在 `src/pure/refresh.ts`；这里只负责"按它说的去调、把结果如实显示"。
 			// ════════════════════════════════════════════════════════════════
-			const [rev, setRev] = React.useState({ detail: 0, ledger: 0, final: 0, ui: 0, brain: 0, draft: 0, derived: 0 });
+			const [rev, setRev] = React.useState({ detail: 0, ledger: 0, final: 0, ui: 0, brain: 0, draft: 0, derived: 0, ueintake: 0 });
 			const [live, setLive] = React.useState({ phase: "off", reason: "", ready: 0, total: 0, digest: "", pending: 0, changed: [], frame: "", at: 0, reloads: 0, skipped: 0 });
 			/** 读文件时收下的版本袋（`portOf` 往里写）—— 指纹与自激防护的凭据 */
 			const bagRef = React.useRef({});
@@ -5110,6 +5437,9 @@ import {
 			// ★ 工单 28：派生物（读交付桶与侧车）+ 两个派生动作的发送出口（**同一条链路**）
 			const derivedLoader = props.__derived;
 			const derivedRunner = props.__sendDerived;
+			// ★ 工单 26：外部交付包 ①②③（读工作区根的 zip + 归档位）+ 两个动作的发送出口（**同一条链路**）
+			const ueIntakeLoader = props.__ueIntake;
+			const intakeRunner = props.__sendIntake;
 			const diagnose = props.__diagnose;
 			const probe = props.__probe;
 			// ★ 工单 16：变更订阅 / 批量 stat（都是官方通道，包在组合根里）
@@ -5276,7 +5606,8 @@ import {
 				//   `planReload` 已经会点名 `brain`，但这里没接，那一票的"只重读受影响的部分"里
 				//   头脑风暴其实是靠 `detail` 间接重跑的。现在两个工作面各自有独立的计数：
 				//   切到哪一屏、哪一屏在屏幕上都由它决定，`LiveBar` 的 `data-rev` 也看得见。
-				for (const p of ["detail", "ledger", "final", "ui", "brain", "draft", "derived"]) if ((parts || []).indexOf(p) >= 0) bump[p] = 1;
+				// ★ 工单 26：`ueintake`（外部交付包 ①②③）同样进名单 —— `source\` 桶变了的帧点名它。
+				for (const p of ["detail", "ledger", "final", "ui", "brain", "draft", "derived", "ueintake"]) if ((parts || []).indexOf(p) >= 0) bump[p] = 1;
 				if (Object.keys(bump).length === 0) return;
 				setRev((prev) => {
 					const next = Object.assign({}, prev);
@@ -5945,6 +6276,61 @@ import {
 				return () => { cancelled = true; ac.abort(); };
 			}, [view, dtab, detailTopic, sessionId, state.phase, detail, rev.derived]);
 
+			/**
+			 * ★ 工单 26：进「产物」页签时读**外部交付包**（工作区根上的 zip + 归档位里的 manifest / 回写文档）。
+			 *
+			 * 输入全部来自**已有来源**（不重新列目录、不另判功能）：
+			 *   · 工作区根 = 索引会话的 cwd（`d.srWs`）—— 交付包就躺在那一层（实测）；
+			 *   · 该功能的 `source\` 桶 = **工单 12 产物清单里的 `source` 组**（归档位在不在、里面有什么，
+			 *     与「产物」页签上看到的是同一份来源）；
+			 *   · 比对基准 = `dready.final`（当前有效定稿 + 它的**版本指纹原文**，工单 28 同一口径）；
+			 *   · 改哪儿的目标 = 当前正在看的那一份定稿文件名（不是"最新" —— 面板不猜）。
+			 *
+			 * ★ 依赖里带 `rev.ueintake`：`source\` 桶变了（agent 按归档指令解压归位）**只有这一条 effect
+			 *   重跑**；`gdd\` 顶层变了（定稿改过 ⇒ 基线校验要翻）走 `rev.detail`（工单 16 的 `planReload`
+			 *   给 `gdd` 顶层点名了 `detail`）。
+			 */
+			React.useEffect(() => {
+				if (view !== "detail" || dtab !== "artifacts" || !sessionId || state.phase !== "ready") { setUeIntake(null); return; }
+				const dready = ofTopic(detail);
+				if (!dready || dready.error) { setUeIntake(null); return; }
+				if (typeof ueIntakeLoader !== "function") {
+					setUeIntake({ error: "外部交付包加载器没挂上（__ueIntake 缺失）。" });
+					return;
+				}
+				const root = dready.root || "";
+				if (!root) { setUeIntake({ error: "拿不到功能根目录：这一屏读不了。" }); return; }
+				const d0 = state.data;
+				const f = ((d0.features || [])).filter((x) => x.topic === detailTopic)[0] || null;
+				// 身份（名字 + 别名）来自看板；没有身份声明时退回目录名 —— 与 `identityOf` 同一条口径
+				const me = f
+					? { topic: f.topic, name: (f.identity && f.identity.name) || f.topic, aliases: (f.identity && f.identity.aliases) || [] }
+					: { topic: detailTopic, name: detailTopic, aliases: [] };
+				const all = (d0.features || []).map((x) => ({
+					topic: x.topic,
+					name: (x.identity && x.identity.name) || x.topic,
+					aliases: (x.identity && x.identity.aliases) || []
+				}));
+				const fc = dready.finalCheck || {};
+				let cancelled = false;
+				const ac = new AbortController();
+				ueIntakeLoader(sessionId, {
+					root: root,
+					topic: detailTopic,
+					features: [me],
+					allFeatures: all,
+					srWs: d0.srWs || "",
+					compact: compactDate(Date.now()),
+					final: dready.final
+						? Object.assign({}, dready.final, { actives: fc.actives || [] })
+						: null
+				}, ac.signal, bagRef.current).then(
+					(r) => { if (!cancelled) setUeIntake(stamped(r)); },
+					(e) => { if (!cancelled) setUeIntake(stamped({ error: "读外部交付包失败：" + String((e && e.message) || e) })); }
+				);
+				return () => { cancelled = true; ac.abort(); };
+			}, [view, dtab, detailTopic, sessionId, state.phase, detail, rev.ueintake]);
+
 			// 进「界面图」时读定稿的 §5
 			// ★ 工单 16：依赖里多了 `rev.ui` —— gdd/ 变了就重读界面图（改 png 也算）
 			React.useEffect(() => {
@@ -6102,11 +6488,22 @@ import {
 								useSessionPendingInteraction: props.useSessionPendingInteraction
 							})
 							: dtab === "artifacts"
-								? h(ArtifactBuckets, {
-									key: "ab", feature: f, detail: dview,
-									srWs: d.srWs, configRoot: d.configRoot,
-									onOpen: (abs) => handleOpen(null, abs)
-								})
+								? h("div", { key: "abwrap" }, [
+									// ★ 工单 26：外部交付包 ①②③ 永远在「产物」这一屏最上面
+									//   （归档位就在 `source\` 桶里，这一页正是逐桶列产物的地方）
+									h(IntakeBar, {
+										key: "ib", data: ofTopic(ueIntake),
+										root: (dview && dview.root) || "",
+										onSend: typeof intakeRunner === "function"
+											? (key, input) => intakeRunner(key, input, { root: (dview && dview.root) || "", rows: sessionRows })
+											: null
+									}),
+									h(ArtifactBuckets, {
+										key: "ab", feature: f, detail: dview,
+										srWs: d.srWs, configRoot: d.configRoot,
+										onOpen: (abs) => handleOpen(null, abs)
+									})
+								])
 								: dtab === "ui"
 									? h(InterfacePanel, {
 										key: "if", data: ifaceV, srWs: d.srWs,
@@ -6366,6 +6763,12 @@ import {
 			 */
 			const derivedLoader = (sid, opts, signal, bag) =>
 				loadDerived(portOf(ctx, sid, readWith(bag)), Object.assign({}, opts, { signal: signal }));
+			/**
+			 * ★ 工单 26 · 外部交付包 ①②③（读工作区根的 zip + `source\UE交付_<日期>\` 里的 manifest / 回写文档）。
+			 *   判定全在 `src/pure/ueintake.ts`（有测试）；这里只把 ctx 包成端口。
+			 */
+			const ueIntakeLoader = (sid, opts, signal, bag) =>
+				loadUeIntake(portOf(ctx, sid, readWith(bag)), Object.assign({}, opts, { signal: signal }));
 			// ════════════════════════════════════════════════════════════════
 			// ★ 工单 16 · 给面板用的两条**官方通道**（组合根是唯一知道 ctx 的地方）
 			//   · `stat`     —— 版本指纹 / 切回面板与低频轮询时的核对（正确性底线）
@@ -6972,6 +7375,41 @@ import {
 			};
 
 			/**
+			 * ★ 工单 26 · 外部交付包两个动作的出口（归档 / 按包换线框图）。
+			 *
+			 * **复用同一条链路**：`sendFeatureInstruction`（工单 15 立的、23 抽出的那一条），
+			 * 正文由界面传进来（与预览逐字相同）。这一层只做"正文非空 + 功能根拿得到"两道校验 ——
+			 * 与 `derivedRunner` 同一个形状，**不新开任何发送通道**。
+			 *
+			 * ★ 线框图那一条**不是**在这里重写正文：正文来自 `pure/ueintake.buildWireframeRequest`，
+			 * 它转手交给 `draftstep.buildDraftInstruction({action:"wireframe"})` —— 与「文档生成 › 线框图」
+			 * 手动入口**同一处组装**（工单 26 第 5 条）。
+			 *
+			 * @returns `{ ok, sid, sent, healed, queued, target, message?, next?, note? }`
+			 */
+			const intakeRunner = async (kind, input, extra) => {
+				const c = extra || {};
+				const inp = input || {};
+				const root = String(inp.root || c.root || "").replace(/\\+$/, "");
+				if (!root) {
+					return {
+						ok: false, sent: "",
+						blocked: "拿不到这个功能的功能目录（`features\\<主题>\\`）。",
+						next: "从「功能详情 › 产物」进来再发一次 —— 指令要发给该功能的专属工作会话（cwd = 功能目录）。"
+					};
+				}
+				const text = String(inp.text || "");
+				if (text === "") {
+					return {
+						ok: false, sent: "",
+						blocked: "这条指令是空的（界面没有把组装好的正文传过来）—— 动作：" + String(kind || "?") + "。",
+						next: "刷新页面再试一次；仍失败就把这条发给开发者。"
+					};
+				}
+				return sendFeatureInstruction(root, text, c);
+			};
+
+			/**
 			 * 用系统默认程序打开一个工作区文件。
 			 * ★ host 的 openWorkspacePath(request, signal) 会调 signal.throwIfAborted()，
 			 *   signal 是**必传**的；不给会抛 TypeError。
@@ -7492,6 +7930,10 @@ import {
 						// ★ 工单 28：派生物（交付桶 + 过期检测；两个派生动作走**同一条链路**）
 						__derived: derivedLoader,
 						__sendDerived: derivedRunner,
+						// ★ 工单 26：外部交付包 ①②③（工作区根的 zip + `source\UE交付_<日期>\` 归档位；
+						//   归档与线框图两个动作都走**同一条链路**，正文由纯函数组装）
+						__ueIntake: ueIntakeLoader,
+						__sendIntake: intakeRunner,
 						__diagnose: diagnose, __probe: probe, __projectRoot: projectRoot,
 						__interfaces: interfaceLoader, __detail: detailLoader,
 						__resolve: resolveIndexSession,

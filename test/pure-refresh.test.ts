@@ -118,7 +118,10 @@ test("planReload：按**桶**判定该重读什么（只重读受影响的那几
 	assert.deepEqual(at("gdd\\联盟悬赏_20260923_定稿.md").parts, ["detail", "final", "ui", "draft", "derived"]);
 	assert.deepEqual(at("gdd\\联盟悬赏_20260918.md").parts, ["detail", "final", "ui", "draft", "derived"], "成稿也是 gdd 顶层的文件");
 	assert.deepEqual(at("gdd\\UI\\UI-M1 联盟悬赏主面板.png").parts, ["detail", "ui"], "gdd 的子目录只管界面图，不必重读定稿全文");
-	assert.deepEqual(at("source\\录屏.mp4").parts, ["detail"]);
+	// ★ 工单 26：`source\` 是外部交付包的归档位（`source\UE交付_<日期>\`）⇒ 多挂 ueintake（①②③ 跟着重读）
+	assert.deepEqual(at("source\\UE交付_20260928\\manifest.json").parts, ["detail", "ueintake"]);
+	assert.deepEqual(at("source\\UE交付_20260928").parts, ["detail", "ueintake"]);
+	assert.deepEqual(at("source\\录屏.mp4").parts, ["detail", "ueintake"], "source 桶里的任何改动都重读这一屏（口径只有一条）");
 	// ★ 工单 28：`delivery\` 是派生物的桶（产物 + provenance 侧车都在里面）
 	assert.deepEqual(at("delivery\\讨伐_宣讲_20261008.html").parts, ["detail", "derived"]);
 	assert.deepEqual(at("delivery\\讨伐_宣讲_20261008.provenance.json").parts, ["detail", "derived"]);
@@ -159,9 +162,10 @@ test("unionParts：一批变更 → 部件并集（顺序稳定，便于断言�
 	assert.deepEqual(unionParts(plans), ["detail", "brain", "final", "ui", "draft", "derived"]);
 	assert.deepEqual(unionParts([]), []);
 	// ★ 工单 24：新部件在**全集**里（手动刷新会重读它）+ 顺序稳定（`RELOAD_PARTS` 是唯一顺序出处）
-	assert.deepEqual(RELOAD_PARTS, ["board", "detail", "ledger", "brain", "final", "ui", "draft", "derived"]);
+	assert.deepEqual(RELOAD_PARTS, ["board", "detail", "ledger", "brain", "final", "ui", "draft", "derived", "ueintake"]);
 	assert.ok(RELOAD_PARTS.indexOf("draft") >= 0, "文档生成工作面在「全部部件」里 —— 手动刷新不许漏它");
 	assert.ok(RELOAD_PARTS.indexOf("derived") >= 0, "派生物面在「全部部件」里 —— 手动刷新不许漏它（工单 28）");
+	assert.ok(RELOAD_PARTS.indexOf("ueintake") >= 0, "外部输入合入 ①②③ 在「全部部件」里 —— 手动刷新不许漏它（工单 26）");
 	// 单桶各自的并集（一条 analysis 帧不该牵到 draft；一条 gdd 帧要牵到）
 	assert.deepEqual(unionParts([planReload({ path: FEATURE + "\\analysis\\a.md" }, { root: FEATURE })]), ["detail", "brain"]);
 	assert.deepEqual(unionParts([planReload({ path: FEATURE + "\\gdd" }, { root: FEATURE })]), ["detail", "final", "ui", "draft", "derived"]);

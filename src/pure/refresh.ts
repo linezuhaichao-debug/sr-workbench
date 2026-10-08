@@ -127,10 +127,10 @@ export function watchPlan(opts: {
 // ════════════════════════════════════════════════════════════════
 
 /** 面板上"各自有一份数据"的部件 —— 重读的最小单位 */
-export type ReloadPart = "board" | "detail" | "ledger" | "brain" | "final" | "ui" | "draft" | "derived";
+export type ReloadPart = "board" | "detail" | "ledger" | "brain" | "final" | "ui" | "draft" | "derived" | "ueintake";
 
 /** 全部部件（手动刷新用） */
-export const RELOAD_PARTS: ReloadPart[] = ["board", "detail", "ledger", "brain", "final", "ui", "draft", "derived"];
+export const RELOAD_PARTS: ReloadPart[] = ["board", "detail", "ledger", "brain", "final", "ui", "draft", "derived", "ueintake"];
 
 export interface ReloadPlan {
 	parts: ReloadPart[];
@@ -214,7 +214,12 @@ export function planReload(notice: { path: unknown; absent?: boolean }, scope: {
 		if (depth <= 2) return { parts: ["detail", "final", "ui", "draft", "derived"], reason: "gdd 顶层变了（当前定稿 / 成稿 / 界面图都从这儿来；派生物的过期判定也跟着变）" + suffix };
 		return { parts: ["detail", "ui"], reason: "gdd 里的子目录变了（界面图）" + suffix };
 	}
-	if (BUCKETS.indexOf(seg) >= 0) return { parts: ["detail"], reason: seg + " 桶变了（只影响产物清单）" + suffix };
+	if (BUCKETS.indexOf(seg) >= 0) {
+		// ★ 工单 26：`source\` 桶多挂 `ueintake` —— 外部交付包归位到 `source\UE交付_<日期>\` 之后，
+		//   ①②③（包识别 / 基线校验 / 回写清单）要跟着重读；**不**顺手重读别的屏。
+		if (seg === "source") return { parts: ["detail", "ueintake"], reason: seg + " 桶变了（外部交付包的归档位；①②③ 跟着重读）" + suffix };
+		return { parts: ["detail"], reason: seg + " 桶变了（只影响产物清单）" + suffix };
+	}
 	return { parts: ["detail"], reason: "功能目录里的其它改动" + suffix };
 }
 
