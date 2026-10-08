@@ -58,10 +58,17 @@ export async function loadDashboardInner(
 	const cfgDir = options.cfgDir;
 	const signal = options.signal;
 
-	const [featDirs, configNames] = await Promise.all([
+	const [featDirs, configNamesRaw] = await Promise.all([
 		listDirs(port, srWs + "/features", signal, true),
 		listFiles(port, cfgDir, signal, true),
 	]);
+	/**
+	 * ★ 2026-10-08（工单 28 顺带修的实测缺口）：Excel 打开工作簿时会在同目录留一个**隐藏锁文件**
+	 *   `~$<原表名>.xlsm`（实测 165 字节，用户当场开着 `A002-货物道具表.xlsm`）。
+	 *   它不是配置数据，却能被 `\.xlsx?m?$` 匹配上 ⇒ 看板会报"93 张配置表"、还可能按主题挂到某个功能上。
+	 *   排除它（`~$` 是 Office 的临时/锁文件前缀）。**其余文件一律照列，不做别的过滤。**
+	 */
+	const configNames = configNamesRaw.filter((n) => n.indexOf("~$") !== 0);
 
 	const feats: any[] = [];
 	for (const t of featDirs) {
@@ -110,7 +117,7 @@ export async function loadDashboardInner(
 	}
 
 	// ★ 配置表只按主题**挂到已有功能上**，自己绝不创建功能
-	//   （策划配置目录有 92 张表，它们不是功能，是功能的落地资源）
+	//   （策划配置目录有 92 张表，它们不是功能，是功能的落地资源；`~$` 那种锁文件在上面已经排掉了）
 	const configByTopic = new Map<string, string[]>();
 	for (const n of configNames) {
 		if (!/\.xlsx?m?$/i.test(n)) continue;

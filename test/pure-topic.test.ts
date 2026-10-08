@@ -132,7 +132,10 @@ test("真实文件名清单：每个都能派生主题，且没有把配置表�
 	// 配置表只作属性，不创建功能
 	// ★ 原断言有两处错：① 正则 `/\.xlsm?$/i` = "xls" + 可选 m，**漏掉 .xlsx**（真表里 55 个是 .xlsx）；
 	//   ② 阈值 >50 是猜的。实测（策划配置根目录）：92 个文件，其中表文件 **84 个**（29 个 .xlsm + 55 个 .xlsx）。
-	const configNames = names.filter((n) => /\.xlsx?m?$/i.test(n));
+	// ★ 2026-10-08：Excel **打开着**工作簿时会在同目录留隐藏锁文件 `~$<原表名>.xlsm`（实测 165 字节）——
+	//   它匹配表名正则却不是配置数据，会让这条计数随机 +1（用户当场就开着 `A002-货物道具表.xlsm`）。
+	//   产品侧（`load/dashboard.ts`）同样排除了它；这里跟着排除，计数才是稳定的实测值。
+	const configNames = names.filter((n) => /\.xlsx?m?$/i.test(n) && n.indexOf("~$") !== 0);
 	assert.equal(configNames.length, 84, "策划配置根目录下的表文件数（实测）");
 	assert.equal(configNames.filter((n) => /\.xlsm$/i.test(n)).length, 29, "其中 .xlsm（实测）");
 	assert.ok(configNames.every((n) => topicOf(n).length > 0));

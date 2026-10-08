@@ -19,7 +19,8 @@ import { loadFeatureDetail } from "../src/load/feature.ts";
 import { createFsPort } from "../src/port/fs.ts";
 
 const SR_ROOT = process.env.SR_WB_WORKSPACE || "D:\\TimeMachine\\GameDesignOS\\workspace";
-const FEATURE = path.join(SR_ROOT, "features", "联盟悬赏");
+// ★ 2026-10-08 身份迁移：目录名 `联盟悬赏` → `讨伐`（文档名没变）
+const FEATURE = path.join(SR_ROOT, "features", "讨伐");
 const FEATURE2 = path.join(SR_ROOT, "features", "诸神降临");
 const CONFIG_DIR = "D:\\TimeMachine\\planner\\策划配置";
 
@@ -43,11 +44,11 @@ async function load(topic: string) {
 }
 
 test("真数据 · 联盟悬赏：成稿被认出来（不带「成稿」后缀），两大部分与配置支线一并读出", async () => {
-	const { got, detail } = await load("联盟悬赏");
+	const { got, detail } = await load("讨伐");
 
 	// ① 成稿：文件名不带「成稿」后缀，靠 `gddKindOf` 归类
 	assert.equal(got.name, "联盟悬赏_20260918.md");
-	assert.ok(got.path.replace(/\//g, "\\").endsWith("features\\联盟悬赏\\gdd\\联盟悬赏_20260918.md"));
+	assert.ok(got.path.replace(/\//g, "\\").endsWith("features\\讨伐\\gdd\\联盟悬赏_20260918.md"));
 	assert.deepEqual(got.drafts, ["联盟悬赏_20260918.md"], "gdd\\ 里只有这一份成稿");
 	assert.equal(got.head.doc_type, "draft_gdd");
 	assert.equal(got.head.status, "archived", "定稿通过后成稿归档（真数据）");
@@ -121,7 +122,9 @@ test("真数据 · 诸神降临：有成稿、没定稿 → 配置支线停在�
 	assert.equal(got.finalName, "", "这个功能还没有定稿");
 	assert.equal(got.config.stage, "rules-ready");
 	assert.ok(/规则就绪/.test(got.config.label), got.config.label);
-	assert.deepEqual(got.config.steps.map((s) => s.done), [true, false, false, false]);
+	// ★ 2026-10-08 合并：`神话宝库` 并进 `诸神降临`，它的读回回执 `readback_A079_神话宝库_20260916.md`
+	//   跟着进了同一个 `evidence\` ⇒ 第三步「读回验收」由 false 变 true（口径没变，是数据并过来了）。
+	assert.deepEqual(got.config.steps.map((s) => s.done), [true, false, true, false]);
 	assert.ok(got.config.missing.some((m) => /还没有定稿/.test(m)), got.config.missing.join("\n"));
 	assert.equal(got.doc.complete, true, "成稿本身两大部分齐全");
 	assert.equal(got.doc.parts[0].line > 0, true);

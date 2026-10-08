@@ -19,7 +19,8 @@ import {
 import { draftDocOf } from "../src/pure/drafttree.ts";
 
 const SR_ROOT = process.env.SR_WB_WORKSPACE || "D:\\TimeMachine\\GameDesignOS\\workspace";
-const FEATURE = path.join(SR_ROOT, "features", "联盟悬赏");
+// ★ 2026-10-08 身份迁移：目录名 `联盟悬赏` → `讨伐`（文档名没变）
+const FEATURE = path.join(SR_ROOT, "features", "讨伐");
 const FINAL = path.join(FEATURE, "gdd", "联盟悬赏_20260923_定稿.md");
 const PREV_FINAL = path.join(FEATURE, "gdd", "联盟悬赏_20260921_定稿.md");
 const DRAFT = path.join(FEATURE, "gdd", "联盟悬赏_20260918.md");

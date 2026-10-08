@@ -14,6 +14,8 @@
  *     取不到时间时**如实降级**（`finalGate` 的 `unknown-time`：判不了就不放行，不默认有效）。
  *   · 定稿门（"这份定稿能不能交程序"）由 `../pure/finalgate.ts` 给 —— 它只把上面那几条判据
  *     翻成人话，**不重算判据**。
+ *   · ★ 工单 28：另给一份 `final`（当前有效定稿的名字 / 路径 / **版本指纹原文**）——
+ *     派生物的过期判定要对齐的就是它（口径见 `../pure/derived.ts` 与 `../pure/fsstamp.ts`）。
  */
 
 import { annotateFinals, featureArtifacts, stageProgress } from "../pure/artifacts.ts";
@@ -69,11 +71,23 @@ export async function scanFeatureListing(port: WorkspacePort, options: FeatureDe
  *   · 只 stat **定稿与审查报告**这几个（真实功能里 2~5 个），不给整份产物清单每个都来一遍。
  */
 async function mtimeMsOf(port: WorkspacePort, absPath: string, signal?: AbortSignal): Promise<number> {
+	return mtimeOf(await versionOf(port, absPath, signal));
+}
+
+/**
+ * ★ 工单 28：拿**版本指纹原文**（宿主 `stat` 的 `version`，形状 `dev:ino:size:mtimeNs:ctimeNs`）。
+ *
+ * 为什么与 `mtimeMsOf` 分开：工单 25 只需要"谁更新"（时间就够了），而工单 28 的过期判定要的是
+ * **"是不是同一份内容"** —— 那正是 `version` 这串不透明令牌自己的语义（与工单 16 的指纹、
+ * 定稿门的"报告比定稿旧"同一套口径）。**不解析**它来判新旧，只做等值比对。
+ * 取不到给空串（= 面板拿不到指纹）⇒ 派生物一律判"看不到依据"，不默认最新。
+ */
+async function versionOf(port: WorkspacePort, absPath: string, signal?: AbortSignal): Promise<string> {
 	try {
 		const st = await port.stat(absPath, signal);
-		return mtimeOf(st && st.version);
+		return String((st && st.version) || "");
 	} catch (e) {
-		return 0;
+		return "";
 	}
 }
 
@@ -101,14 +115,15 @@ export async function loadFeatureDetail(port: WorkspacePort, options: FeatureDet
 	const finalFiles = gddFiles.filter((f) => !f.subdir && f.kind === "final");
 	const reviewFiles = gddFiles.filter((f) => !f.subdir && f.kind === "review");
 
-	// ② 每份定稿的 frontmatter（status 是 V1 的唯一判据）+ **每份的时间**（工单 25）
-	const heads: Array<{ name: string; doc_type: unknown; status: unknown; mtime: number }> = [];
+	// ② 每份定稿的 frontmatter（status 是 V1 的唯一判据）+ **每份的时间与版本指纹**（工单 25 / 28）
+	const heads: Array<{ name: string; doc_type: unknown; status: unknown; mtime: number; version: string }> = [];
 	for (const f of finalFiles) {
 		const abs = root + "/gdd/" + f.name;
 		const head = parseFrontmatter((await readHead(port, abs, signal)) || "");
+		const v = await versionOf(port, abs, signal);
 		heads.push({
 			name: f.name, doc_type: head ? head.doc_type : null, status: head ? head.status : null,
-			mtime: await mtimeMsOf(port, abs, signal)
+			mtime: mtimeOf(v), version: v
 		});
 	}
 	const finalCheck = checkFinals(heads);
@@ -150,6 +165,7 @@ export async function loadFeatureDetail(port: WorkspacePort, options: FeatureDet
 	});
 
 	// ⑦ 时间这一项的**如实说明**：拿到就说拿到，拿不到就说看不到（绝不含糊成"没问题"）
+	const curHead = current ? heads.filter((h) => h.name === current)[0] || null : null;
 	if (current) {
 		if (currentMs > 0) {
 			notes.push("时间来源：宿主 `stat` 的版本串（`dev:ino:size:mtimeNs:ctimeNs` 的第 4 段 = mtime 纳秒）—— " +
@@ -168,6 +184,18 @@ export async function loadFeatureDetail(port: WorkspacePort, options: FeatureDet
 		checklist: checklist,
 		gate: gate,
 		notes: notes,
+		/**
+		 * ★ 工单 28：**当前有效定稿**（派生物要对齐的那一份）+ 它的**版本指纹原文**。
+		 *   · `name` / `path` —— 哪一份（`checkFinals` 认出来的，`from` 说明依据是 `active` 还是日期）；
+		 *   · `version` —— 宿主 `stat` 的 `version` 原文（`dev:ino:size:mtimeNs:ctimeNs`）。
+		 *     派生物的过期判定就是拿**侧车里记的这串**与**这一串**做等值比对（口径引工单 25）；
+		 *     拿不到就是空串 ⇒ 派生物一律显示"面板看不到依据"，**不默认它是最新的**。
+		 */
+		final: {
+			name: finalCheck.current || "", path: current ? root + "/gdd/" + current : "",
+			version: curHead ? curHead.version : "", mtime: curHead ? curHead.mtime : 0,
+			from: finalCheck.currentFrom || ""
+		},
 		// ★ 工单 16：功能根下**确实存在**的那两层的名字（订阅变更要逐个盯）——
 		//   0.2.0 的 `changes` 是目标定向 + depth 0，只订阅功能根看不见 `gdd\` 里的写入（实测）。
 		dirs: Object.keys(listing.dirs),

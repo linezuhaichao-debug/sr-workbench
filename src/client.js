@@ -99,6 +99,17 @@ import { loadBrainstorm } from "./load/brainstorm.ts";
 //   ★ 指令组装器与动作表**不在 client.js 里再抄一份**：`INTAKE` 暴露 `buildDraftInstruction` /
 //     `DRAFT_ACTIONS`（`src/pure/intake.ts` 从 `draftstep.ts` re-export），与头脑风暴那条路同口径。
 import { loadDraftWorkface } from "./load/draft.ts";
+// ★ 工单 28 · 派生物与过期检测（「定稿修订」工作面上的次级一块）：
+//   · 判定全在 `src/pure/derived.ts`（产物/侧车命名 · 侧车解析 · **过期判定** · 指令组装）；
+//     **过期判定的口径引用工单 25 的实测**：版本指纹 = 宿主 `stat` 的 `version` 原文
+//     （`dev:ino:size:mtimeNs:ctimeNs`），只做等值比对、不解析 —— 见 `src/pure/fsstamp.ts` 的文件头。
+//   · 只读那一侧在 `src/load/derived.ts`（读交付桶里每份产物的侧车 + 当前定稿的指纹）；
+//   · 两个动作（宣讲 HTML / AI 读版）的指令由 `buildDerivedInstruction` 拼（在加载器里，
+//     与界面上那段预览**逐字相同**），发出去仍走 `sendFeatureInstruction`
+//     （工单 15 立的、23 抽出的那条链路，**不开新通道**）。
+//   · 面板**不写盘**：产物与 provenance 侧车都是 agent 按指令写的，面板只读回、只判定。
+import { shortVersion } from "./pure/derived.ts";
+import { loadDerived } from "./load/derived.ts";
 // ★ 工单 22 · 新建功能：**一个动作**（目录 + 六个桶 + 身份声明 + 专属工作区）。
 //   · 判定与组装全在 `src/pure/createfeature.ts`（主题名合法性 / 冲突 / id / 指令 + 脚本 / 回读判定）
 //     与 `src/pure/featureid.ts`（身份声明的形状与解析）—— 面板**不写盘**，它只算、只发、只回读；
@@ -657,10 +668,19 @@ import {
 			//    旧结构（平铺的 proposals/analysis/decisions/evidence）是"待清理的素材仓库"：
 			//    素材已由 `migrate-to-features.js` 搬进新结构，面板**不再读它**，
 			//    只统计还剩多少文件 —— 那个数字的唯一用途是提示你"可以删了"。
-			const [featDirs, configNames] = await Promise.all([
+			const [featDirs, configNamesRaw] = await Promise.all([
 				listDirs(ctx, sid, srWs + "/features", signal, true),
 				listDir(ctx, sid, cfgDir, signal, true)
 			]);
+			/**
+			 * ★ 2026-10-08（工单 28 顺带修的实测缺口）：Excel 打开工作簿时会在同目录留一个**隐藏锁文件**
+			 *   `~$<原表名>.xlsm`（实测 165 字节 —— 真机上用户当场开着 `A002-货物道具表.xlsm`）。
+			 *   它匹配 `\.xlsx?m?$` ⇒ 看板会报"93 张配置表"、还可能按主题挂到某个功能上。
+			 *   排除它（`~$` 是 Office 的临时/锁文件前缀）。**其余文件一律照列。**
+			 *   ★ 注意：看板逻辑在这里**还有一份内联实现**（工单 32 只把别的模块接了过去）——
+			 *     所以 `src/load/dashboard.ts` 与这一处**同一条改动要一起做**（那一条管测试与 harness）。
+			 */
+			const configNames = configNamesRaw.filter((n) => n.indexOf("~$") !== 0);
 
 			const feats = [];
 			for (const t of featDirs) {
@@ -1534,6 +1554,269 @@ import {
 		 * ★ 定位卡 = 条目引用 + 原文（带行号）+ 影响范围（**每一处标明属于哪一类边**，六类齐全）
 		 *   + 三段式指令原文（`buildFixInstruction` 拼的，与真正发出去的是同一段）。
 		 */
+		/**
+		 * ═══ 工单 28 · 派生物与过期检测（「定稿修订」工作面上的**次级**一块）═══
+		 *
+		 * 首屏（克制，人话）：
+		 *   一行「派生物 · 基于 <当前有效定稿>」+ 一个〔详情〕折叠入口
+		 *   + **每个类别一行**（宣讲 HTML / AI 读版）：结论人话 + **一个次按钮**（`data-btn="ghost"`）。
+		 *   这里**没有主按钮** —— 「一屏一个主按钮」那条纪律是给「文档生成」的 Y 形首屏定的，
+		 *   这一屏原来一个主按钮都没有，加进来的也只是次按钮（`data-btn=primary` 恒为 0）。
+		 *
+		 * 折起来的东西（机器口径）：指纹原文、侧车文件名与读没读到、每一份产物的明细、
+		 *   如实标注（gdd\ 里放错桶的定稿 HTML、没有侧车的旧派生物…）。**收起时体根本不渲染**。
+		 *
+		 * 动作（两步，与工单 15/23/24 同一条纪律「先看后发」）：点〔出…/重新生成…〕→ 展开
+		 *   **指令预览**（`pre[data-derived-preview=<kind>]`，与发出去的那一段**逐字相同**）
+		 *   → 再点〔发到工作会话〕（`data-send="derived:<kind>"`）才真发。
+		 *   缺前提（没有可派生的定稿 / 拿不到指纹）时**不给预览也不发**，照原样显示 `blocked` + `next`。
+		 */
+		function DerivedBar(props) {
+			const data = props.data;
+			const [openKind, setOpenKind] = React.useState("");
+			const [openDetail, setOpenDetail] = React.useState(false);
+			const [msg, setMsg] = React.useState({});
+
+			const toneOf = (s) => s === "fresh" ? C.ok : (s === "stale" ? C.warn : (s === "unknown" ? C.bad : C.muted));
+			const head = (extra, children) => h("div", Object.assign({
+				"data-derived-bar": "1",
+				style: {
+					border: "1px solid " + C.faint, borderLeft: "3px solid " + (data && !data.error ? C.link : C.soft),
+					background: "#fff", borderRadius: "4px", padding: "7px 11px", marginBottom: "10px"
+				}
+			}, extra || {}), children);
+
+			if (!data) {
+				return h("div", {
+					"data-derived-bar": "none",
+					style: { fontSize: "11.5px", color: C.muted, marginBottom: "10px" }
+				}, "正在读派生物…");
+			}
+			if (data.error) {
+				return h("div", {
+					"data-derived-bar": "error",
+					style: {
+						fontSize: "11.5px", color: C.bad, marginBottom: "10px", padding: "7px 11px",
+						border: "1px solid " + C.faint, borderLeft: "3px solid " + C.bad, background: "#fef2f2", borderRadius: "4px"
+					}
+				}, data.error);
+			}
+
+			const kinds = data.kinds || [];
+			const cur = data.current || { name: "", text: "没有可派生的定稿" };
+			const send = (k) => {
+				if (typeof props.onDerived !== "function") {
+					setMsg((m) => Object.assign({}, m, { [k.kind]: { kind: "err", text: "面板拿不到发送通道（onDerived 没挂上）。" } }));
+					return;
+				}
+				if (k.blocked) return;                    // 缺前提：界面上已经写明，不发
+				setMsg((m) => Object.assign({}, m, { [k.kind]: { kind: "pending", text: "正在发给工作会话…" } }));
+				props.onDerived(k.kind, { text: k.instruction, root: props.root || "" }).then(
+					(r) => setMsg((m) => Object.assign({}, m, {
+						[k.kind]: r && r.ok
+							? {
+								kind: "ok", text: "已交给工作会话。", sid: r.sid || "", target: r.target || null,
+								healed: !!r.healed, queued: !!r.queued
+							}
+							: {
+								kind: "err", text: (r && (r.message || r.blocked)) || "发送失败",
+								next: (r && r.next) || "再按一次；仍失败就把这条错误发给开发者。", sid: (r && r.sid) || ""
+							}
+					})),
+					(e) => setMsg((m) => Object.assign({}, m, { [k.kind]: { kind: "err", text: String((e && e.message) || e) } }))
+				);
+			};
+			const jump = (sid) => {
+				if (typeof props.onOpenSession === "function") props.onOpenSession(sid);
+			};
+
+			// ── 首屏：一行结论 + 每个类别一行 ────────────────────────────────
+			const rows = kinds.map((k) => {
+				const m = msg[k.kind] || null;
+				const open = openKind === k.kind;
+				const artifacts = k.artifacts || [];
+				return h("div", { key: "k" + k.kind, style: { marginTop: "5px" } }, [
+					h("div", {
+						key: "row",
+						style: { display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap", fontSize: "11.5px" }
+					}, [
+						h("b", { key: "l", style: { fontSize: "12px", color: C.ink, flex: "0 0 auto" } }, k.label),
+						h("span", {
+							key: "st", "data-derived-kind": k.kind, "data-derived-state": k.state,
+							style: { color: toneOf(k.state), fontWeight: k.state === "stale" ? 700 : 400 }
+						}, k.text),
+						h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
+						// 已经有产物 ⇒ 按钮说「重新生成…」；还没有 ⇒ 说「出…」。
+						// 两种都**不是**主按钮（`data-btn=ghost`），并且 `data-derived-action` 区分动作。
+						h("button", {
+							key: "b", type: "button",
+							"data-btn": "ghost", "data-derived": k.kind,
+							"data-derived-action": artifacts.length ? "regen" : "generate",
+							onClick: () => { setOpenKind(open ? "" : k.kind); },
+							style: {
+								font: "inherit", fontSize: "11.5px", padding: "3px 10px", borderRadius: "4px",
+								border: "1px solid " + C.soft, background: "#fff", color: C.ink, cursor: "pointer", flex: "0 0 auto"
+							}
+						}, (open ? "收起 " : "") + k.button)
+					]),
+					open ? h("div", { key: "pv", style: { marginTop: "5px" } }, k.blocked
+						? h("div", {
+							key: "bl", "data-derived-blocked": k.kind,
+							style: {
+								fontSize: "11px", color: C.warn, lineHeight: 1.8, background: "#fffbeb",
+								border: "1px solid " + C.faint, borderRadius: "3px", padding: "6px 8px", userSelect: "text"
+							}
+						}, [
+							h("div", { key: "a" }, "不发：" + k.blocked),
+							h("div", { key: "b" }, "下一步：" + k.next)
+						])
+						: h("div", { key: "ok" }, [
+							h("div", {
+								key: "t", style: { fontSize: "10.5px", color: C.muted, marginBottom: "3px" }
+							}, "指令预览（下面这段就是发给该功能专属工作会话的原文 · 含要原样落盘的 provenance 侧车）："),
+							h("pre", {
+								key: "v", "data-derived-preview": k.kind,
+								style: {
+									margin: 0, padding: "6px 8px", background: C.bg, border: "1px solid " + C.faint,
+									borderRadius: "3px", fontFamily: "monospace", fontSize: "10.5px", lineHeight: 1.6,
+									whiteSpace: "pre-wrap", color: C.ink, userSelect: "text", maxHeight: "26vh", overflow: "auto"
+								}
+							}, k.instruction),
+							h("div", {
+								key: "act", style: { display: "flex", gap: "6px", alignItems: "center", marginTop: "5px", flexWrap: "wrap" }
+							}, [
+								h("button", {
+									key: "s", type: "button", "data-send": "derived:" + k.kind,
+									onClick: () => send(k),
+									style: {
+										font: "inherit", fontSize: "11.5px", padding: "4px 12px", borderRadius: "4px",
+										border: "1px solid " + C.link, background: C.link, color: "#fff", cursor: "pointer"
+									}
+								}, "发到工作会话"),
+								h("span", {
+									key: "tg", "data-target": "work-session",
+									style: { fontSize: "10px", color: C.muted, userSelect: "text" }
+								}, "发到：本功能的专属工作会话" +
+									(props.root ? "（cwd " + winPath(props.root) + "）" : "") +
+									"　—— 它产出 " + k.plan.artifact + " 与 " + k.plan.sidecar + "；面板随后只读回、只判定。")
+							])
+						])) : null,
+					m ? h("div", {
+						key: "m",
+						style: {
+							fontSize: "11px", marginTop: "5px", lineHeight: 1.7, userSelect: "text",
+							color: m.kind === "err" ? C.bad : (m.kind === "ok" ? C.ok : C.muted)
+						}
+					}, [
+						h("div", { key: "t" }, (m.kind === "ok" ? "✓ " : (m.kind === "err" ? "✗ " : "")) + m.text),
+						m.kind === "ok" ? h("div", {
+							key: "d", "data-sent": "ok", style: { color: C.muted }
+						}, [
+							"目标：" + ((m.target && m.target.title) || "工作会话") +
+							(m.sid ? "　会话 " + String(m.sid).slice(0, 12) + "…" : "") +
+							(m.target && m.target.root ? "　cwd " + winPath(m.target.root) : ""),
+							m.healed ? h("div", { key: "h", style: { color: C.warn } }, "上一轮记的那条会话已经不在了 —— 已自动重建一条并重发。") : null,
+							m.queued ? h("div", { key: "q", style: { color: C.warn } }, "它正在跑别的活，这条指令排在队列里。") : null,
+							h("div", { key: "n", style: { color: C.muted } },
+								"跑完之后回本屏（或按「刷新」）—— 产物与侧车一落盘，这里就会说它是不是最新。")
+						]) : null,
+						m.kind === "err" ? h("div", { key: "n", style: { color: C.ink } }, "下一步：" + (m.next || "再按一次。")) : null,
+						m.sid && typeof props.onOpenSession === "function" ? h("button", {
+							key: "j", type: "button", "data-jump": m.sid, onClick: () => jump(m.sid),
+							style: {
+								font: "inherit", fontSize: "11px", padding: "2px 9px", marginTop: "3px",
+								border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer"
+							}
+						}, "跳到那个会话 ›") : null
+					]) : null
+				]);
+			});
+
+			// ── 详情（**默认收起**；收起时里面的字根本不渲染）──────────────────
+			const detailRows = [];
+			detailRows.push(h("div", {
+				key: "cur",
+				"data-derived-detail": "current",
+				style: { fontSize: "11px", color: C.ink, lineHeight: 1.8, userSelect: "text" }
+			}, [
+				h("div", { key: "a" }, "比对基准：" + cur.text),
+				cur.name ? h("div", {
+					key: "b", style: { color: C.muted }
+				}, "定稿路径：" + (cur.path || "（拿不到）")) : null,
+				h("div", { key: "c", style: { color: C.muted, fontFamily: "monospace", wordBreak: "break-all" } },
+					"版本指纹（宿主 `stat` 的 `version` 原文）：" + (cur.version || "（面板拿不到）"))
+			]));
+			for (const k of kinds) {
+				for (const a of (k.artifacts || [])) {
+					detailRows.push(h("div", {
+						key: "a" + k.kind + a.name,
+						"data-derived-artifact": a.name,
+						style: { fontSize: "11px", lineHeight: 1.85, marginTop: "5px", userSelect: "text" }
+					}, [
+						h("div", { key: "n", style: { color: toneOf(a.verdict.state), fontWeight: 600 } },
+							a.name + "　→　" + a.verdict.text),
+						h("div", { key: "s", style: { color: C.muted } },
+							"侧车：" + a.sidecar + (a.sidecarFound ? "（读到了）" : "（**读不到**）") +
+							(a.srcName ? "　·　可复跑源：" + a.srcName : "") +
+							(a.generatedAt ? "　·　生成时间：" + a.generatedAt : "　·　生成时间：未标")),
+						h("div", { key: "v", style: { color: C.muted, fontFamily: "monospace", wordBreak: "break-all" } },
+							"记录指纹 " + shortVersion(a.verdict.recorded) + "　/　当前指纹 " + shortVersion(a.verdict.current)),
+						h("div", { key: "w", style: { color: C.muted } }, "判定依据：" + a.verdict.why)
+					]));
+				}
+				detailRows.push(h("div", {
+					key: "t" + k.kind, "data-derived-tool": k.kind,
+					style: { fontSize: "10.5px", color: C.muted, lineHeight: 1.85, marginTop: "5px", userSelect: "text" }
+				}, [
+					h("div", { key: "a" }, "按技能：" + k.tool + " —— " + k.note),
+					h("div", { key: "b", style: { fontFamily: "monospace", wordBreak: "break-all" } }, "skill 正文：" + k.toolPath),
+					h("div", { key: "c" }, "这一次会产出：" + k.plan.artifact + "　+　" + k.plan.sidecar)
+				]));
+			}
+			for (const n of (data.notes || [])) {
+				detailRows.push(h("div", {
+					key: "note" + n.slice(0, 12), "data-derived-note": "1",
+					style: { fontSize: "10.5px", color: C.muted, lineHeight: 1.85, marginTop: "5px", userSelect: "text" }
+				}, "· " + n));
+			}
+
+			return head({}, [
+				h("div", {
+					key: "h1",
+					style: { display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap", fontSize: "11.5px" }
+				}, [
+					h("b", { key: "t", style: { fontSize: "12px", color: C.ink } }, "派生物"),
+					h("span", {
+						key: "c", "data-derived-current": cur.name || "none",
+						style: { color: C.muted, userSelect: "text" }
+					}, "基于 " + cur.text),
+					h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
+					h("button", {
+						key: "d", type: "button", "data-btn": "link", "data-fold": "derived",
+						"data-open": openDetail ? "1" : "0",
+						"aria-expanded": openDetail ? "true" : "false",
+						onClick: () => setOpenDetail(!openDetail),
+						style: {
+							font: "inherit", fontSize: "11px", color: C.link, background: "transparent",
+							border: "none", padding: 0, cursor: "pointer", flex: "0 0 auto"
+						}
+					}, openDetail ? "收起详情" : "详情（依据 · 指纹 · 侧车）")
+				]),
+				h("div", {
+					key: "note",
+					style: { fontSize: "10px", color: C.muted, marginTop: "3px", lineHeight: 1.7, userSelect: "text" }
+				}, "这是**输出工具**，不是设计流程的一环 —— 生成它不产生校准记录、不进设计台账。"),
+				...rows,
+				openDetail ? h("div", {
+					key: "dbody", "data-fold-body": "derived",
+					style: {
+						marginTop: "7px", paddingTop: "6px", borderTop: "1px solid " + C.faint,
+						maxHeight: "34vh", overflow: "auto"
+					}
+				}, detailRows) : null
+			]);
+		}
+
 		function FinalDoc(props) {
 			const d = props.doc;
 			const [sel, setSel] = React.useState(null);
@@ -1545,14 +1828,27 @@ import {
 			const graph = React.useMemo(() => (d && d.blocks ? buildRefGraph(d) : null), [d]);
 			const tree = React.useMemo(() => (d && d.outline ? buildFinalTree(d, graph) : null), [d, graph]);
 
-			if (!d) return h("p", { style: { color: C.muted, fontSize: "12px" } }, "正在读定稿…");
-			if (d.empty) return h("p", { style: { color: C.muted, fontSize: "12px" } }, d.empty);
-			if (d.error) return h("p", { style: { color: C.bad, fontSize: "12px", userSelect: "text" } }, d.error);
+			/**
+			 * ★ 工单 28：**派生物那块永远在这屏最上面** —— 包括"这个功能还没有定稿"那几种情形
+			 *   （真实数据里就有两个：诸神降临 / 英雄圣物）。降级也要如实说清，而不是整屏只剩一句话。
+			 */
+			const bar = h(DerivedBar, {
+				key: "dv",
+				data: props.derived || null,
+				root: props.featureRoot || "",
+				onDerived: props.onDerived || null,
+				onOpenSession: props.onOpenSession || null
+			});
+			const wrap = (children) => h("div", { key: "wrap" }, [bar, children]);
+
+			if (!d) return wrap(h("p", { key: "p", style: { color: C.muted, fontSize: "12px" } }, "正在读定稿…"));
+			if (d.empty) return wrap(h("p", { key: "p", style: { color: C.muted, fontSize: "12px" } }, d.empty));
+			if (d.error) return wrap(h("p", { key: "p", style: { color: C.bad, fontSize: "12px", userSelect: "text" } }, d.error));
 			if (!d.blocks || !d.blocks.length) {
-				return h("p", { style: { color: C.muted, fontSize: "12px" } }, "定稿里没解析出章节结构。");
+				return wrap(h("p", { key: "p", style: { color: C.muted, fontSize: "12px" } }, "定稿里没解析出章节结构。"));
 			}
 			if (!tree || !tree.counts.chapters) {
-				return h("p", { style: { color: C.muted, fontSize: "12px" } }, "定稿里没解析出章节结构。");
+				return wrap(h("p", { key: "p", style: { color: C.muted, fontSize: "12px" } }, "定稿里没解析出章节结构。"));
 			}
 
 			/** 相对路径 → **绝对路径**：按定稿所在目录解析（含空格与中点号也照原样拼，不做转义） */
@@ -1993,7 +2289,7 @@ import {
 				})
 			)));
 
-			return h("div", { style: { display: "flex", gap: "16px", alignItems: "flex-start" } }, [
+			return wrap(h("div", { key: "cols", "data-workface": "final", style: { display: "flex", gap: "16px", alignItems: "flex-start" } }, [
 				h("div", {
 					key: "toc",
 					style: {
@@ -2011,7 +2307,7 @@ import {
 						style: { flex: "1 1 auto", minHeight: 0, maxHeight: "68vh", overflow: "auto" }
 					}, body)
 				])
-			]);
+			]));
 		}
 
 		function DecisionLedger(props) {
@@ -3898,7 +4194,7 @@ import {
 				"data-reloads": String(live.reloads || 0),
 				"data-skipped": String(skipped),
 				// 各部件"被点名重读"的次数（只增不减）—— 验收"只重读受影响的部分"看的就是它
-				"data-rev": ["detail", "ledger", "final", "ui", "brain", "draft"].map((p) => p + ":" + (((props.rev || {})[p]) || 0)).join(","),
+				"data-rev": ["detail", "ledger", "final", "ui", "brain", "draft", "derived"].map((p) => p + ":" + (((props.rev || {})[p]) || 0)).join(","),
 				style: {
 					display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap",
 					border: "1px solid " + C.faint, borderLeft: "3px solid " + tone,
@@ -5779,6 +6075,8 @@ import {
 			const [brain, setBrain] = React.useState(null);
 			// ★ 工单 24：文档生成工作面的数据（成稿的两大部分与左树 + 配置支线走到哪）
 			const [draft, setDraft] = React.useState(null);
+			// ★ 工单 28：派生物的数据（交付桶里的产物 + 它们的 provenance 侧车 + 过期判定）
+			const [derived, setDerived] = React.useState(null);
 			/**
 			 * ★ 工单 22 · 新建功能（**一个动作**）的四份状态：
 			 *   `newOpen` 表单开着没有 · `newTopic` 输的主题名 · `newBusy` 正在提交（拉事实 + 发送）
@@ -5814,7 +6112,7 @@ import {
 			//   · 四个 ref（版本袋 / 已应用版本 / 待落批 / 定时器）。
 			//   判定全在 `src/pure/refresh.ts`；这里只负责"按它说的去调、把结果如实显示"。
 			// ════════════════════════════════════════════════════════════════
-			const [rev, setRev] = React.useState({ detail: 0, ledger: 0, final: 0, ui: 0, brain: 0, draft: 0 });
+			const [rev, setRev] = React.useState({ detail: 0, ledger: 0, final: 0, ui: 0, brain: 0, draft: 0, derived: 0 });
 			const [live, setLive] = React.useState({ phase: "off", reason: "", ready: 0, total: 0, digest: "", pending: 0, changed: [], frame: "", at: 0, reloads: 0, skipped: 0 });
 			/** 读文件时收下的版本袋（`portOf` 往里写）—— 指纹与自激防护的凭据 */
 			const bagRef = React.useRef({});
@@ -5858,6 +6156,9 @@ import {
 			// ★ 工单 24：文档生成工作面（成稿 + 配置支线）+ 三个动作的发送出口（**同一条链路**）
 			const draftLoader = props.__draft;
 			const draftRunner = props.__sendDraft;
+			// ★ 工单 28：派生物（读交付桶与侧车）+ 两个派生动作的发送出口（**同一条链路**）
+			const derivedLoader = props.__derived;
+			const derivedRunner = props.__sendDerived;
 			const diagnose = props.__diagnose;
 			const probe = props.__probe;
 			// ★ 工单 16：变更订阅 / 批量 stat（都是官方通道，包在组合根里）
@@ -6024,7 +6325,7 @@ import {
 				//   `planReload` 已经会点名 `brain`，但这里没接，那一票的"只重读受影响的部分"里
 				//   头脑风暴其实是靠 `detail` 间接重跑的。现在两个工作面各自有独立的计数：
 				//   切到哪一屏、哪一屏在屏幕上都由它决定，`LiveBar` 的 `data-rev` 也看得见。
-				for (const p of ["detail", "ledger", "final", "ui", "brain", "draft"]) if ((parts || []).indexOf(p) >= 0) bump[p] = 1;
+				for (const p of ["detail", "ledger", "final", "ui", "brain", "draft", "derived"]) if ((parts || []).indexOf(p) >= 0) bump[p] = 1;
 				if (Object.keys(bump).length === 0) return;
 				setRev((prev) => {
 					const next = Object.assign({}, prev);
@@ -6645,6 +6946,54 @@ import {
 				return () => { cancelled = true; ac.abort(); };
 			}, [view, detailTopic, dtab, sessionId, state.phase, rev.final]);
 
+			/**
+			 * ★ 工单 28：进「定稿修订」工作面时读**派生物**（交付桶里的产物 + 它们的 provenance 侧车）。
+			 *
+			 * 输入全部来自**已有来源**（不重新列目录 —— 与头脑风暴 / 文档生成同一条纪律）：
+			 *   · 交付桶的文件清单 = 工单 12 产物清单里的 `delivery` 组（`subdir` 带上，能拼绝对路径）；
+			 *   · 比对基准 = `detail.final`（`checkFinals` 认出来的当前有效定稿 + 它的**版本指纹原文**）；
+			 *   · 界面图目录与张数 = `gdd` 组里 `kind === "ui"` 的那些（宣讲页的图源）。
+			 *
+			 * ★ 依赖里带 `rev.derived`：`delivery\` 变了（产物/侧车落盘）或 `gdd\` 顶层变了（定稿改过 ⇒
+			 *   指纹变 ⇒ 过期判定要翻）时**只有这一条 effect 重跑**（判定在 `pure/refresh.ts` 里）。
+			 */
+			React.useEffect(() => {
+				if (view !== "detail" || dtab !== "final" || !sessionId || state.phase !== "ready") { setDerived(null); return; }
+				const dready = ofTopic(detail);
+				if (!dready || dready.error) { setDerived(null); return; }
+				if (typeof derivedLoader !== "function") {
+					setDerived({ error: "派生物加载器没挂上（__derived 缺失）。" });
+					return;
+				}
+				const root = dready.root || "";
+				if (!root) { setDerived({ error: "拿不到功能根目录：派生物读不了。" }); return; }
+				const groups = (dready.artifacts && dready.artifacts.groups) || [];
+				const delivery = groups.filter((g) => g.key === "delivery")[0];
+				const gdd = groups.filter((g) => g.key === "gdd")[0];
+				// ★ 只给**交付桶顶层**的文件名（带子目录的是 UE 交付包那类外部件，不是这份面板的派生物）——
+				//   侧车路径由 `load/derived.ts` 按"同基名"算，喂 `rel` 进去会把它拼成两层 delivery。
+				const files = ((delivery && delivery.files) || []).filter((f) => !f.subdir).map((f) => f.name);
+				const uiFiles = ((gdd && gdd.files) || []).filter((f) => f.kind === "ui");
+				const gddFinalHtml = ((gdd && gdd.files) || []).filter((f) => f.kind === "finalHtml").map((f) => f.name);
+				let cancelled = false;
+				const ac = new AbortController();
+				derivedLoader(sessionId, {
+					root: root,
+					topic: detailTopic,
+					compact: compactDate(Date.now()),
+					files: files,
+					final: dready.final || null,
+					skillsRoot: (state.data && state.data.skillsRoot) || "",
+					uiDir: uiFiles.length ? root + "\\gdd\\UI" : "",
+					uiCount: uiFiles.length,
+					gddFinalHtml: gddFinalHtml
+				}, ac.signal, bagRef.current).then(
+					(r) => { if (!cancelled) setDerived(stamped(r)); },
+					(e) => { if (!cancelled) setDerived(stamped({ error: "读派生物失败：" + String((e && e.message) || e) })); }
+				);
+				return () => { cancelled = true; ac.abort(); };
+			}, [view, dtab, detailTopic, sessionId, state.phase, detail, rev.derived]);
+
 			// 进「界面图」时读定稿的 §5
 			// ★ 工单 16：依赖里多了 `rev.ui` —— gdd/ 变了就重读界面图（改 png 也算）
 			React.useEffect(() => {
@@ -6829,6 +7178,15 @@ import {
 										: dtab === "final"
 											? h(FinalDoc, {
 												key: "fd", doc: finalV,
+												// ★ 工单 28：派生物那一块（交付桶里的产物 + 侧车 + 过期判定）
+												//   数据由 `__derived` 读、判定在 `pure/derived.ts`；这一屏只显示与发起。
+												derived: ofTopic(derived),
+												onDerived: typeof derivedRunner === "function"
+													? (kind, input) => derivedRunner(d && d.srWs, kind, input, {
+														root: (dview && dview.root) || "",
+														rows: sessionRows
+													})
+													: null,
 												// ★ 工单 15：三段式发给**该功能的专属工作会话**
 												//   （cwd = `features\<主题>\`；root 由功能详情给出，最权威）
 												featureRoot: (dview && dview.root) || "",
@@ -7095,6 +7453,13 @@ import {
 			 */
 			const draftLoader = (sid, opts, signal, bag) =>
 				loadDraftWorkface(portOf(ctx, sid, readWith(bag)), Object.assign({}, opts, { signal: signal }));
+			/**
+			 * ★ 工单 28 · 派生物与过期检测：把**交付桶**的文件清单 + **当前有效定稿的版本指纹**
+			 *   交给加载器；它只读每份产物对应的 provenance 侧车（只读，不写）。
+			 *   判定全在 `src/pure/derived.ts`（有测试）；这里只把 ctx 包成端口。
+			 */
+			const derivedLoader = (sid, opts, signal, bag) =>
+				loadDerived(portOf(ctx, sid, readWith(bag)), Object.assign({}, opts, { signal: signal }));
 			const indexLoader = (sid, srWs, signal) => loadIndex(read, sid, srWs, signal);
 			/** 按绝对路径读文本（阅读器用） */
 			const readTextFile = (sid, abs) => readAllText(read, sid, abs, void 0, 4000);
@@ -7667,6 +8032,34 @@ import {
 						ok: false, sent: "",
 						blocked: "拿不到这个功能的功能目录（`features\\<主题>\\`）。",
 						next: "从「功能详情 › 文档生成」进来再发一次 —— 指令要发给该功能的专属工作会话（cwd = 功能目录）。"
+					};
+				}
+				const text = String(inp.text || "");
+				if (text === "") {
+					return { ok: false, sent: "", blocked: "这条指令是空的（界面没有把组装好的正文传过来）。", next: "刷新页面再试一次；仍失败就把这条发给开发者。" };
+				}
+				return sendFeatureInstruction(root, text, c);
+			};
+
+			/**
+			 * ★ 工单 28 · 两个派生动作的出口：**复用** `sendFeatureInstruction`（工单 15 立的、
+			 *   工单 23 抽出的那一条），只是正文由界面传进来（与预览逐字相同）。
+			 *
+			 * ★ 与 `draftRunner` 的**唯一区别**：缺前提（没有可派生的定稿 / 拿不到指纹）在**界面那一层**
+			 *   就用 `blocked` 拦下并显示（连预览都不出），这一层只做"正文非空 + 功能根拿得到"两道校验，
+			 *   再走那条既有链路发出去。**不新开任何发送通道。**
+			 *
+			 * @returns `{ ok, sid, sent, healed, queued, target, message?, next?, note? }`
+			 */
+			const derivedRunner = async (srWs, kind, input, extra) => {
+				const c = extra || {};
+				const inp = input || {};
+				const root = String(inp.root || c.root || "").replace(/\\+$/, "");
+				if (!root) {
+					return {
+						ok: false, sent: "",
+						blocked: "拿不到这个功能的功能目录（`features\\<主题>\\`）。",
+						next: "从「功能详情 › 定稿修订」进来再发一次 —— 指令要发给该功能的专属工作会话（cwd = 功能目录）。"
 					};
 				}
 				const text = String(inp.text || "");
@@ -8356,6 +8749,9 @@ import {
 						// ★ 工单 24：文档生成工作面（成稿 + 配置支线；发送**同一条链路**）
 						__draft: draftLoader,
 						__sendDraft: draftRunner,
+						// ★ 工单 28：派生物（交付桶 + 过期检测；两个派生动作走**同一条链路**）
+						__derived: derivedLoader,
+						__sendDerived: derivedRunner,
 						__diagnose: diagnose, __probe: probe, __projectRoot: projectRoot,
 						__interfaces: interfaceLoader, __index: indexLoader, __detail: detailLoader,
 						__resolve: resolveIndexSession,

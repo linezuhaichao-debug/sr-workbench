@@ -2,7 +2,7 @@
  * 头脑风暴工作面加载器（工单 23）—— 走 `WorkspacePort` 的**文件侧替身（node:fs 直读真盘）**。
  *
  * ★ 两条路一起测：
- *   ① **真实工作区数据**：`features\联盟悬赏` 的真产物清单（`loadFeatureDetail` 给）+ 真交接件的
+ *   ① **真实工作区数据**：`features\讨伐`（原 `联盟悬赏`）的真产物清单（`loadFeatureDetail` 给）+ 真交接件的
  *      `source_skill` → 四入口归类结果；
  *   ② **格式样例**：`test/fixtures/analysis/` 里的两份新格式产物（§4.2 的两种新格式）→ 解析结果。
  * ★ 顺带钉住"出口判据那一句话是**搬**过来的，不是这一层重算的"（`notes` 只透传 `stage.note`）。
@@ -20,7 +20,8 @@ import { createFsPort } from "../src/port/fs.ts";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIX = path.join(HERE, "fixtures");
 const SR_ROOT = "D:\\TimeMachine\\GameDesignOS\\workspace";
-const FEATURE = path.join(SR_ROOT, "features", "联盟悬赏");
+// ★ 2026-10-08 身份迁移：目录名 `联盟悬赏` → `讨伐`（文档名没变，正文改名不在那次范围里）
+const FEATURE = path.join(SR_ROOT, "features", "讨伐");
 const LEGACY_FILE = "legacy-analysis_飞船装置_20260930.md";
 const NOTE_FILE = "human-note_BOSS血量按联盟共享_20260921.md";
 

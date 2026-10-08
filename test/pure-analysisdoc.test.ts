@@ -134,7 +134,7 @@ test("一条分析产物属于哪个入口：文件名前缀 → md 规范名 �
 });
 
 test("sourceSkillOf：只读交接件里那一个字段（真文件）", () => {
-	const p = path.join(SR_ROOT, "features", "联盟悬赏", "analysis", "sr-gdd-handoff_联盟悬赏_20260918.json");
+	const p = path.join(SR_ROOT, "features", "讨伐", "analysis", "sr-gdd-handoff_联盟悬赏_20260918.json");   // ★ 2026-10-08：目录改名
 	const head = fs.readFileSync(p, "utf8").split(/\r?\n/).slice(0, 14).join("\n");
 	assert.equal(sourceSkillOf(head), "sr-concept");
 	assert.equal(sourceSkillOf('{"a":1}'), "");

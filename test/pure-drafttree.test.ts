@@ -17,7 +17,7 @@ import { parseFinalGdd } from "../src/pure/finalgdd.ts";
 import { buildFinalTree } from "../src/pure/finaltree.ts";
 
 const SR_ROOT = process.env.SR_WB_WORKSPACE || "D:\\TimeMachine\\GameDesignOS\\workspace";
-const DRAFT = path.join(SR_ROOT, "features", "联盟悬赏", "gdd", "联盟悬赏_20260918.md");
+const DRAFT = path.join(SR_ROOT, "features", "讨伐", "gdd", "联盟悬赏_20260918.md");   // ★ 2026-10-08：目录改名 `联盟悬赏` → `讨伐`
 const DRAFT2 = path.join(SR_ROOT, "features", "诸神降临", "gdd", "诸神降临_20260915.md");
 
 const read = (p: string) => {

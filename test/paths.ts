@@ -13,7 +13,13 @@ import path from "node:path";
 import { createFsPort, type FsPort } from "../src/port/fs.ts";
 
 export const WORKSPACE = process.env.SR_WB_WORKSPACE || "D:\\TimeMachine\\GameDesignOS\\workspace";
-export const FEATURE_ROOT = path.join(WORKSPACE, "features", "联盟悬赏");
+/**
+ * ★ 2026-10-08 身份迁移（`identity-rename-merge-report.md`）：目录名从 `联盟悬赏` 改成 **`讨伐`**
+ *   （`feature_id=feat-20261008-001`，name 联盟讨伐，aliases 保留旧名）。
+ *   **文档文件名没变**（正文改名要走 `/sr-gdd-fix`，不在那次范围里）—— 所以只改目录这一段。
+ */
+export const FEATURE_TOPIC = process.env.SR_WB_FEATURE || "讨伐";
+export const FEATURE_ROOT = path.join(WORKSPACE, "features", FEATURE_TOPIC);
 /** 当前有效定稿（功能身份 + 日期判定；实测 488 行 / doc_type: final_gdd / status: active） */
 export const FINAL_GDD = path.join(FEATURE_ROOT, "gdd", "联盟悬赏_20260923_定稿.md");
 /** 上一份定稿：仍标 active —— 这是真实存在的 V1 缺陷，用例把它断言下来 */

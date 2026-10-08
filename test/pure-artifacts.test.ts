@@ -43,8 +43,13 @@ const topics = fs.readdirSync(FEATURES_ROOT, { withFileTypes: true })
 	.map((d) => d.name)
 	.sort();
 
-test("真实工作区有 4 个功能（断言的前提）", () => {
-	assert.deepEqual(topics, ["诸神降临", "神话宝库", "英雄圣物", "联盟悬赏"].sort());
+/**
+ * ★ 2026-10-08 身份迁移（`identity-rename-merge-report.md`）：`联盟悬赏` → **`讨伐`**、
+ *   `神话宝库` → **`诸神降临`**（合并后源目录只留壳，壳已被删）。功能数 4 → **3**。
+ *   断言的**口径没变**（看板按目录认功能），只是把坐标对到迁移后的现状。
+ */
+test("真实工作区有 3 个功能（断言的前提）", () => {
+	assert.deepEqual(topics, ["英雄圣物", "讨伐", "诸神降临"].sort());
 });
 
 test("★ 验收：四个真实功能逐个 diff —— 面板会列出的产物 == 磁盘实际（差异 0）", async () => {
@@ -62,30 +67,37 @@ test("★ 验收：四个真实功能逐个 diff —— 面板会列出的产物
 		assert.deepEqual(extra, [], t + " 列出了磁盘上不存在的文件：" + extra.join(" | "));
 		assert.equal(listed.length, disk.length, t + " 数量不一致");
 	}
-	// 四个功能的文件数之和（对账用；数字变了要有人来看一眼为什么）
+	// 各功能的文件数（对账用；数字变了要有人来看一眼为什么）
 	// ★ 2026-09-30 漂移已看：联盟悬赏 24→25、神话宝库 38→39，各多一份
 	//   `analysis\human-note_*_20260930.md`（真机上面板「人工补充」入口真的用了一次写出来的）。
-	//   断言的口径**没变**（面板清单 == 磁盘实际），只是把数字对到今天的真实数据。
+	// ★ 2026-10-08 合并已看：`联盟悬赏` → `讨伐`（25 → 27：多 `feature.json` 与并入的一份产物），
+	//   `神话宝库` → `诸神降临`（39 → 43：多 `feature.json`、`human-note_改名*`、中文决策记录与框架图）；
+	//   `英雄圣物` 5 → 6（多 `feature.json`）。**断言的口径没变**（面板清单 == 磁盘实际），
+	//   只是把数字对到今天的真实数据。
 	assert.equal(
 		report.join(" · "),
-		"神话宝库：面板 39 / 磁盘 39 · 联盟悬赏：面板 25 / 磁盘 25 · 英雄圣物：面板 5 / 磁盘 5 · 诸神降临：面板 2 / 磁盘 2"
+		"英雄圣物：面板 6 / 磁盘 6 · 讨伐：面板 27 / 磁盘 27 · 诸神降临：面板 43 / 磁盘 43"
 	);
 });
 
-test("联盟悬赏：桶分组与含义（进 0 · 出 19 · 过程留痕 6）", async () => {
-	const d = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "联盟悬赏"), signal });
+// ★ 2026-10-08 合并后的现状：27 条（+ feature.json 进「未归桶」，+ 并进来的一份产物）——
+//   `other: 1` 就是身份文件 `feature.json`（它不是桶里的产物，如实另算）。
+test("讨伐：桶分组与含义（进 0 · 出 20 · 过程留痕 6 · 其它 1）", async () => {
+	const d = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "讨伐"), signal });
 	const g = (k: string) => d.artifacts.groups.find((x: any) => x.key === k);
-	assert.equal(d.artifacts.total, 25);
-	assert.deepEqual(d.artifacts.counts, { in: 0, out: 19, trace: 6, other: 0 });
-	// 六个标准桶都在（空桶也显示 —— source 是 0，要说出来而不是消失）
+	assert.equal(d.artifacts.total, 27);
+	assert.deepEqual(d.artifacts.counts, { in: 0, out: 20, trace: 6, other: 1 });
+	// 六个标准桶都在（空桶也显示 —— source 是 0，要说出来而不是消失）；
+	// ★ 2026-10-08：末尾多一个 `root`（功能根散文件组）—— 合并后根上多了身份文件 `feature.json`，
+	//   它不属于任何桶，按「未归桶」如实列出来（这正是"一个文件都不许静默丢"那条纪律）。
 	assert.deepEqual(
 		d.artifacts.groups.map((x: any) => x.key),
-		["source", "analysis", "gdd", "delivery", "decisions", "evidence"]
+		["source", "analysis", "gdd", "delivery", "decisions", "evidence", "root"]
 	);
 	assert.equal(g("source").count, 0);
 	assert.equal(g("analysis").count, 4);       // ★ 2026-09-30 漂移：3 → 4（多一份人工补充产物）
 	assert.equal(g("gdd").count, 13);          // 6 个文档 + 7 张 gdd\UI 图
-	assert.equal(g("delivery").count, 2);
+	assert.equal(g("delivery").count, 3);   // 历史归档说明 + 宣讲 HTML 与它的 .content.json
 	assert.equal(g("decisions").count, 4);
 	assert.equal(g("evidence").count, 2);
 	// 含义标签
@@ -94,8 +106,8 @@ test("联盟悬赏：桶分组与含义（进 0 · 出 19 · 过程留痕 6）",
 	assert.equal(g("evidence").meaningLabel, "过程留痕");
 });
 
-test("联盟悬赏：gdd\\ 内部按文件名细分（定稿 2 · 定稿HTML 1 · 审查 2 · 成稿 1 · 界面图 7）", async () => {
-	const d = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "联盟悬赏"), signal });
+test("讨伐：gdd\\ 内部按文件名细分（定稿 2 · 定稿HTML 1 · 审查 2 · 成稿 1 · 界面图 7）", async () => {
+	const d = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "讨伐"), signal });
 	const gdd = d.artifacts.groups.find((x: any) => x.key === "gdd");
 	const kinds: Record<string, number> = {};
 	for (const f of gdd.files) kinds[f.kind] = (kinds[f.kind] || 0) + 1;
@@ -116,7 +128,7 @@ test("联盟悬赏：gdd\\ 内部按文件名细分（定稿 2 · 定稿HTML 1 �
 });
 
 test("规范名标注用已接的 mdSpecOf（只作标注、不作过滤）", async () => {
-	const d = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "神话宝库"), signal });
+	const d = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "诸神降临"), signal });
 	const analysis = d.artifacts.groups.find((x: any) => x.key === "analysis");
 	const byName = (n: string) => analysis.files.find((f: any) => f.name === n);
 	assert.equal(byName("experience-report_神话宝库_20260915.md").spec, "体验报告");
@@ -126,17 +138,19 @@ test("规范名标注用已接的 mdSpecOf（只作标注、不作过滤）", as
 	// ★ 2026-09-30 数据漂移：神话宝库也多了 1 份人工补充产物（真机上面板跑出来的）⇒ 4 → 5
 	assert.equal(analysis.count, 5);
 	// 实测：mdSpecOf 的六种规范没有一种匹配 gdd\ 的文件（所以 gdd 细分不能靠它，得用 gddKindOf）
-	const lian = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "联盟悬赏"), signal });
+	const lian = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "讨伐"), signal });
 	const gdd = lian.artifacts.groups.find((x: any) => x.key === "gdd");
 	assert.equal(gdd.files.every((f: any) => f.spec === ""), true, "gdd 里不该有规范名标注");
 	assert.equal(mdSpecOf("联盟悬赏_20260923_定稿.md"), null, "mdSpecOf 认不出定稿名 —— 这是实测事实");
-	// 神话宝库没有 gdd\：空桶仍然显示（count 0），不是"不存在"
-	const myth = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "神话宝库"), signal });
-	assert.equal(myth.artifacts.groups.find((x: any) => x.key === "gdd").count, 0);
+	// 英雄圣物没有 gdd\：空桶仍然显示（count 0），不是「不存在」
+	//（★ 2026-10-08：原来这里用的是「神话宝库」—— 合并后它成了「诸神降临」，而诸神降临有一份成稿在 gdd\，
+	//  所以改挑真正没有 gdd\ 的那个功能来断言这条。）
+	const empty = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "英雄圣物"), signal });
+	assert.equal(empty.artifacts.groups.find((x: any) => x.key === "gdd").count, 0);
 });
 
 test("三阶段进度（设计 §4.2：有无分析产物 / 有无成稿 / 有无定稿）+ 出口判据提示", async () => {
-	const d = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "联盟悬赏"), signal });
+	const d = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "讨伐"), signal });
 	assert.deepEqual(d.stage.stages.map((s: any) => s.label), ["阶段一 · 头脑风暴", "阶段二 · 文档生成", "阶段三 · 定稿修订"]);
 	assert.deepEqual(d.stage.stages.map((s: any) => s.done), [true, true, true]);
 	assert.equal(d.stage.done, 3);
@@ -150,7 +164,7 @@ test("三阶段进度（设计 §4.2：有无分析产物 / 有无成稿 / 有�
 });
 
 test("定稿有效性在详情里（V1 两份 active 并存）+ 清单条目被标上'当前有效/未归档'", async () => {
-	const d = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "联盟悬赏"), signal });
+	const d = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "讨伐"), signal });
 	assert.equal(d.finalCheck.current, "联盟悬赏_20260923_定稿.md");
 	assert.equal(d.finalCheck.currentFrom, "active");
 	assert.deepEqual(d.finalCheck.actives, ["联盟悬赏_20260923_定稿.md", "联盟悬赏_20260921_定稿.md"]);
@@ -159,14 +173,14 @@ test("定稿有效性在详情里（V1 两份 active 并存）+ 清单条目被�
 	const noteOf = (n: string) => (gdd.files.find((f: any) => f.name === n) || {}).note;
 	assert.match(noteOf("联盟悬赏_20260923_定稿.md"), /当前有效（active）/);
 	assert.match(noteOf("联盟悬赏_20260921_定稿.md"), /也标 active/);
-	// 其余三个功能：没有定稿（目录存在就是功能），不假装有
+	// 其余两个功能：没有定稿（目录存在就是功能），不假装有
 	const other = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "英雄圣物"), signal });
 	assert.equal(other.finalCheck.current, null);
 	assert.deepEqual(other.finalCheck.issues, []);
 });
 
 test("V 校验清单在详情里可见（V1/V3 error · V11 warn · V5 info，带行号）", async () => {
-	const d = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "联盟悬赏"), signal });
+	const d = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "讨伐"), signal });
 	const cl = d.checklist;
 	assert.equal(cl.current, "联盟悬赏_20260923_定稿.md");
 	assert.deepEqual(cl.issues.map((i: any) => [i.code, i.level]), [
@@ -193,7 +207,7 @@ test("V 校验清单在详情里可见（V1/V3 error · V11 warn · V5 info，�
 
 test("不是桶的目录与功能根散文件都进「未归桶」—— 一个文件都不许静默丢", async () => {
 	const port = testPort();
-	const listing = await scanFeatureListing(port, { root: path.join(FEATURES_ROOT, "联盟悬赏"), signal });
+	const listing = await scanFeatureListing(port, { root: path.join(FEATURES_ROOT, "讨伐"), signal });
 	// 合成：加一个非桶目录与一个功能根散文件，再跑一遍纯函数
 	const art = featureArtifacts({
 		rootFiles: ["设计台账.md"],

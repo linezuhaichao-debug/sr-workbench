@@ -45,12 +45,13 @@ test("没有 §5 时如实返回 null（面板显示「定稿里没有 §5 界�
 
 test("章节规范：真实产出文件的标题都能归类，未知章节不丢", () => {
 	const files = [
-		path.join(WORKSPACE, "features", "联盟悬赏", "analysis", "concept-triage_联盟悬赏_20260918.md"),
-		path.join(WORKSPACE, "features", "联盟悬赏", "analysis", "feature-concept_联盟悬赏_20260918.md"),
-		path.join(WORKSPACE, "features", "神话宝库", "analysis", "experience-report_神话宝库_20260915.md"),
-		path.join(WORKSPACE, "features", "神话宝库", "analysis", "replication-spec_神话宝库_20260915.md"),
-		path.join(WORKSPACE, "features", "神话宝库", "evidence", "evidence-index_神话宝库_20260915.md"),
-		path.join(WORKSPACE, "features", "神话宝库", "evidence", "readback_A079_神话宝库_20260916.md"),
+		// ★ 2026-10-08 身份迁移：`联盟悬赏` → `讨伐`、`神话宝库` → `诸神降临`（文档名没变）
+		path.join(WORKSPACE, "features", "讨伐", "analysis", "concept-triage_联盟悬赏_20260918.md"),
+		path.join(WORKSPACE, "features", "讨伐", "analysis", "feature-concept_联盟悬赏_20260918.md"),
+		path.join(WORKSPACE, "features", "诸神降临", "analysis", "experience-report_神话宝库_20260915.md"),
+		path.join(WORKSPACE, "features", "诸神降临", "analysis", "replication-spec_神话宝库_20260915.md"),
+		path.join(WORKSPACE, "features", "诸神降临", "evidence", "evidence-index_神话宝库_20260915.md"),
+		path.join(WORKSPACE, "features", "诸神降临", "evidence", "readback_A079_神话宝库_20260916.md"),
 	];
 	const sizes: number[] = [];
 	for (const f of files) {

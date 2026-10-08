@@ -52,7 +52,8 @@ test("文件侧替身：分页口径照 DSH（1-based、结尾 \\n 只终止最�
 test("文件侧替身：列举限定在工作区内（照 DSH outside-workspace 口径）", async () => {
 	const port = testPort({ roots: [WORKSPACE_ROOT_FOR_SESSION] });
 	const inside = await port.listDir(path.join(WORKSPACE_ROOT_FOR_SESSION, "GameDesignOS", "workspace", "features"));
-	assert.ok(inside.entries.some((e) => e.name === "联盟悬赏" && e.type === "directory"));
+	// ★ 2026-10-08：功能目录改名 `联盟悬赏` → `讨伐`
+	assert.ok(inside.entries.some((e) => e.name === "讨伐" && e.type === "directory"));
 	await assert.rejects(() => port.listDir("C:\\Windows"), /替身工作区之外/);
 });
 
