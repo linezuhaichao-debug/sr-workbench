@@ -124,12 +124,26 @@ test("★ 工单 12：功能详情的产物清单 + 三阶段 + 定稿有效性 
 	assert.deepEqual(d.checklist.issues.map((i: any) => [i.code, i.level]), [
 		["V1", "error"], ["V3", "error"], ["V11", "warn"], ["V5", "info"],
 	]);
-	// 降级如实声明（DSH 的列举通道不给 mtime ⇒ V11 只判一半）
-	assert.ok(d.notes.some((n: string) => /V11 降级/.test(n)));
-	// 没有定稿的功能不假装有结论
+	// ★ 工单 25：**时间拿到了**（宿主 `stat` 的版本串第 4 段 = mtime 纳秒，实测见 src/pure/fsstamp.ts）
+	assert.ok(d.notes.some((n: string) => /时间来源：宿主 `stat` 的版本串/.test(n)));
+	assert.ok(d.checklist.checks.V11.finalTime > 0, "当前定稿的时间拿到了（V11 才能判新旧）");
+	// ★ 工单 25 · **定稿门**：真实数据（两份 active + 没有对照的审查报告）⇒ 不能交程序
+	assert.equal(d.gate.state, "blocked");
+	assert.equal(d.gate.canHandOff, false);
+	assert.equal(d.gate.current, "联盟悬赏_20260923_定稿.md");
+	// 告警顺序 = 结构（①多份可用）→ 审查关（必经）→ 正文硬伤（V3 是真实数据里的重复键）
+	assert.deepEqual(d.gate.alarms.map((a: any) => a.code), ["V1", "V11", "V3"]);
+	assert.match(d.gate.alarms[0].say, /同时有 2 份定稿标着「可用」/);
+	assert.match(d.gate.alarms[0].say, /旧的那份没标「归档」/);
+	assert.equal(d.gate.review.state, "missing", "20260923 的定稿没有对照的审查报告（两份 20260921 的匹配不上）");
+	assert.match(d.gate.headline, /^先别交程序 —— 同时有 2 份定稿标着「可用」/);
+	// 没有定稿的功能不假装有结论；门给 none（"还没有定稿 —— 交不了程序"）
 	const none = await loadFeatureDetail(testPort(), { root: path.join(WORKSPACE, "features", "英雄圣物"), signal });
 	assert.equal(none.finalCheck.current, null);
 	assert.deepEqual(none.checklist.issues, []);
+	assert.equal(none.gate.state, "none");
+	assert.equal(none.gate.canHandOff, false);
+	assert.match(none.gate.headline, /还没有定稿/);
 	assert.equal(none.artifacts.total, 5);
 });
 

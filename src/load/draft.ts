@@ -85,6 +85,12 @@ export interface DraftWorkfaceOptions {
 	/** 定稿有效性（`loadFeatureDetail` 的 `finalCheck`）—— "当前有效定稿"只有一个来源 */
 	finalCheck?: { current?: string | null; currentFrom?: string; issues?: unknown[] } | null;
 	/**
+	 * ★ 工单 25 · **定稿门**（`loadFeatureDetail` 的 `gate`，原样搬过来）。
+	 *   「合流 → 定稿」这一步的落点就是它：整合完之后这份定稿**能不能交程序**。
+	 *   ★ 判据只有一份实现（`../pure/finalgate.ts`）—— 这里只搬，不在这一层重算。
+	 */
+	gate?: unknown;
+	/**
 	 * 配置表目录（看板给的 `configRoot`；来自 sr 配置，不是猜的）。
 	 * ★ 有它就以**磁盘实际列举**为准：`§6 引用的工作簿在不在` 这件事必须看真目录 ——
 	 *   看板按主题挂上来的 `configs` 只认文件名里的主题（`A012-全局变量表.xlsx` 的主题是
@@ -279,6 +285,8 @@ export async function loadDraftWorkface(port: WorkspacePort, options: DraftWorkf
 		drafts: drafts.map((d) => d.name),
 		finalName: finalName,
 		finalHead: finalHead,
+		/** ★ 工单 25 · 定稿门（能不能交程序）—— 原样来自 `loadFeatureDetail` 的 `gate` */
+		gate: (options && options.gate) || null,
 		config: branch,
 		configFiles: configFiles,
 		evidence: rbs,

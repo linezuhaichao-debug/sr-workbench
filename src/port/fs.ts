@@ -88,9 +88,19 @@ const within = (roots: string[] | undefined, target: string): boolean => {
 export function createFsPort(options: FsPortOptions = {}): FsPort {
 	const recorder = options.recorder || createRecorder();
 	const roots = options.roots;
-	const fingerprint = (p: string): string => {
-		const st = fs.statSync(p);
-		return st.mtimeMs + ":" + st.size;
+	/**
+	 * 版本串 —— ★ **照实测的宿主形状**（工单 25）：
+	 *   `dev:ino:size:mtimeNs:ctimeNs`（`dsh-fs-local` 的 `versionOf`，实测见
+	 *   `src/pure/fsstamp.ts` 的文件头）。
+	 *
+	 * ★ 为什么替身也要照这个形状：面板从版本串第 4 段取**文件时间**（`fsstamp.stampOf`），
+	 *   用它判「审查报告是不是比定稿旧」。替身若给一个别的形状（原来是 `mtimeMs:size`），
+	 *   离线用例就永远走"看不到时间"那条降级路，**那条升级路径就没人测**。
+	 *   注意：面板别处**照样把版本串当不透明串**（指纹 / 自激防护只比对、不解析）。
+	 */
+	const versionOf = (p: string): string => {
+		const st = fs.statSync(p, { bigint: true });
+		return String(st.dev) + ":" + String(st.ino) + ":" + String(st.size) + ":" + String(st.mtimeNs) + ":" + String(st.ctimeNs);
 	};
 
 	const record = (method: RecordedCall["method"], args: unknown[]): RemoteOutcome => {
@@ -109,7 +119,7 @@ export function createFsPort(options: FsPortOptions = {}): FsPort {
 			} catch (e) {
 				throw new Error("读文件失败：" + abs + " · " + String((e && (e as Error).message) || e));
 			}
-			return page(text, range, abs, fingerprint(abs));
+			return page(text, range, abs, versionOf(abs));
 		},
 
 		async listDir(p: string): Promise<ListResult> {
@@ -141,8 +151,7 @@ export function createFsPort(options: FsPortOptions = {}): FsPort {
 
 		async stat(p: string): Promise<StatResult> {
 			const abs = path.resolve(String(p));
-			const st = fs.statSync(abs);
-			return { absolutePath: abs, version: st.mtimeMs + ":" + st.size, bytes: st.size };
+			return { absolutePath: abs, version: versionOf(abs), bytes: Number(fs.statSync(abs, { bigint: true }).size) };
 		},
 
 		async *changes(signal?: AbortSignal): AsyncIterable<ChangeEvent> {
@@ -151,7 +160,7 @@ export function createFsPort(options: FsPortOptions = {}): FsPort {
 			const seen = new Map<string, string>();
 			for (const p of options.watchPaths || []) {
 				try {
-					seen.set(path.resolve(p), fingerprint(path.resolve(p)));
+					seen.set(path.resolve(p), versionOf(path.resolve(p)));
 				} catch (e) {
 					/* 起手就不存在的文件，第一轮就会报 absent */
 				}
@@ -160,7 +169,7 @@ export function createFsPort(options: FsPortOptions = {}): FsPort {
 				await new Promise((r) => setTimeout(r, 50));
 				for (const p of Array.from(seen.keys())) {
 					try {
-						const v = fingerprint(p);
+						const v = versionOf(p);
 						if (seen.get(p) !== v) {
 							seen.set(p, v);
 							yield { kind: "change", change: { absolutePath: p, version: v } };

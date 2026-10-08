@@ -35,6 +35,8 @@ async function load(topic: string) {
 		gddFiles: (gdd && gdd.files) || [],
 		evidenceFiles: ((ev && ev.files) || []).map((f: any) => f.name),
 		finalCheck: detail.finalCheck,
+		// ★ 工单 25：定稿门（合流 → 定稿 的落点）—— 判据在 detail 那一层，这里只搬
+		gate: detail.gate,
 		configRoot: CONFIG_DIR
 	});
 	return { got, detail };
@@ -65,6 +67,11 @@ test("真数据 · 联盟悬赏：成稿被认出来（不带「成稿」后缀�
 	// ③ 定稿：当前有效那一份（`finalCheck` 是唯一来源）
 	assert.equal(got.finalName, "联盟悬赏_20260923_定稿.md");
 	assert.equal(got.finalHead.status, "active");
+	// ★ 工单 25：定稿门原样搬过来了（同一份结论，界面直接念）
+	assert.equal(got.gate, detail.gate);
+	assert.equal(got.gate.state, "blocked");
+	assert.match(got.gate.headline, /^先别交程序 —— 同时有 2 份定稿标着「可用」/);
+	assert.equal(got.gate.review.state, "missing", "20260923 那份没有对照的审查报告");
 
 	// ④ 配置支线：真实结论 = 有 §6 字段、1 处待配表缺口、没有读回回执
 	assert.equal(got.config.stage, "missing-pending");

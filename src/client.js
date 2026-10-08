@@ -383,6 +383,30 @@ import {
 						throw new Error("读不到文件：" + ((e && (e.message || e.code)) || path));
 					}
 					return r.value;
+				},
+				/**
+				 * ★ 工单 25 · `stat` —— 载入层用它拿**文件时间**。
+				 *
+				 * 为什么必须补这一条：`workspaceFiles.stat` 返回的 `version` 是
+				 * `dev:ino:size:mtimeNs:ctimeNs`（实测，见 `src/pure/fsstamp.ts`），
+				 * 第 4 段就是 mtime 纳秒 —— 定稿门靠它判「审查报告是不是比定稿旧」。
+				 * 原先 `portOf` 只给了 `listDir` / `readText`，端口上没有 `stat`，
+				 * 于是载入层那次调用被容错吃掉、时间恒为 0，面板只会一直说"看不到时间"
+				 * （**实测踩出来的**：本票第一版就是这样，真机上定稿门永远不放行）。
+				 *
+				 * ★ 不进版本袋（`readWith`）：袋子是"屏幕上这份**内容**读的是哪一版"，
+				 *   而 stat 不读内容；指纹那一侧照旧由 `statMany` 单独算。
+				 */
+				stat: async (absPath, signal) => {
+					const ns = (ctx && ctx.remote) || {};
+					const wf = ns.workspaceFiles;
+					if (!wf || typeof wf.stat !== "function") throw new Error("remote.workspaceFiles.stat 不可用");
+					const r = await wf.stat(sid, absPath, signal);
+					if (!r || r.ok !== true) {
+						const e = r && r.error;
+						throw new Error("取不到文件版本：" + ((e && (e.message || e.code)) || absPath));
+					}
+					return r.value;
 				}
 			};
 		}
@@ -2804,6 +2828,8 @@ import {
 			const [openParts, setOpenParts] = React.useState(false);
 			const [openBody, setOpenBody] = React.useState(false);
 			const [openMachine, setOpenMachine] = React.useState(false);
+			/** ★ 工单 25 · 定稿门（合流之后的落点）：首屏只给一行人话，明细折在这里 */
+			const [openGate, setOpenGate] = React.useState(false);
 			const [sendMsg, setSendMsg] = React.useState({});
 			const [openG, setOpenG] = React.useState({});
 			const [sel, setSel] = React.useState(-1);
@@ -3486,6 +3512,52 @@ import {
 				])
 			]);
 
+			/**
+			 * ★ 工单 25 · **定稿门**（合流之后的落点）：这份定稿能不能交给程序。
+			 *
+			 * 三条口径（与本票的工单逐条对应）：
+			 *   ① **审查是必经的一步** —— 没跑审查 / 报告比定稿旧 / 看不到时间，一律**不标为可用**（`gate.canHandOff`）；
+			 *   ② **人话在首屏、口径在门里** —— 首屏只有一行 `定稿门 · <headline>`，三种告警与时间折进〔看定稿门〕；
+			 *   ③ 判据**不在这里算** —— `gate` 是 `loadFeatureDetail` 里 `finalGate()` 的返回值（纯函数、有回归网）。
+			 */
+			const gate = (data && data.gate) || null;
+			const gateLine = gate ? h("div", {
+				key: "g", "data-gate": gate.state,
+				style: { marginTop: "5px", display: "flex", gap: "8px", alignItems: "baseline", flexWrap: "wrap" }
+			}, [
+				h("span", {
+					key: "s", "data-gate-say": "1",
+					style: { fontSize: "12.5px", lineHeight: 1.7, color: gate.state === "ok" ? C.ok : C.ink }
+				}, "定稿门 · " + gate.headline),
+				gate.review && gate.review.state === "unknown-time"
+					? h("span", { key: "u", "data-gate-notime": "1", style: { fontSize: "11px", color: C.warn } }, "看不到时间")
+					: null
+			]) : null;
+			const gateBody = gate ? h("div", {
+				key: "gb", "data-gate-body": "1",
+				style: { fontSize: "12px", lineHeight: 1.85, border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "9px 12px" }
+			}, [
+				h("div", { key: "s", style: { color: C.ink } }, gate.say),
+				gate.alarms.length
+					? h("div", { key: "a", style: { marginTop: "7px" } }, gate.alarms.map((al, i) => h("div", {
+						key: i, "data-gate-alarm": al.code,
+						style: { color: al.level === "error" ? C.bad : C.ink }
+					}, "· " + al.say)))
+					: h("div", { key: "a0", style: { marginTop: "7px", color: C.ok } }, "· 没有告警：结构 / 审查 / 正文校验三条关都过了。"),
+				h("div", {
+					key: "r", "data-gate-review": gate.review.state,
+					style: { marginTop: "7px", color: C.muted }
+				}, "审查关：" + gate.review.say +
+					(gate.review.finalAt
+						? "　（定稿 " + gate.review.finalAt + (gate.review.reportAt ? " · 报告 " + gate.review.reportAt : "") + "）"
+						: "")),
+				gate.next
+					? h("div", { key: "n", style: { marginTop: "7px" } }, "下一步：" + gate.next)
+					: null,
+				h("div", { key: "fp", style: { marginTop: "7px", fontSize: "10.5px", color: C.muted } },
+					"判据来自 `finalgdd.checkFinals`（结构）/ `vchecks.checkV11`（审查）/ `vchecks`（正文校验）；时间取自宿主 `stat` 的版本串。")
+			]) : null;
+
 			const merge = h("div", {
 				key: "mg", "data-node": "bottom",
 				style: { border: "1px solid " + C.ink, borderRadius: "4px", padding: "13px 15px", display: "flex", gap: "12px", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }
@@ -3494,6 +3566,8 @@ import {
 					h("div", { key: "a", style: { fontSize: "14px", fontWeight: 600 } }, "合流 → 定稿"),
 					h("div", { key: "b", style: { fontSize: "12px", color: C.muted, marginTop: "2px" } },
 						"先整合（sr-gdd-ai），" + "必经审查" + "（sr-gdd-review），再成立定稿。"),
+					// ★ 工单 25 · **定稿门**：合流完之后这份定稿**能不能交程序**（一句话，人话）
+					gateLine,
 					openInt
 						? h("div", { key: "c", style: { fontSize: "10.5px", color: C.muted, marginTop: "4px", lineHeight: 1.7 } },
 							"这个动作不发新东西 —— 它把「整合定稿」连同配置支线的现状（逐条带缺口）交给该功能的专属工作会话。整合结果（定稿与审查报告）由后续那一票承接，本屏不重画流程。")
@@ -3517,6 +3591,13 @@ import {
 						key: "pv", "data-integrate-open": "1",
 						style: { border: "1px solid " + C.faint, borderTop: "none", borderRadius: "0 0 4px 4px", background: "#fff", padding: "9px 13px" }
 					}, [actBlock("ib", "integrate", builtInt, "发到工作会话")])
+					: null,
+				// ★ 工单 25 · 定稿门的**明细**：默认收起（首屏只留上面那一行）
+				gate
+					? fold("gate", openGate
+						? "收起定稿门"
+						: "看定稿门（" + (gate.alarms.length ? gate.alarms.length + " 处要处理" : "为什么可以交") + "）",
+						openGate, () => setOpenGate(!openGate), gateBody, { style: { marginTop: "6px" } })
 					: null
 			]);
 
@@ -3682,7 +3763,12 @@ import {
 			const art = d.artifacts || { counts: {}, total: 0 };
 			const cl = d.checklist || { issues: [], counts: {} };
 			const v = finalVerdict(d.finalCheck);
-			const tone = v.tone === "bad" ? C.bad : v.tone === "warn" ? C.warn : v.tone === "ok" ? C.ok : C.muted;
+			/** ★ 工单 25 · 定稿门（loadFeatureDetail 给的；拿不到才退回 `finalVerdict` 的老口径） */
+			const g = d.gate || null;
+			const tone = g
+				? (g.state === "ok" ? C.ok : g.state === "blocked" ? C.warn : C.warn)
+				: (v.tone === "bad" ? C.bad : v.tone === "warn" ? C.warn : v.tone === "ok" ? C.ok : C.muted);
+			const usableTone = (g && g.state === "blocked") ? C.bad : tone;
 
 			return h("div", { style: { marginBottom: "12px" } }, [
 				// ① 三阶段进度
@@ -3703,26 +3789,56 @@ import {
 				h("div", { key: "sum", style: { fontSize: "11px", color: C.muted, marginBottom: "9px" } },
 					"产物 " + (art.total || 0) + " 个　" + (art.meanings || []).map((m) => m.label + " " + ((art.counts || {})[m.key] || 0)).join("　")),
 
-				// ② "现在能用吗"（定稿有效性）—— V1 的原始结论
+				// ② "现在能用吗" = **定稿门**（工单 25）—— 人话在上，机器口径折进「原始判据」
 				h("div", {
-					key: "usable",
+					key: "usable", "data-gate": g ? g.state : "none",
 					style: {
-						border: "1px solid " + C.faint, borderLeft: "3px solid " + tone,
-						background: v.tone === "bad" ? "#fef2f2" : v.tone === "ok" ? "#f0fdf4" : "#fffdf7",
+						border: "1px solid " + C.faint, borderLeft: "3px solid " + usableTone,
+						background: (g ? g.state === "ok" : v.tone === "ok") ? "#f0fdf4" : "#fffdf7",
 						borderRadius: "4px", padding: "8px 11px", fontSize: "12px", marginBottom: "8px"
 					}
-				}, [
-					h("div", { key: "t" }, [
-						h("b", { key: "a" }, "现在能用吗："),
-						h("span", { key: "b", style: { color: tone, fontWeight: 600 } }, v.text),
-						h("span", { key: "c", style: { color: C.muted } },
-							"　（按" + (d.finalCheck && d.finalCheck.currentFrom === "active" ? "active 标记" : "文件名日期") + "判定）")
+				}, g
+					? [
+						h("div", { key: "t" }, [
+							h("b", { key: "a" }, "现在能用吗："),
+							h("span", { key: "b", "data-gate-say": "1", style: { color: usableTone, fontWeight: 600 } },
+								g.state === "ok" ? "可以交给程序" : (g.state === "blocked" ? "还不能交给程序" : "还没有定稿")),
+							h("span", { key: "c", style: { color: C.muted } }, "　" + g.say)
+						]),
+						// 三种情形（人话）+ 审查关 + 下一步
+						g.alarms.length
+							? h("div", { key: "al", style: { marginTop: "4px" } }, g.alarms.map((al, i) => h("div", {
+								key: "a" + i, "data-gate-alarm": al.code,
+								style: { fontSize: "11.5px", lineHeight: 1.8, color: al.level === "error" ? C.bad : C.ink }
+							}, "· " + al.say)))
+							: null,
+						h("div", { key: "rv", "data-gate-review": g.review.state, style: { marginTop: "4px", fontSize: "11.5px", color: C.muted } },
+							"审查关：" + g.review.say +
+							(g.review.finalAt ? "　（定稿 " + g.review.finalAt + (g.review.reportAt ? " · 报告 " + g.review.reportAt : "") + "）" : "")),
+						g.next ? h("div", { key: "nx", style: { marginTop: "4px", fontSize: "11.5px" } }, "下一步：" + g.next) : null,
+						// 机器口径（V1 的三条原始 issue）折在这里 —— 判据可核对，但不上首屏
+						h(Fold, {
+							key: "raw",
+							title: "原始判据（V1 的机器口径：" + (((d.finalCheck && d.finalCheck.issues) || []).length) + " 条）",
+							defaultOpen: false,
+							children: h("div", null, ((d.finalCheck && d.finalCheck.issues) || []).length
+								? ((d.finalCheck && d.finalCheck.issues) || []).map((it, i) => h("div", {
+									key: "i" + i, style: { fontSize: "11px", color: it.level === "error" ? C.bad : C.warn, marginTop: "3px", fontFamily: "monospace" }
+								}, "[" + it.code + "/" + it.level + "] " + it.msg + (it.files && it.files.length ? "　→ " + it.files.join("、") : "")))
+								: h("div", { style: { fontSize: "11px", color: C.muted } }, "（V1 没有报问题）"))
+						})
+					]
+					: [
+						h("div", { key: "t" }, [
+							h("b", { key: "a" }, "现在能用吗："),
+							h("span", { key: "b", style: { color: tone, fontWeight: 600 } }, v.text),
+							h("span", { key: "c", style: { color: C.muted } },
+								"　（按" + (d.finalCheck && d.finalCheck.currentFrom === "active" ? "active 标记" : "文件名日期") + "判定）")
+						]),
+						((d.finalCheck && d.finalCheck.issues) || []).map((it, i) => h("div", {
+							key: "i" + i, style: { fontSize: "11px", color: it.level === "error" ? C.bad : C.warn, marginTop: "3px" }
+						}, "[" + it.code + "/" + it.level + "] " + it.msg + (it.files && it.files.length ? "　→ " + it.files.join("、") : "")))
 					]),
-					// V1 的三条原始 issue（多份 active / 旧稿未归档 / 无 active）
-					((d.finalCheck && d.finalCheck.issues) || []).map((it, i) => h("div", {
-						key: "i" + i, style: { fontSize: "11px", color: it.level === "error" ? C.bad : C.warn, marginTop: "3px" }
-					}, "[" + it.code + "/" + it.level + "] " + it.msg + (it.files && it.files.length ? "　→ " + it.files.join("、") : "")))
-				]),
 
 				// ③ V 校验清单（工单 30 的能力：V1+V3+V5+V6+V8+V11，带行号）
 				h("div", {
@@ -6119,6 +6235,8 @@ import {
 					gddFiles: gddFiles,
 					evidenceFiles: evFiles.map((x) => x.name),
 					finalCheck: dready.finalCheck,
+					// ★ 工单 25：定稿门（合流 → 定稿 的落点）—— 判据在 detail 那一层算好，这里只搬
+					gate: dready.gate,
 					configFiles: (curFeature && curFeature.configs) || [],
 					// ★ 配置表存在性以**真目录的列举**为准（看板按主题挂上来的那份只当兜底）
 					configRoot: (d && d.configRoot) || ""

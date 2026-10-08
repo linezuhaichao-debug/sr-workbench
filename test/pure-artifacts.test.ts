@@ -182,8 +182,13 @@ test("V 校验清单在详情里可见（V1/V3 error · V11 warn · V5 info，�
 	assert.deepEqual(v5.lines, [87, 88, 161, 162, 363]);
 	// V6 / V8 在真实定稿上是干净的 ⇒ 不出现在清单里（正常现象）
 	assert.equal(cl.issues.some((i: any) => i.code === "V6" || i.code === "V8"), false);
-	// V11 的降级如实写在 notes 里
-	assert.ok(d.notes.some((n: string) => /V11 降级/.test(n)), "应如实声明 mtime 不可得带来的降级");
+	// ★ 工单 25：V11 不再是"降级"——**时间拿到了**（宿主 `stat` 的版本串第 4 段 = mtime 纳秒）
+	assert.ok(d.checklist.checks.V11.finalTime > 0, "当前定稿的时间拿到了（V11 才能判新旧）");
+	assert.ok(
+		d.notes.some((n: string) => /时间来源：宿主 `stat` 的版本串/.test(n)),
+		"应如实写明时间是从哪来的（版本串第 4 段）"
+	);
+	assert.ok(!d.notes.some((n: string) => /看不到时间/.test(n)), "拿到时间时不该说看不到");
 });
 
 test("不是桶的目录与功能根散文件都进「未归桶」—— 一个文件都不许静默丢", async () => {
