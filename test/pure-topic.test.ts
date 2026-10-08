@@ -12,7 +12,7 @@ import test from "node:test";
 
 import { artifactBucket, BUCKET_FIELD, DIR_BUCKET, GDD_KIND_LABEL, gddKindOf } from "../src/pure/buckets.ts";
 import { dateOf, isNoise, topicOf } from "../src/pure/topic.ts";
-import { WORKSPACE, requireRealData } from "./paths.ts";
+import { WORKSPACE, PLANNER_CONFIG_DIR, requireRealData } from "./paths.ts";
 
 function namesIn(dir: string, out: string[], depth: number): void {
 	let rows: fs.Dirent[] = [];
@@ -32,7 +32,7 @@ function realNames(): string[] {
 	namesIn(path.join(WORKSPACE, "features"), out, 3);
 	namesIn(WORKSPACE, out, 0);
 	for (const d of ["proposals", "analysis", "decisions", "evidence", "inbox"]) namesIn(path.join(WORKSPACE, d), out, 0);
-	namesIn("D:\\TimeMachine\\planner\\策划配置", out, 0);
+	namesIn(PLANNER_CONFIG_DIR, out, 0);
 	return Array.from(new Set(out)).sort();
 }
 
@@ -131,12 +131,21 @@ test("真实文件名清单：每个都能派生主题，且没有把配置表�
 	}
 	// 配置表只作属性，不创建功能
 	// ★ 原断言有两处错：① 正则 `/\.xlsm?$/i` = "xls" + 可选 m，**漏掉 .xlsx**（真表里 55 个是 .xlsx）；
-	//   ② 阈值 >50 是猜的。实测（策划配置根目录）：92 个文件，其中表文件 **84 个**（29 个 .xlsm + 55 个 .xlsx）。
+	//   ② 阈值 >50 是猜的。
 	// ★ 2026-10-08：Excel **打开着**工作簿时会在同目录留隐藏锁文件 `~$<原表名>.xlsm`（实测 165 字节）——
 	//   它匹配表名正则却不是配置数据，会让这条计数随机 +1（用户当场就开着 `A002-货物道具表.xlsm`）。
-	//   产品侧（`load/dashboard.ts`）同样排除了它；这里跟着排除，计数才是稳定的实测值。
-	const configNames = names.filter((n) => /\.xlsx?m?$/i.test(n) && n.indexOf("~$") !== 0);
-	assert.equal(configNames.length, 84, "策划配置根目录下的表文件数（实测）");
-	assert.equal(configNames.filter((n) => /\.xlsm$/i.test(n)).length, 29, "其中 .xlsm（实测）");
+	//   产品侧（`load/dashboard.ts`）同样排除了它；这里跟着排除。
+	// ★ 2026-10-08 之后的加固：条数**不写死**（原为 84 / 29）—— 加一张配置表是**正确动作**，不该红。
+	//   改成与**同一时刻**从配置目录重算的真值比（逐条对名单），少列 / 多列一个才红。
+	const configTableNames = (list: string[]) => list.filter((n) => /\.xlsx?m?$/i.test(n) && n.indexOf("~$") !== 0);
+	const configNames = configTableNames(names);
+	const onDisk = configTableNames(fs.readdirSync(PLANNER_CONFIG_DIR));
+	assert.ok(configNames.length >= 84, "策划配置根目录下的表文件数（实测下界 84），实际 " + configNames.length);
+	assert.deepEqual(configNames.slice().sort(), onDisk.slice().sort(), "列举到的表文件 == 配置目录里同一时刻的那些");
+	assert.equal(
+		configNames.filter((n) => /\.xlsm$/i.test(n)).length,
+		onDisk.filter((n) => /\.xlsm$/i.test(n)).length,
+		"其中 .xlsm 的份数也要与磁盘一致",
+	);
 	assert.ok(configNames.every((n) => topicOf(n).length > 0));
 });

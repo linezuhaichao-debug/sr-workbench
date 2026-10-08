@@ -7,6 +7,7 @@
  */
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -16,24 +17,61 @@ import { loadFinal, loadInterface } from "../src/load/final.ts";
 import { loadLedger } from "../src/load/ledger.ts";
 import { readAllText, readHead } from "../src/load/read.ts";
 import { ledgerOf } from "../src/pure/ledger.ts";
-import { FEATURE_ROOT, FINAL_GDD, SKILLS_ROOT, SR_CONFIG, WORKSPACE, requireRealData, testPort } from "./paths.ts";
+import { dateOf, isNoise } from "../src/pure/topic.ts";
+import {
+	FEATURES_ROOT, FEATURE_ROOT, FINAL_GDD, PLANNER_CONFIG_DIR, SKILLS_ROOT, SR_CONFIG, WORKSPACE,
+	readText, requireRealData, testPort,
+} from "./paths.ts";
+import {
+	bucketCounts, fileNames, namesMatching, shallowFiles, topicDirs,
+} from "./reality.ts";
 
 requireRealData();
 const signal = new AbortController().signal;
 
-// ★ 2026-10-08 身份迁移：`联盟悬赏`→`讨伐`、`神话宝库`→`诸神降临`（并成同一批功能），功能数 4 → 3
-test("看板：真实工作区算出 3 个功能 + 92 张配置表，且锚点是绝对路径", async () => {
+/** 配置目录里的文件（与看板同一口径：排掉 Excel 的 `~$` 锁文件，其余一律照列） */
+function configFilesOnDisk(): string[] {
+	return fileNames(PLANNER_CONFIG_DIR).filter((n) => n.indexOf("~$") !== 0);
+}
+
+/** 磁盘上的功能主题（目录即功能；排除明显的噪音名 —— 与看板的 `isNoise` 同判据） */
+function topicsOnDisk(): string[] {
+	return topicDirs(FEATURES_ROOT).filter((t) => !isNoise(t));
+}
+
+/** 校准流水的条目数 = 那些 jsonl 里的非空行数（台账逐行读的口径） */
+function calRowsOnDisk(names: string[]): number {
+	let n = 0;
+	for (const f of names) {
+		for (const line of readText(path.join(FEATURE_ROOT, "evidence", f)).split(/\r?\n/)) if (line.trim()) n += 1;
+	}
+	return n;
+}
+
+/**
+ * ★ 不变式（原先写死 3 / 92，那是**真数据快照**）：条数改成与**同一时刻重算的磁盘真值**比。
+ *   用户按设计加一个功能、加一张配置表都不会误红；少列 / 多列一个照样红。
+ */
+test("看板：锚点是绝对路径，功能数与配置表数与磁盘同一时刻的实际一致", async () => {
 	const port = testPort();
 	const d = await loadDashboard(port, { cwd: "D:\\TimeMachine", configPath: SR_CONFIG, signal });
 
 	assert.equal(d.srWs, WORKSPACE, "锚点应是 sr 配置里的绝对路径");
 	assert.equal(d.configFile, SR_CONFIG);
-	assert.equal(d.counts.features, 3);
-	assert.equal(d.counts.configs, 92);
-	assert.deepEqual(
-		d.features.map((f) => f.topic),
-		["讨伐", "诸神降临", "英雄圣物"],
-	);
+	assert.equal(d.counts.features, topicsOnDisk().length, "功能数 == 磁盘 `features\\` 下的目录数");
+	assert.equal(d.counts.configs, configFilesOnDisk().length, "配置表数 == 配置目录里的文件数（已排掉 `~$` 锁文件）");
+	// 看板列出的功能与磁盘目录**集合相等**（顺序下面单独验排序口径）
+	assert.deepEqual(d.features.map((f) => f.topic).slice().sort(), topicsOnDisk().slice().sort(),
+		"看板列出的功能就是磁盘上的那些目录（多一个少一个都红）");
+	// 排序口径：按"最新定稿日期"倒序（没有定稿的排后面；同为空不强求相对次序）
+	const dates = d.features.map((f) => f.latestDate);
+	for (let i = 0; i + 1 < dates.length; i++) {
+		assert.ok(dates[i] >= dates[i + 1], "功能应按最新定稿日期倒序，实际 " + dates.join(" / "));
+	}
+	// 三个已知功能都还在（2026-10-08 身份迁移后的现状）。★ 新增功能不打破这条，改名才打破。
+	for (const t of ["讨伐", "诸神降临", "英雄圣物"]) {
+		assert.ok(d.features.some((f) => f.topic === t), "应有功能「" + t + "」");
+	}
 	assert.equal(d.pathNote, undefined, "读到 sr 配置就不该走相对路径兜底");
 });
 
@@ -45,14 +83,23 @@ test("看板：真实功能的阶段、定稿、告警（讨伐 = active 定稿 
 	// ★ `root` / `openPath` 是**混合分隔符**的绝对路径（`<绝对锚点>/features/<主题>`）——
 	//   这是迁移前 client.js:1141 的原样行为（`srWs + "/features/" + t`），读文件时 Windows 两种分隔符都认，
 	//   所以本票**不改产品行为**：断言里归一化后比较，并在此如实记下这个待清理的表述问题（留给后续票）。
-	assert.equal(path.normalize(f.root), path.join(WORKSPACE, "features", "讨伐"));
-	assert.equal(f.latestFinal, "联盟悬赏_20260923_定稿.md");
-	assert.equal(f.latestDate, "20260923");
+	assert.equal(path.normalize(f.root), FEATURE_ROOT);
+	// ★ 定稿那几个数**从磁盘同一时刻重算**（`gdd\` 里 `_定稿.md` 那一档，与 `gddKindOf` 同口径）——
+	//   走 `/sr-gdd-fix` 留版本（多一份定稿）不会误红，看板把定稿认错才会红。
+	const finalsOnDisk = namesMatching(path.join(FEATURE_ROOT, "gdd"), /_定稿\.md$/i);
+	const byDate = finalsOnDisk.slice().sort((a, b) => (dateOf(a) < dateOf(b) ? 1 : -1));
+	assert.deepEqual(f.files.final, byDate, "看板列出的定稿 = 磁盘 `gdd\\` 里的 `_定稿.md`，且按文件名日期倒序");
+	assert.equal(f.finals, finalsOnDisk.length);
+	assert.equal(f.latestFinal, byDate[0] || null);
+	assert.equal(f.latestDate, byDate[0] ? dateOf(byDate[0]) : "");
+	assert.equal(f.historyCount, Math.max(0, finalsOnDisk.length - 1));
+	assert.equal(path.normalize(f.openPath), path.join(FEATURE_ROOT, "gdd", byDate[0]));
+	// 当前有效定稿的头部 —— 这份文件的名字本身就是坐标（`test/paths.ts` 的 `FINAL_GDD`）
+	assert.equal(path.basename(FINAL_GDD), "联盟悬赏_20260923_定稿.md");
 	assert.equal(f.docType, "final_gdd");
 	assert.equal(f.status, "active");
-	assert.equal(f.finals, 2);
-	assert.equal(f.historyCount, 1);
-	assert.equal(path.normalize(f.openPath), FINAL_GDD);
+	assert.ok(f.finals >= 1, "讨伐至少有一份定稿（`FINAL_GDD` 是它的一员）");
+	assert.ok(f.files.final.includes(path.basename(FINAL_GDD)));
 	// ★ 2026-10-08 改名后遗症（**真实缺口，如实钉在这里**）：看板的配置表匹配是**按主题名**做的
 	//   （`configByTopic`），而配置表文件名里写的还是旧名「联盟悬赏」⇒ 改名成「讨伐」之后挂不上。
 	//   本票不改产品行为（改名只改目录名，见 `identity-rename-merge-report.md` 的「还没做」第 3 条），
@@ -60,29 +107,46 @@ test("看板：真实功能的阶段、定稿、告警（讨伐 = active 定稿 
 	assert.deepEqual(f.stages, { concept: true, draft: true, config: false, final: true, review: true, speech: false });
 	assert.deepEqual(f.finalCheck.issues.map((i) => i.code), ["V1"]);
 	assert.equal(f.configs.length, 0, "★ 改名后遗症：配置表名里是旧名「联盟悬赏」，按主题名匹配挂不上（已知缺口）");
-	// 其余两个功能：没有定稿（目录存在就是功能）
+	// 其余功能：看板**如实**报它们的定稿现状（没有定稿就给 null）—— 逐条与磁盘同一时刻重算的比
 	const others = d.features.filter((x) => x.topic !== "讨伐");
-	assert.ok(others.every((x) => x.latestFinal === null && x.finalCheck.current === null));
+	for (const o of others) {
+		const its = namesMatching(path.join(path.normalize(o.root), "gdd"), /_定稿\.md$/i);
+		const latest = its.slice().sort((a, b) => (dateOf(a) < dateOf(b) ? 1 : -1))[0] || null;
+		assert.equal(o.latestFinal, latest, o.topic + " 的「最终版」要等于磁盘上最新那份定稿（没有就给 null）");
+		assert.equal(o.finals, its.length, o.topic + " 的定稿数要等于磁盘实际：" + its.join(" / "));
+		assert.equal(o.finalCheck.current === null, its.length === 0,
+			o.topic + "：盘上没有定稿就必须给 null（不假装有结论）");
+	}
 	assert.ok(d.legacyLeft > 0, "旧扁平层还剩文件（真实数据如此），只用于提示");
 });
 
-test("决策台账：真实功能根上的 4 份决策 + 8 行校准 + 1 份交接 JSON + 真实 schema", async () => {
+test("决策台账：决策 / 校准 / 交接三类来源**逐条**与磁盘同一时刻的实际一致", async () => {
 	const port = testPort();
 	const L = await loadLedger(port, { root: FEATURE_ROOT, skillsRoot: SKILLS_ROOT, signal });
-	assert.equal(L.records.length, 4);
+	// ★ 条数从磁盘重算（原写死 4 / 2 / 8 / 1），并要求**每一条都能在磁盘找到对应文件** ——
+	//   走一次真人门多一份决策记录不会误红，台账丢掉一条才会红。
+	const decNames = namesMatching(path.join(FEATURE_ROOT, "decisions"), /^decision_.*\.json$/i);
+	const calNames = namesMatching(path.join(FEATURE_ROOT, "evidence"), /^calibration_.*\.jsonl$/i);
+	const hoNames = namesMatching(path.join(FEATURE_ROOT, "analysis"), /^sr-gdd-handoff_.*\.json$/i);
+	assert.equal(L.records.length, decNames.length, "决策记录条数 == 磁盘 `decisions\\` 里的 `decision_*.json` 数");
+	for (const r of L.records) {
+		assert.ok(decNames.includes(r.file), "台账里的每一条都要能在磁盘找到对应文件：" + r.file);
+	}
 	assert.equal(L.schemaOk, true);
 	assert.equal(L.schema.title, "SR Decision Object");
-	assert.equal(L.calFiles.length, 2);
-	assert.equal(L.calibration.length, 8);
-	assert.equal(L.handoffs.length, 1);
-	assert.equal(L.handoffs[0].name, "sr-gdd-handoff_联盟悬赏_20260918.json");
-	// 记录按文件名倒序（决策台账的显示口径）
-	assert.equal(L.records[0].file, "decision_联盟悬赏_20260929.json");
+	assert.equal(L.calFiles.length, calNames.length, "校准流水份数 == 磁盘 `evidence\\` 里的 `calibration_*.jsonl` 数");
+	assert.equal(L.calibration.length, calRowsOnDisk(calNames), "校准条目数 == 那些 jsonl 里的非空行数");
+	assert.equal(L.handoffs.length, hoNames.length, "交接 JSON 份数 == 磁盘 `analysis\\` 里的 `sr-gdd-handoff_*.json` 数");
+	for (const h of L.handoffs) assert.ok(hoNames.includes(h.name), "交接 JSON 也要能在磁盘定位：" + h.name);
+	// 记录按文件名倒序（决策台账的显示口径）—— 与磁盘上最大的那个名字比
+	const newest = decNames.slice().sort().reverse()[0];
+	assert.ok(fs.existsSync(path.join(FEATURE_ROOT, "decisions", newest)), "倒序第一条对应的文件真的在盘上");
+	assert.equal(L.records[0].file, newest);
 	assert.equal(L.records[0].issues.length, 0);
 	assert.equal(L.records[1].issues.length, 3, "这份真实记录确实不合规（多出 schema 未声明字段）");
 });
 
-test("★ 工单 17 的能力进面板：真实功能的字段覆盖 = 79 个键 / 悬空 0（决策页签显示的就是它）", async () => {
+test("★ 工单 17 的能力进面板：真实功能的字段覆盖 —— 一个键都不悬空（决策页签显示的就是它）", async () => {
 	const port = testPort();
 	const L = await loadLedger(port, { root: FEATURE_ROOT, skillsRoot: SKILLS_ROOT, signal });
 	// ★ 覆盖检查**不在加载层做**：它是派生期的事（`buildLedger` 组装台账时顺手跑，
@@ -90,12 +154,18 @@ test("★ 工单 17 的能力进面板：真实功能的字段覆盖 = 79 个键
 	const dl = ledgerOf(L)!;
 	const cov = dl.fieldCheck!;
 	assert.ok(cov, "设计台账派生必须带上 fieldCheck");
-	assert.equal(cov.distinct, 79);
-	assert.equal(cov.checked, 211);
-	assert.deepEqual(cov.dangling, []);
-	assert.deepEqual(cov.pending, []);
+	// ★ 不写死 79 / 211：那是**真数据快照**（多一份决策记录就会变）。
+	//   要证明的同一件事是「真实数据上的**每一个**键都已被归类表覆盖，一个都不悬空」——
+	//   它由下面这几条证明，且对任意规模的真实数据都成立。
+	assert.deepEqual(cov.dangling, [], "悬空 0：真实数据里没有一个键是归类表里没有的");
+	assert.deepEqual(cov.pending, [], "待判定 0");
 	assert.equal(cov.ok, true);
 	assert.deepEqual(cov.issues, []);
+	// 下界 + 自洽：覆盖检查真的扫到了那份真实数据（不是空跑），且逐条都能查到归类
+	assert.ok(cov.distinct >= 79, "真实功能至少覆盖 79 个不同键（实测下界），实际 " + cov.distinct);
+	assert.ok(cov.checked >= 211, "键实例数至少 211（实测下界），实际 " + cov.checked);
+	assert.ok(cov.checked >= cov.distinct, "被检查的实例数不该少于不同键数");
+	assert.ok(cov.keys.length === cov.distinct, "`keys` 就是那 " + cov.distinct + " 个不同键");
 	// 报错时要能指回**哪个文件**里的哪个键（注入一个上游新字段）
 	const doc = JSON.parse(JSON.stringify(L.records[3].doc));
 	doc.decision_result.brand_new_field_from_upstream = "上游新增的一类决定";
@@ -113,12 +183,13 @@ test("★ 工单 12：功能详情的产物清单 + 三阶段 + 定稿有效性 
 	const port = testPort();
 	const d = await loadFeatureDetail(port, { root: FEATURE_ROOT, signal });
 	assert.equal(path.normalize(d.root), FEATURE_ROOT);
-	// ★ 2026-09-30 数据漂移：联盟悬赏的 analysis\ 多了一份人工补充产物
-	//   （`human-note_去掉折算伤害，只保留真实伤害_20260930.md`，是**真机上面板跑出来的**）。
-	//   24 → 25，出 · 产物 18 → 19。这条数字是「磁盘实际」，数据变了就该跟着变（不是放宽断言）。
-	// ★ 2026-10-08 合并：`联盟悬赏` → `讨伐`，25 → 27（+ `feature.json`，并入一份产物）⇒ 出 19 → 20、其它 0 → 1。
-	assert.equal(d.artifacts.total, 27, "讨伐磁盘上 27 个文件（Get-ChildItem -Recurse 实测）");
-	assert.deepEqual(d.artifacts.counts, { in: 0, out: 20, trace: 6, other: 1 });
+	// ★ 产物条数**不写死**（原为 27，是真数据快照）：与**同一时刻**从磁盘按同一口径算出来的比。
+	//   归档位 `source\UE交付_<日期>\`（设计 §4.3.5）一落盘、或 analysis\ 多一份人工补充产物，
+	//   都不该让这条红；面板少列 / 多列一个文件才该红 —— 逐条对名单，不只是对数。
+	assert.deepEqual(d.artifacts.allPaths.slice().sort(), shallowFiles(FEATURE_ROOT),
+		"面板会列出的清单 == 磁盘上同一时刻的两层文件（逐条相等，不静默丢、不凭空造）");
+	assert.equal(d.artifacts.total, shallowFiles(FEATURE_ROOT).length, "产物条数 == 磁盘实际（两层口径）");
+	assert.deepEqual(d.artifacts.counts, bucketCounts(FEATURE_ROOT), "进 / 出 / 过程留痕 / 未归桶 的口径与磁盘实际一致");
 	assert.deepEqual(d.stage.stages.map((s: any) => [s.label, s.done]), [
 		["阶段一 · 头脑风暴", true], ["阶段二 · 文档生成", true], ["阶段三 · 定稿修订", true],
 	]);
@@ -144,13 +215,16 @@ test("★ 工单 12：功能详情的产物清单 + 三阶段 + 定稿有效性 
 	assert.equal(d.gate.review.state, "missing", "20260923 的定稿没有对照的审查报告（两份 20260921 的匹配不上）");
 	assert.match(d.gate.headline, /^先别交程序 —— 同时有 2 份定稿标着「可用」/);
 	// 没有定稿的功能不假装有结论；门给 none（"还没有定稿 —— 交不了程序"）
-	const none = await loadFeatureDetail(testPort(), { root: path.join(WORKSPACE, "features", "英雄圣物"), signal });
+	const heroRoot = path.join(FEATURES_ROOT, "英雄圣物");
+	const none = await loadFeatureDetail(testPort(), { root: heroRoot, signal });
+	assert.equal(namesMatching(path.join(heroRoot, "gdd"), /_定稿\.md$/i).length, 0, "这个功能盘上确实没有定稿（前置）");
 	assert.equal(none.finalCheck.current, null);
 	assert.deepEqual(none.checklist.issues, []);
 	assert.equal(none.gate.state, "none");
 	assert.equal(none.gate.canHandOff, false);
 	assert.match(none.gate.headline, /还没有定稿/);
-	assert.equal(none.artifacts.total, 6);   // ★ 2026-10-08：+ feature.json（合并时补的身份声明）
+	// ★ 产物条数同样从磁盘重算（原写死 6）
+	assert.equal(none.artifacts.total, shallowFiles(heroRoot).length);
 });
 
 test("定稿：读真实定稿并附上路径/目录/文件名；缺文件给可读错误", async () => {

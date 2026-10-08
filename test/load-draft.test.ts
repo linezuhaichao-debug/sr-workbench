@@ -16,13 +16,16 @@ import test from "node:test";
 
 import { loadDraftWorkface } from "../src/load/draft.ts";
 import { loadFeatureDetail } from "../src/load/feature.ts";
+import { dateOf } from "../src/pure/topic.ts";
 import { createFsPort } from "../src/port/fs.ts";
+import { fileNames } from "./reality.ts";
+import { PLANNER_CONFIG_DIR } from "./paths.ts";
 
 const SR_ROOT = process.env.SR_WB_WORKSPACE || "D:\\TimeMachine\\GameDesignOS\\workspace";
 // ★ 2026-10-08 身份迁移：目录名 `联盟悬赏` → `讨伐`（文档名没变）
 const FEATURE = path.join(SR_ROOT, "features", "讨伐");
 const FEATURE2 = path.join(SR_ROOT, "features", "诸神降临");
-const CONFIG_DIR = "D:\\TimeMachine\\planner\\策划配置";
+const CONFIG_DIR = PLANNER_CONFIG_DIR;
 
 /** 走真加载链路：功能详情（产物清单）→ 文档生成工作面 */
 async function load(topic: string) {
@@ -47,9 +50,14 @@ test("真数据 · 联盟悬赏：成稿被认出来（不带「成稿」后缀�
 	const { got, detail } = await load("讨伐");
 
 	// ① 成稿：文件名不带「成稿」后缀，靠 `gddKindOf` 归类
-	assert.equal(got.name, "联盟悬赏_20260918.md");
-	assert.ok(got.path.replace(/\//g, "\\").endsWith("features\\讨伐\\gdd\\联盟悬赏_20260918.md"));
-	assert.deepEqual(got.drafts, ["联盟悬赏_20260918.md"], "gdd\\ 里只有这一份成稿");
+	// ★ 成稿清单**不写死**（原为 `["联盟悬赏_20260918.md"]`）：与磁盘 `gdd\` 里
+	//   "是 .md、但不是定稿 / 审查"的那些重算的比 —— 新写一份成稿不会误红。
+	const draftsOnDisk = fileNames(path.join(FEATURE, "gdd"))
+		.filter((n) => /\.md$/i.test(n) && !/_定稿\.md$/i.test(n) && !/_审查\.md$/i.test(n));
+	const newestDraft = draftsOnDisk.slice().sort((a, b) => (dateOf(a) < dateOf(b) ? 1 : -1))[0];
+	assert.deepEqual(got.drafts.slice().sort(), draftsOnDisk.slice().sort(), "gdd\\ 里的成稿 == 磁盘上那些（判据是归类，不是文件名后缀）");
+	assert.equal(got.name, newestDraft, "本屏读的是日期最新的那一份成稿");
+	assert.ok(got.path.replace(/\//g, "\\").endsWith("features\\讨伐\\gdd\\" + newestDraft));
 	assert.equal(got.head.doc_type, "draft_gdd");
 	assert.equal(got.head.status, "archived", "定稿通过后成稿归档（真数据）");
 	assert.equal(got.topic, "联盟悬赏");
@@ -74,7 +82,7 @@ test("真数据 · 联盟悬赏：成稿被认出来（不带「成稿」后缀�
 	assert.match(got.gate.headline, /^先别交程序 —— 同时有 2 份定稿标着「可用」/);
 	assert.equal(got.gate.review.state, "missing", "20260923 那份没有对照的审查报告");
 
-	// ④ 配置支线：真实结论 = 有 §6 字段、1 处待配表缺口、没有读回回执
+	// ④ 配置支线：有 §6 字段、1 处待配表缺口、没有读回回执
 	assert.equal(got.config.stage, "missing-pending");
 	assert.equal(got.config.facts.contract.fields.length, 24);
 	assert.equal(got.config.facts.contract.line, 305);
@@ -82,7 +90,11 @@ test("真数据 · 联盟悬赏：成稿被认出来（不带「成稿」后缀�
 	assert.deepEqual(got.config.facts.referencedMissing, [], "§6 引用的三个工作簿在配置目录里都存在同名文件（按真目录列举核，不靠看板的主题挂载）");
 	assert.ok(got.configFiles.length >= 80, "配置目录真的列到了那些工作簿：" + got.configFiles.length + " 个");
 	assert.ok(got.configFiles.indexOf("A079-联盟悬赏.xlsx") >= 0 && got.configFiles.indexOf("A006-掉落表.xlsx") >= 0, "A079 / A006 都在列举结果里");
-	assert.deepEqual(got.evidence, [], "evidence\\ 里没有 readback_*");
+	// ★ 读回验收的凭据：与磁盘 `evidence\` 同一时刻重算的比（原写死「一定是空」——
+	//   跑一次 `/sr-config` 的读回验收就会多出 `readback_*`，那是**正确动作**，不该红）
+	const readbacksOnDisk = fileNames(path.join(FEATURE, "evidence")).filter((n) => /^readback_/i.test(n));
+	assert.deepEqual(got.evidence.map((x) => x.name).sort(), readbacksOnDisk.slice().sort(),
+		"读回回执清单 == 磁盘 evidence\\ 里的 `readback_*`（有几份列几份，一份都没有就是空）");
 	assert.ok(got.config.missing.some((m) => /L363/.test(m)), got.config.missing.join("\n"));
 	// ★ 面板不重做 Excel：这一屏只报状态（存在性按真目录列举核，不解析工作簿、不改表）
 	assert.equal(detail.finalCheck.current, "联盟悬赏_20260923_定稿.md");
@@ -92,25 +104,41 @@ test("真数据 · 联盟悬赏：成稿被认出来（不带「成稿」后缀�
 	assert.ok(/2 份定稿/.test(got.notes[0]) && /当前有效/.test(got.notes[0]), got.notes[0]);
 
 	// ⑥ 工单 24c：Y 形要的那几样真数据（人话状态 / 体量 / 日期 / §5 的 ASCII / gdd\UI 里的图）
-	assert.equal(got.kb, 38.6, "「已就绪 · 38.6 KB」里的那个数（39495 字节 / 1024 四舍五入一位小数）");
-	assert.ok(got.bytes === 39494 || got.bytes === 39495,
-		"字节数按 UTF-8 算（浏览器半侧没有 Buffer，用的是 TextEncoder）：" + got.bytes + "（真文件 " + fs.statSync(path.join(FEATURE, "gdd", "联盟悬赏_20260918.md")).size + " 字节；读回来的文本少了末尾那个空行）");
+	// ★ 体量与行数**不写死**（原为 38.6 / 39495 / 541）：与**同一时刻**从磁盘读回来的那份比。
+	//   成稿被 `/sr-gdd-fix` 改一次就该跟着变（那是正确动作），算错了才该红。
+	const draftAbs = path.join(FEATURE, "gdd", "联盟悬赏_20260918.md");
+	const rawDraft = fs.readFileSync(draftAbs, "utf8");
+	const diskBytes = fs.statSync(draftAbs).size;
+	const diskLines = rawDraft.split(/\r?\n/).length;
+	assert.ok(got.bytes === diskBytes || got.bytes === diskBytes - 1,
+		"字节数按 UTF-8 算（浏览器半侧没有 Buffer，用的是 TextEncoder）：" + got.bytes +
+		"（真文件 " + diskBytes + " 字节；读回来的文本少了末尾那个空行）");
+	assert.equal(got.kb, Math.round(got.bytes / 1024 * 10) / 10, "「已就绪 · " + got.kb + " KB」就是字节数 / 1024 一位小数");
+	assert.ok(got.lines === diskLines || got.lines === diskLines - 1,
+		"成稿行数（1-based，与解析器一致）：" + got.lines + "（磁盘文件 " + diskLines + " 行）");
 	assert.equal(got.date, "2026-09-18", "「成稿 · 2026-09-18」里的日期取自文件名（YYYYMMDD → YYYY-MM-DD）");
-	assert.equal(got.lines, 541, "成稿 541 行（1-based，与解析器一致）");
 	// 支线 A 的人话（逐字；界面直接念它）
 	assert.equal(got.story.config.label,
 		"规则已派生成 3 张表（A079-联盟悬赏.xlsx · A012-全局变量表.xlsx · A006-掉落表.xlsx），字段都齐；还有 1 处「待配表」没填");
 	assert.equal(got.configMis.stage, "missing-pending");
 	assert.equal(got.configMis.gapCount, 1);
 	assert.ok(got.story.config.label.indexOf("missing-pending") < 0, "人话里没有机器口径");
-	// 支线 B 的人话 + ASCII 占位（数字全从真数据来）
-	assert.equal(got.ascii.length, 4);
-	assert.deepEqual(got.ascii.map((x) => x.no), ["5.1", "5.2", "5.3", "5.4"]);
-	assert.equal(got.story.wire.label, "§5 里现在是 4 处 ASCII 占位；7 张界面图提交后可替换");
-	// gdd\UI\ 里的 7 张界面图（支线 B 的唯一可靠输入）
-	assert.equal(got.uiImages.length, 7, "真目录里就是 7 张：" + got.uiImages.map((x) => x.name).join(" / "));
+	// 支线 B 的人话 + ASCII 占位。★ 那两个数字**不写死**（原为 4 / 7）：界面上那句话里报的数
+	//   必须就是真数据的数 —— 一条是成稿 §5 的 ASCII 占位数（提交界面图后会被真图替换，
+	//   那是设计里的正确动作，不该红），一条是磁盘 `gdd\UI\` 里的图数。两条都逐条可定位。
+	const uiOnDisk = fileNames(path.join(FEATURE, "gdd", "UI"));
+	assert.equal(got.story.wire.label,
+		"§5 里现在是 " + got.ascii.length + " 处 ASCII 占位；" + uiOnDisk.length + " 张界面图提交后可替换",
+		"人话里的两个数字 = ASCII 占位实际条数 + 磁盘 gdd\\UI 里的图数（一个都不是编的）");
+	for (const a of got.ascii) {
+		assert.match(a.no, /^5\./, "ASCII 占位只该出现在 §5：" + JSON.stringify(a));
+		assert.ok(a.line >= 1 && a.lines >= 1, "每一处占位都要指回成稿里的真实行号与行数：" + JSON.stringify(a));
+	}
+	// gdd\UI\ 里的界面图（支线 B 的唯一可靠输入）——条数同样与磁盘重算的比（原写死 7）
+	assert.equal(got.uiImages.length, uiOnDisk.length, "真目录里现在就是这几张：" + got.uiImages.map((x) => x.name).join(" / "));
 	assert.ok(got.uiImages.every((x) => x.rel.indexOf("gdd/UI/") === 0), "相对路径都是 gdd/UI/…");
 	assert.ok(got.uiImages.every((x) => x.abs.indexOf("/gdd/UI/") > 0), "绝对路径由功能根派生");
+	assert.deepEqual(got.uiImages.map((x) => x.name).sort(), uiOnDisk.slice().sort(), "列出来的就是磁盘上那几张，不多不少");
 	assert.ok(got.uiImages.some((x) => x.name.indexOf("UI-M1 联盟悬赏主面板 · 常规难度.png") === 0), "UI-M1 的两张都在");
 	assert.equal(got.uiWhy, "", "列得到就不该有「列不出来」的说明");
 });
@@ -124,7 +152,9 @@ test("真数据 · 诸神降临：有成稿、没定稿 → 配置支线停在�
 	assert.ok(/规则就绪/.test(got.config.label), got.config.label);
 	// ★ 2026-10-08 合并：`神话宝库` 并进 `诸神降临`，它的读回回执 `readback_A079_神话宝库_20260916.md`
 	//   跟着进了同一个 `evidence\` ⇒ 第三步「读回验收」由 false 变 true（口径没变，是数据并过来了）。
-	assert.deepEqual(got.config.steps.map((s) => s.done), [true, false, true, false]);
+	//   ★ 这里同样改成与磁盘重算的比：有没有 `readback_*` 由 evidence\ 决定，不由这条断言决定。
+	const godsReadbacks = fileNames(path.join(FEATURE2, "evidence")).filter((n) => /^readback_/i.test(n));
+	assert.deepEqual(got.config.steps.map((s) => s.done), [true, false, godsReadbacks.length > 0, false]);
 	assert.ok(got.config.missing.some((m) => /还没有定稿/.test(m)), got.config.missing.join("\n"));
 	assert.equal(got.doc.complete, true, "成稿本身两大部分齐全");
 	assert.equal(got.doc.parts[0].line > 0, true);

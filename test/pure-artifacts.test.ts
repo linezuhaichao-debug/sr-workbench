@@ -4,127 +4,173 @@
  * ★ 本套件的核心断言就是工单 12 自己的验收句：
  *   **对真实功能，详情页列出的产物与磁盘实际一致（差异 0）**。
  *   做法：`loadFeatureDetail`（面板走的就是这条链）→ `artifacts.allPaths`，
- *   与 `node:fs` 的**递归列目录**逐条 diff —— 少一个（静默丢文件）或多一个（凭空造）都要红。
- *   四个真实功能**逐个**跑，不挑一个"看起来对"的。
+ *   与 `node:fs` 的**同一时刻**磁盘实况逐条 diff —— 少一个（静默丢文件）或多一个（凭空造）都要红。
+ *   每个真实功能**逐个**跑，不挑一个"看起来对"的。
  *
  * ★ 不录制 fixture：清单与基线都来自真实工作区（换机器用 SR_WB_WORKSPACE 覆盖）。
+ * ★ 2026-10-08 之后的一次加固（`fixture-robustness-report.md`）：这里的条数**不再写死**。
+ *   原先写死"讨伐 27 个文件"——那是一条**真数据快照**，用户把外部交付包按设计归位到
+ *   `source\UE交付_<日期>\`（设计 §4.3.5）就会把它打红。现在改成与磁盘**同一时刻**重算的真值比，
+ *   并额外要求"更深的层必须被如实报出来"（面板只列两层，这是它自己声明的口径）——
+ *   严格性不降反升：现在是**逐条对名单**，不只是对数。
  */
 
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { featureArtifacts, stageProgress } from "../src/pure/artifacts.ts";
+import { BUCKET_GROUPS, featureArtifacts, stageProgress } from "../src/pure/artifacts.ts";
 import { mdSpecOf } from "../src/pure/mdspec.ts";
+import { dateOf } from "../src/pure/topic.ts";
 import { loadFeatureDetail, scanFeatureListing } from "../src/load/feature.ts";
-import { WORKSPACE, requireRealData, testPort } from "./paths.ts";
+import { FEATURES_ROOT, requireRealData, testPort } from "./paths.ts";
+import {
+	BUCKETS, BUCKET_MEANING, bucketCounts, bucketFiles, deepDirNotes, deepFiles, deepParentOf,
+	dirNames, fileNames, rootFiles, shallowFiles, topicDirs,
+} from "./reality.ts";
 
 requireRealData();
 const signal = new AbortController().signal;
-const FEATURES_ROOT = path.join(WORKSPACE, "features");
+const topics = topicDirs(FEATURES_ROOT);
 
-/** 磁盘实况：递归列出功能目录下的**文件**（相对功能根，正斜杠） */
-function diskFiles(root: string): string[] {
-	const out: string[] = [];
-	const walk = (dir: string) => {
-		for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
-			const abs = path.join(dir, d.name);
-			if (d.isDirectory()) walk(abs);
-			else out.push(path.relative(root, abs).split(path.sep).join("/"));
-		}
-	};
-	walk(root);
-	return out.sort();
-}
-
-const topics = fs.readdirSync(FEATURES_ROOT, { withFileTypes: true })
-	.filter((d) => d.isDirectory())
-	.map((d) => d.name)
-	.sort();
+/** `gdd\` 的细分判据只看文件名（独立写一遍，免得拿产品自己的判据证明产品自己） */
+const FINAL_RE = /_定稿\.md$/i;
+const REVIEW_RE = /_审查\.md$/i;
 
 /**
- * ★ 2026-10-08 身份迁移（`identity-rename-merge-report.md`）：`联盟悬赏` → **`讨伐`**、
- *   `神话宝库` → **`诸神降临`**（合并后源目录只留壳，壳已被删）。功能数 4 → **3**。
- *   断言的**口径没变**（看板按目录认功能），只是把坐标对到迁移后的现状。
+ * ★ 前提（口径，不是真数据快照）：**目录即功能**（设计 §3.2）——功能有几个由磁盘决定。
+ *   2026-10-08 身份迁移后每个功能目录都是完整的：六个标准桶 + 身份声明 `feature.json`。
+ *   这里**不再写死"有 3 个功能"**（多一个新功能不该红），改断言"每个功能目录都完整"。
  */
-test("真实工作区有 3 个功能（断言的前提）", () => {
-	assert.deepEqual(topics, ["英雄圣物", "讨伐", "诸神降临"].sort());
-});
-
-test("★ 验收：四个真实功能逐个 diff —— 面板会列出的产物 == 磁盘实际（差异 0）", async () => {
-	const report: string[] = [];
+test("真实工作区：每个功能目录都是完整的（六个标准桶 + feature.json 身份声明）", () => {
+	assert.deepEqual(topics.slice().sort(), dirNames(FEATURES_ROOT).slice().sort());
+	assert.ok(topics.length >= 1, "至少有一个功能：" + topics.join(" / "));
 	for (const t of topics) {
 		const root = path.join(FEATURES_ROOT, t);
-		const port = testPort();
-		const d = await loadFeatureDetail(port, { root: root, signal });
-		const listed = (d.artifacts.allPaths as string[]).slice().sort();
-		const disk = diskFiles(root);
-		const missing = disk.filter((p) => !listed.includes(p));   // 磁盘有、面板不列 ⇒ 静默丢
-		const extra = listed.filter((p) => !disk.includes(p));     // 面板列、磁盘没有 ⇒ 凭空造
-		report.push(t + "：面板 " + listed.length + " / 磁盘 " + disk.length);
-		assert.deepEqual(missing, [], t + " 有文件没被列出（静默丢）：" + missing.join(" | "));
-		assert.deepEqual(extra, [], t + " 列出了磁盘上不存在的文件：" + extra.join(" | "));
-		assert.equal(listed.length, disk.length, t + " 数量不一致");
+		assert.deepEqual(dirNames(root).filter((d) => d.indexOf(".") !== 0 && BUCKETS.includes(d)).slice().sort(), BUCKETS.slice().sort(),
+			t + "：六个标准桶都要建全（缺桶是真实缺陷）");
+		assert.ok(rootFiles(root).includes("feature.json"), t + "：功能根上要有身份声明 `feature.json`");
 	}
-	// 各功能的文件数（对账用；数字变了要有人来看一眼为什么）
-	// ★ 2026-09-30 漂移已看：联盟悬赏 24→25、神话宝库 38→39，各多一份
-	//   `analysis\human-note_*_20260930.md`（真机上面板「人工补充」入口真的用了一次写出来的）。
-	// ★ 2026-10-08 合并已看：`联盟悬赏` → `讨伐`（25 → 27：多 `feature.json` 与并入的一份产物），
-	//   `神话宝库` → `诸神降临`（39 → 43：多 `feature.json`、`human-note_改名*`、中文决策记录与框架图）；
-	//   `英雄圣物` 5 → 6（多 `feature.json`）。**断言的口径没变**（面板清单 == 磁盘实际），
-	//   只是把数字对到今天的真实数据。
-	assert.equal(
-		report.join(" · "),
-		"英雄圣物：面板 6 / 磁盘 6 · 讨伐：面板 27 / 磁盘 27 · 诸神降临：面板 43 / 磁盘 43"
-	);
 });
 
-// ★ 2026-10-08 合并后的现状：27 条（+ feature.json 进「未归桶」，+ 并进来的一份产物）——
-//   `other: 1` 就是身份文件 `feature.json`（它不是桶里的产物，如实另算）。
-test("讨伐：桶分组与含义（进 0 · 出 20 · 过程留痕 6 · 其它 1）", async () => {
-	const d = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "讨伐"), signal });
+test("★ 验收：真实功能逐个对账 —— 面板会列出的产物 == 磁盘同一时刻的两层实际；更深的层如实报出来", async () => {
+	for (const t of topics) {
+		const root = path.join(FEATURES_ROOT, t);
+		const d = await loadFeatureDetail(testPort(), { root: root, signal });
+		const listed = (d.artifacts.allPaths as string[]).slice().sort();
+		const shallow = shallowFiles(root);   // 面板**声明会列出来**的那两层
+		const deep = deepFiles(root);         // 更深的层（面板不列，但必须被 `notes` 点名"未展开"）
+		// ① 逐条相等：磁盘有、面板不列 ⇒ 静默丢；面板列、磁盘没有 ⇒ 凭空造
+		const missing = shallow.filter((p) => !listed.includes(p));
+		const extra = listed.filter((p) => !shallow.includes(p));
+		assert.deepEqual(missing, [], t + " 两层内有文件没被列出（静默丢）：" + missing.join(" | "));
+		assert.deepEqual(extra, [], t + " 列出了磁盘上不存在的文件：" + extra.join(" | "));
+		assert.equal(listed.length, shallow.length, t + " 数量不一致");
+		// ② 更深的层**不许静默丢**：报出来的说明要与磁盘逐条一致，且每一条深文件都有父目录被点名
+		const notes = ((d.artifacts.notes as string[]) || []).slice().sort();
+		const wantNotes = deepDirNotes(root).map((n) => "未展开更深一层：" + n).sort();
+		assert.deepEqual(notes, wantNotes, t + "：未展开的层没有如实报出来（面板不许假装列全了）");
+		for (const p of deep) {
+			const parent = deepParentOf(p);
+			assert.ok(notes.some((n) => n.indexOf("：" + parent + "（") > 0),
+				t + "：有更深的文件没被任何说明覆盖：" + p + "（父目录 " + parent + " 没被点名）");
+		}
+		// ③ 报出来的那些目录必须真的存在、且"还有 N 个子目录"对得上（不是一句空话）
+		for (const n of notes) {
+			const rel = n.replace(/^未展开更深一层：/, "").replace(/（.*$/, "");
+			assert.ok(dirNames(path.join(root, rel)).length > 0, t + "：报出来的 " + rel + " 里其实没有子目录");
+		}
+	}
+});
+
+/**
+ * ★ **规格常量，不是真数据快照**：六个标准产物桶 → 含义（设计 §4.1）。
+ *   改口径才该改这几行；真数据怎么变都不该动它。
+ */
+test("规格常量：六个标准桶 → 含义（与产品里的 BUCKET_GROUPS 对表）", () => {
+	assert.deepEqual(BUCKET_GROUPS.map((g: any) => g.dir), BUCKETS);
+	assert.deepEqual(BUCKET_GROUPS.map((g: any) => [g.dir, g.meaning]), BUCKETS.map((b) => [b, BUCKET_MEANING[b]]));
+});
+
+test("讨伐：桶分组（每个桶的条数 == 磁盘同一时刻该桶两层内的文件数）+ 空桶也显示", async () => {
+	const root = path.join(FEATURES_ROOT, "讨伐");
+	const d = await loadFeatureDetail(testPort(), { root: root, signal });
 	const g = (k: string) => d.artifacts.groups.find((x: any) => x.key === k);
-	assert.equal(d.artifacts.total, 27);
-	assert.deepEqual(d.artifacts.counts, { in: 0, out: 20, trace: 6, other: 1 });
-	// 六个标准桶都在（空桶也显示 —— source 是 0，要说出来而不是消失）；
-	// ★ 2026-10-08：末尾多一个 `root`（功能根散文件组）—— 合并后根上多了身份文件 `feature.json`，
-	//   它不属于任何桶，按「未归桶」如实列出来（这正是"一个文件都不许静默丢"那条纪律）。
-	assert.deepEqual(
-		d.artifacts.groups.map((x: any) => x.key),
-		["source", "analysis", "gdd", "delivery", "decisions", "evidence", "root"]
-	);
-	assert.equal(g("source").count, 0);
-	assert.equal(g("analysis").count, 4);       // ★ 2026-09-30 漂移：3 → 4（多一份人工补充产物）
-	assert.equal(g("gdd").count, 13);          // 6 个文档 + 7 张 gdd\UI 图
-	assert.equal(g("delivery").count, 3);   // 历史归档说明 + 宣讲 HTML 与它的 .content.json
-	assert.equal(g("decisions").count, 4);
-	assert.equal(g("evidence").count, 2);
-	// 含义标签
+	// 六个标准桶按规格顺序在最前；后面跟「不是桶的目录」（如有）+ 功能根散文件组
+	const otherDirs = dirNames(root).filter((x) => !BUCKETS.includes(x)).sort();
+	assert.deepEqual(d.artifacts.groups.map((x: any) => x.key).slice(0, BUCKETS.length), BUCKETS);
+	assert.deepEqual(d.artifacts.groups.map((x: any) => x.key).slice(BUCKETS.length), otherDirs.concat(["root"]),
+		"非桶目录与功能根散文件都要如实成组（说不清装什么的先不要建，但建了就得列）");
+	// ★ 每个桶的条数从磁盘重算（原写死 0/4/13/3/4/2）：桶归错一个就红，数据怎么变都不会误红
+	for (const b of BUCKETS) {
+		assert.equal(g(b).count, bucketFiles(root, b).length, b + " 桶的条数与磁盘实际不一致");
+		assert.equal(g(b).files.length, g(b).count, b + " 桶的 count 与 files 长度要自洽");
+	}
+	assert.equal(d.artifacts.total, shallowFiles(root).length);
+	assert.deepEqual(d.artifacts.counts, bucketCounts(root));
+	// 空桶**也在**（不是"不存在"）：这是"一个文件都不许静默丢"的另一面
+	for (const b of BUCKETS) if (g(b).count === 0) assert.deepEqual(g(b).files, [], b + " 是空桶 ⇒ 如实给 0 与空清单");
+	// 含义标签（规格常量）
 	assert.equal(g("source").meaningLabel, "进 · 原料");
 	assert.equal(g("gdd").meaningLabel, "出 · 产物");
 	assert.equal(g("evidence").meaningLabel, "过程留痕");
+	assert.equal(g("root").meaningLabel, "未归桶（如实列出，不丢）");
 });
 
-test("讨伐：gdd\\ 内部按文件名细分（定稿 2 · 定稿HTML 1 · 审查 2 · 成稿 1 · 界面图 7）", async () => {
-	const d = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "讨伐"), signal });
+test("讨伐：gdd\\ 内部按文件名细分（判据只看文件名；逐份对表）", async () => {
+	const root = path.join(FEATURES_ROOT, "讨伐");
+	const gddDir = path.join(root, "gdd");
+	const d = await loadFeatureDetail(testPort(), { root: root, signal });
 	const gdd = d.artifacts.groups.find((x: any) => x.key === "gdd");
-	const kinds: Record<string, number> = {};
-	for (const f of gdd.files) kinds[f.kind] = (kinds[f.kind] || 0) + 1;
-	assert.deepEqual(kinds, { final: 2, finalHtml: 1, review: 2, draft: 1, ui: 7 });
-	// 定稿排在最前（"现在能用吗"的答案先给），且**最新的在前**
+	const onDisk = fileNames(gddDir);
+	// ① 磁盘上 gdd\ 里的每一份都进了清单（一份不多、一份不少）
+	assert.deepEqual(gdd.files.filter((f: any) => !f.subdir).map((f: any) => f.name).sort(), onDisk);
+	// ② **逐份对表**：把现状钉在文件名上（新增文件不打破它，改判据才打破）
+	const KINDS: Record<string, string> = {
+		"联盟悬赏_20260918.md": "draft",
+		"联盟悬赏_20260921_定稿.md": "final",
+		"联盟悬赏_20260923_定稿.md": "final",
+		"联盟悬赏_20260921_审查.md": "review",
+		"联盟悬赏_20260921_定稿_审查.md": "review",
+		"联盟悬赏_20260923_定稿.html": "finalHtml",
+	};
+	const kindOf = (n: string) => (gdd.files.find((f: any) => f.name === n) || {}).kind;
+	for (const [n, k] of Object.entries(KINDS)) {
+		if (onDisk.includes(n)) assert.equal(kindOf(n), k, n + " 应归到 " + k + "（判据：只看文件名）");
+	}
+	assert.ok(onDisk.some((n) => FINAL_RE.test(n)), "前置：gdd\\ 里确实有定稿");
+	assert.ok(onDisk.some((n) => REVIEW_RE.test(n)), "前置：gdd\\ 里确实有审查报告");
+	// ③ 定稿排在最前（"现在能用吗"的答案先给），定稿之间按文件名日期倒序（最新在前）。
+	//    这里用**独立写一遍的文件名判据**挑磁盘上的定稿，不拿产品自己的 `gddKindOf` 去证明产品自己。
 	assert.equal(gdd.files[0].kind, "final");
-	assert.equal(gdd.files[0].name, "联盟悬赏_20260923_定稿.md");
-	assert.equal(gdd.files[1].name, "联盟悬赏_20260921_定稿.md");
-	// 定稿 HTML 以前落进 others（面板上根本看不见）—— 现在有自己的一档
-	const html = gdd.files.find((f: any) => f.name === "联盟悬赏_20260923_定稿.html");
-	assert.equal(html.kind, "finalHtml");
-	assert.equal(html.kindLabel, "定稿 HTML");
-	assert.equal(html.subdir, "");
-	// gdd\UI 的图归在 gdd 桶里，但 rel 路径带子目录（能直接拼绝对路径打开）
+	const finalsOnDisk = onDisk.filter((n) => FINAL_RE.test(n));
+	const byDateDesc = finalsOnDisk.slice().sort((a, b) => (dateOf(a) < dateOf(b) ? 1 : -1));
+	const finals = gdd.files.filter((f: any) => f.kind === "final").map((f: any) => f.name);
+	assert.deepEqual(finals, byDateDesc, "定稿清单 == 磁盘上的 `_定稿.md`，按文件名日期倒序（最新在前）");
+	assert.deepEqual(finals.length, finalsOnDisk.length);
+	// ④ 定稿 HTML 以前落进 others（面板上根本看不见）—— 现在有自己的一档
+	const html = gdd.files.find((f: any) => /_定稿\.html?$/i.test(f.name));
+	if (html) {
+		assert.equal(html.kind, "finalHtml");
+		assert.equal(html.kindLabel, "定稿 HTML");
+		assert.equal(html.subdir, "");
+	}
+	// ⑤ gdd\UI 的图归在 gdd 桶里：条数 == 磁盘 gdd\UI 里的文件数；rel 带子目录（能直接拼绝对路径打开）
+	assert.equal(gdd.files.filter((f: any) => f.kind === "ui").length, fileNames(path.join(gddDir, "UI")).length,
+		"界面图条数 == 磁盘 `gdd\\UI` 里的文件数（提交新图不会误红）");
 	const png = gdd.files.find((f: any) => f.kind === "ui");
+	assert.ok(png, "前置：`gdd\\UI` 里有图");
 	assert.equal(png.rel, "gdd/UI/" + png.name);
 	assert.equal(png.subdir, "UI");
+	assert.equal(png.kindLabel, "界面图");
+	// ⑥ 每一份都要有能看懂的"档"与标签（新增文件也不许落到空）
+	for (const f of gdd.files) {
+		assert.ok(String(f.kind).length > 0 && String(f.kindLabel).length > 0, "每一份都要有档与标签：" + f.rel);
+	}
+	// ⑦ 分档计数自洽
+	const counts: Record<string, number> = {};
+	for (const f of gdd.files) counts[f.kind] = (counts[f.kind] || 0) + 1;
+	assert.equal(Object.values(counts).reduce((a, b) => a + b, 0), gdd.count);
 });
 
 test("规范名标注用已接的 mdSpecOf（只作标注、不作过滤）", async () => {
@@ -135,18 +181,21 @@ test("规范名标注用已接的 mdSpecOf（只作标注、不作过滤）", as
 	assert.equal(byName("replication-spec_神话宝库_20260915.md").spec, "复刻规格");
 	// 认不出规范名的照样列出（spec 空串）—— 过滤就会变成"猜文件名"
 	assert.equal(byName("sr-gdd-handoff_神话宝库_20260915.json").spec, "");
-	// ★ 2026-09-30 数据漂移：神话宝库也多了 1 份人工补充产物（真机上面板跑出来的）⇒ 4 → 5
-	assert.equal(analysis.count, 5);
+	// ★ 分析桶的条数从磁盘重算（原写死 5）；上面那条验收已经证明了"列出的 == 磁盘实际"
+	assert.equal(analysis.count, fileNames(path.join(FEATURES_ROOT, "诸神降临", "analysis")).length,
+		"analysis 桶条数 == 磁盘 `analysis\\` 里的文件数");
 	// 实测：mdSpecOf 的六种规范没有一种匹配 gdd\ 的文件（所以 gdd 细分不能靠它，得用 gddKindOf）
 	const lian = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "讨伐"), signal });
 	const gdd = lian.artifacts.groups.find((x: any) => x.key === "gdd");
 	assert.equal(gdd.files.every((f: any) => f.spec === ""), true, "gdd 里不该有规范名标注");
 	assert.equal(mdSpecOf("联盟悬赏_20260923_定稿.md"), null, "mdSpecOf 认不出定稿名 —— 这是实测事实");
-	// 英雄圣物没有 gdd\：空桶仍然显示（count 0），不是「不存在」
-	//（★ 2026-10-08：原来这里用的是「神话宝库」—— 合并后它成了「诸神降临」，而诸神降临有一份成稿在 gdd\，
-	//  所以改挑真正没有 gdd\ 的那个功能来断言这条。）
-	const empty = await loadFeatureDetail(testPort(), { root: path.join(FEATURES_ROOT, "英雄圣物"), signal });
-	assert.equal(empty.artifacts.groups.find((x: any) => x.key === "gdd").count, 0);
+	// 空桶仍然显示（count 0），不是「不存在」——条数同样与磁盘重算的比
+	const heroRoot = path.join(FEATURES_ROOT, "英雄圣物");
+	const empty = await loadFeatureDetail(testPort(), { root: heroRoot, signal });
+	const emptyGdd = empty.artifacts.groups.find((x: any) => x.key === "gdd");
+	assert.ok(emptyGdd, "`gdd` 组必须在（哪怕一份都没有）——空桶也显示");
+	assert.equal(emptyGdd.count, fileNames(path.join(heroRoot, "gdd")).length);
+	assert.deepEqual(emptyGdd.files, []);
 });
 
 test("三阶段进度（设计 §4.2：有无分析产物 / 有无成稿 / 有无定稿）+ 出口判据提示", async () => {

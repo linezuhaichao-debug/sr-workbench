@@ -19,7 +19,11 @@ export const WORKSPACE = process.env.SR_WB_WORKSPACE || "D:\\TimeMachine\\GameDe
  *   **文档文件名没变**（正文改名要走 `/sr-gdd-fix`，不在那次范围里）—— 所以只改目录这一段。
  */
 export const FEATURE_TOPIC = process.env.SR_WB_FEATURE || "讨伐";
+/** `features\` 根（设计 §3.2：**目录即功能**）——看板的功能数就是它下面有几个目录 */
+export const FEATURES_ROOT = path.join(WORKSPACE, "features");
 export const FEATURE_ROOT = path.join(WORKSPACE, "features", FEATURE_TOPIC);
+/** 策划配置目录（配置表）。看板的 `counts.configs` 与文档生成面的配置支线都读它 */
+export const PLANNER_CONFIG_DIR = process.env.SR_WB_PLANNER_CONFIG || "D:\\TimeMachine\\planner\\策划配置";
 /** 当前有效定稿（功能身份 + 日期判定；实测 488 行 / doc_type: final_gdd / status: active） */
 export const FINAL_GDD = path.join(FEATURE_ROOT, "gdd", "联盟悬赏_20260923_定稿.md");
 /** 上一份定稿：仍标 active —— 这是真实存在的 V1 缺陷，用例把它断言下来 */

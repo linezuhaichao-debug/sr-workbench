@@ -17,6 +17,7 @@ import {
 	draftActionOf, parseConfigContract, readbacksOf, wireBranchStory
 } from "../src/pure/draftstep.ts";
 import { draftDocOf } from "../src/pure/drafttree.ts";
+import { PLANNER_CONFIG_DIR } from "./paths.ts";
 
 const SR_ROOT = process.env.SR_WB_WORKSPACE || "D:\\TimeMachine\\GameDesignOS\\workspace";
 // ★ 2026-10-08 身份迁移：目录名 `联盟悬赏` → `讨伐`（文档名没变）
@@ -30,7 +31,7 @@ const read = (p: string) => {
 	return fs.readFileSync(p, "utf8");
 };
 /** 真配置目录里按主题挂上来的表名（与看板的 `configs` 同源；这里直接读目录，避免依赖看板） */
-const CONFIG_FILES = fs.readdirSync("D:\\TimeMachine\\planner\\策划配置").filter((n) => /\.xlsx?m?$/i.test(n));
+const CONFIG_FILES = fs.readdirSync(PLANNER_CONFIG_DIR).filter((n) => /\.xlsx?m?$/i.test(n));
 
 test("§6 配置契约：24 个字段行 / 3 个工作簿（章节引用）+ 1 行「待配表」缺口说明", () => {
 	const c = parseConfigContract(read(FINAL));
