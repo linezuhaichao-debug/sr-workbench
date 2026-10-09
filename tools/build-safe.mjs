@@ -78,15 +78,18 @@ const reactOk = run("check:react") === 0;
 // ⓪ 的漂移门管"入库快照 vs 磁盘"，这里管"产物里到底有没有那份快照"（构建后才有意义）
 const hostOk = run("check:host-skills") === 0;
 const bundledOk = run("check:bundled-skills") === 0;   // 包内技能齐全（正文 + 兄弟资源同源同包）
+// ★ 技能用法数据（面板弹窗读的那一页）：路由注册得住、内容齐、出处可查、没有 webServer 也不炸
+const teachingOk = run("check:teaching") === 0;
 
 // ── ④ 不过就还原 ──────────────────────────────────────────────────────────
-if (!smokeOk || !renderOk || !reactOk || !hostOk || !bundledOk) {
+if (!smokeOk || !renderOk || !reactOk || !hostOk || !bundledOk || !teachingOk) {
 	const which = [
 		!smokeOk ? "smoke" : null,
 		!renderOk ? "smoke:render" : null,
 		!reactOk ? "check:react" : null,
 		!hostOk ? "check:host-skills" : null,
-	!bundledOk ? "check:bundled-skills" : null
+	!bundledOk ? "check:bundled-skills" : null,
+	!teachingOk ? "check:teaching" : null
 	].filter(Boolean).join(" + ");
 	console.error("");
 	console.error("[build:safe] ✗ 产物未过判据（" + which + "）—— 正在还原 lib/ 下的产物，绝不让坏产物留在 lib/");
