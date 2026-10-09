@@ -304,22 +304,60 @@ function PathLine(props) {
 	]);
 }
 
+/**
+ * 模块页签（头脑风暴 / 决策记录 / 最终产物）。
+ *
+ * ★ P3：**优先用官方 `SegmentedTabs`** —— 键盘左右键、Home/End、`aria-selected` 都是白拿的。
+ *   拿不到官方组件时退回自绘那支，并且**自己把键盘补上**（`role="tablist"` + ←/→/Home/End）。
+ *
+ * 契约不确定的地方两边都给：item 同时带 `value` 与 `id`；`onChange` 收到字符串或对象都认。
+ */
 function TabBar(props) {
+	const Seg = PRIMITIVES && PRIMITIVES.SegmentedTabs;
+	const textOf = (it) => it.label + (it.count === undefined ? "" : "（" + it.count + "）");
+	if (Seg) {
+		return h("div", { style: { marginBottom: GAP.md } },
+			h(Seg, {
+				items: props.items.map((it) => ({ value: it.id, id: it.id, label: textOf(it) })),
+				value: props.view,
+				label: "模块",
+				onChange: (v) => {
+					const id = typeof v === "string" ? v : (v && (v.value || v.id)) || "";
+					if (id) props.onPick(id);
+				}
+			}));
+	}
+	/** 自绘那支：键盘 ←/→ 在页签间移动、Home/End 跳首尾（与官方组件的行为对齐）。 */
+	const move = (from, delta) => {
+		const n = props.items.length;
+		const i = Math.max(0, props.items.map((x) => x.id).indexOf(from));
+		const next = props.items[(((i + delta) % n) + n) % n];
+		if (next) props.onPick(next.id);
+	};
 	return h("div", {
+		role: "tablist",
 		style: {
-			display: "flex", gap: GAP.xs, marginBottom: "14px",
+			display: "flex", gap: GAP.xs, marginBottom: GAP.md,
 			borderBottom: "1px solid " + V.line, paddingBottom: GAP.sm, flexWrap: "wrap"
 		}
 	}, props.items.map((it) => {
 		const on = props.view === it.id;
 		return h("button", {
-			key: it.id, type: "button", onClick: () => props.onPick(it.id),
+			key: it.id, type: "button", role: "tab", "aria-selected": on,
+			tabIndex: on ? 0 : -1,
+			onClick: () => props.onPick(it.id),
+			onKeyDown: (e) => {
+				if (e.key === "ArrowRight") { e.preventDefault(); move(it.id, 1); }
+				else if (e.key === "ArrowLeft") { e.preventDefault(); move(it.id, -1); }
+				else if (e.key === "Home") { e.preventDefault(); if (props.items[0]) props.onPick(props.items[0].id); }
+				else if (e.key === "End") { e.preventDefault(); const last = props.items[props.items.length - 1]; if (last) props.onPick(last.id); }
+			},
 			style: {
 				font: "inherit", fontSize: FONT.body, padding: "5px 12px", borderRadius: RADIUS.control, cursor: "pointer",
 				border: "1px solid " + (on ? V.brand : V.line2),
 				background: on ? V.brand : "transparent", color: on ? "#fff" : V.ink
 			}
-		}, it.label + (it.count === undefined ? "" : "（" + it.count + "）"));
+		}, textOf(it));
 	}));
 }
 
