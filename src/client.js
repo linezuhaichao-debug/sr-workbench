@@ -48,6 +48,7 @@ import { toAbs } from "./pure/path.ts";
 import { relTimeOf } from "./pure/reltime.ts";
 import { groupTimeline } from "./pure/timeline.ts";
 import { hasBold, inlineRuns } from "./pure/richtext.ts";
+import { labelLineOf } from "./pure/labels.ts";
 // ★ 设计令牌：间距/字号/圆角/动效的唯一参数源（面板里不许再写裸数字）
 import { COLOR, FONT, GAP, LEADING, LINE, RADIUS, SHADOW } from "./ui/tokens.js";
 import {
@@ -734,16 +735,19 @@ function BrainstormModule(props) {
 // ③ 模块二 · 决策记录（把那一份文件读成人能看的时间线）
 // ════════════════════════════════════════════════════════════════════════════
 
-/** 正文里认识的字段标签（**只认这几个**；别的行按普通段落渲染，不瞎猜）。 */
-const BODY_LABELS = ["决策", "依据", "理由", "影响", "结论", "备注", "风险", "边界", "落点"];
-const LABEL_RE = new RegExp("^\\s*(?:\\*\\*)?\\s*(" + BODY_LABELS.join("|") + ")\\s*(?:\\*\\*)?\\s*[:：]\\s*(.*)$");
-
-/** 正文 → 渲染行（不改变原文，只决定怎么显示）。 */
+/**
+ * 正文 → 渲染行（不改变原文，只决定怎么显示）。
+ *
+ * ★ 「标签：内容」的识别在 `pure/labels.ts`（有 4 条用例）—— 那里的匹配**宽**得多：
+ *   容忍前导项目符号、标签加粗/下划线、标签与冒号之间夹注释（`**影响**（DEF-002）：…`）。
+ *   这一段曾经写在面板里且只认"标签紧跟冒号"，结果真实日志里有一条没被认出、
+ *   退化成普通段落 —— 用户看到的就是"这条的影响为什么不显示标签"。
+ */
 function bodyParts(body) {
 	const out = [];
 	for (const line of String(body || "").split(/\r?\n/)) {
-		const m = LABEL_RE.exec(line);
-		if (m) { out.push({ kind: "label", label: m[1], text: m[2] }); continue; }
+		const lab = labelLineOf(line);
+		if (lab !== null) { out.push({ kind: "label", label: lab.label, text: lab.text }); continue; }
 		if (/^\s*[-*]\s+/.test(line)) { out.push({ kind: "li", text: line.replace(/^\s*[-*]\s+/, "") }); continue; }
 		if (line.trim() === "") { out.push({ kind: "gap" }); continue; }
 		out.push({ kind: "p", text: line });
@@ -823,9 +827,9 @@ function DecisionEntry(props) {
 						h("span", {
 							key: "c",
 							style: {
-								color: V.muted, fontWeight: 400, fontSize: FONT.meta,
-								border: "1px solid " + V.line2, borderRadius: RADIUS.chip, padding: "0 5px",
-								whiteSpace: "nowrap"
+								color: V.muted, fontWeight: 400, fontSize: FONT.body,
+								border: "1px solid " + V.line2, borderRadius: RADIUS.chip, padding: "1px 7px",
+								whiteSpace: "nowrap", lineHeight: 1.35
 							}
 						}, p.label)
 					]),
