@@ -1,6 +1,6 @@
 {
   "name": "dsh-client-ui-sr-workbench",
-  "version": "6.6.2",
+  "version": "6.6.3",
   "private": true,
   "description": "策划工作台：DSH Web 全局面板（只读）。host 半侧 + 浏览器半侧源码，tsdown 打包成单个 lib/client.js",
   "type": "module",
