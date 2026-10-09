@@ -302,7 +302,7 @@ function NewCard(props) {
 		onFocus: () => setFocus(true),
 		onBlur: () => setFocus(false),
 		style: {
-			boxSizing: "border-box", minHeight: "132px", cursor: off ? "default" : "pointer",
+			boxSizing: "border-box", minHeight: "132px", height: "100%", cursor: off ? "default" : "pointer",
 			/**
 			 * ★ **边线、底色、阴影全部与正常功能卡一致**（用户口径：「大小 边线样式都跟正常的卡片一样」）。
 			 *   原来用虚线是为了"一眼看出这是动作不是功能"—— 用户否了：它就是卡片墙里的一张卡，
@@ -505,6 +505,8 @@ function FeatureCard(props) {
 			border: "1px solid " + (warn ? V.warn : (hover || focus ? V.brand : V.line2)),
 			borderRadius: RADIUS.card, background: V.panel, padding: "12px 14px", cursor: "pointer",
 			display: "flex", flexDirection: "column", gap: GAP.xs, minHeight: "132px", boxSizing: "border-box",
+			/** ★ 撑满外层的高度（等高靠它；块级子元素本来就撑满宽度，宽度不受影响）。 */
+			height: "100%",
 			/**
 			 * ★ **常驻浮层阴影**（用户口径：「只做功能卡片的容器浮层阴影，现在看着没有边」）。
 			 *   静息就给一层极轻的阴影 ⇒ 卡片在白底上"立得起来"，不再只靠那条 1px 边线；
@@ -738,11 +740,11 @@ function Dashboard(props) {
 			 * 卡片**自然宽度**：340px 起，面板窄时可缩；上限 520px 免得两三个功能被拉成一条。
 			 * `display: flex` 是为了让里面的卡**跟着行高撑满**（等高就靠它）。
 			 */
-			style: { display: "flex", flex: "0 1 340px", minWidth: 0, maxWidth: "520px" }
+			style: { flex: "0 1 340px", minWidth: 0, maxWidth: "520px" }
 		},
 		h(FeatureCard, { feature: f, onOpen: () => props.onOpen(f.topic) }))).concat([
 			/** ★ 卡片墙的**最后一张卡**就是〔＋ 新建功能〕（用户口径）。 */
-			h("div", { key: "__new", style: { display: "flex", flex: "0 1 340px", minWidth: 0, maxWidth: "520px" } },
+			h("div", { key: "__new", style: { flex: "0 1 340px", minWidth: 0, maxWidth: "520px" } },
 				h(NewCard, { onPick: props.onNew, off: props.newOpen }))
 		])),
 		/**
