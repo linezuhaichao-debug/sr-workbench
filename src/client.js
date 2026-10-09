@@ -516,18 +516,21 @@ function Dashboard(props) {
 	const nothing = feats.length === 0 && props.phase !== "loading";
 	return h("div", null, [
 		/**
-		 * ★ **吸顶头部**（P1 唯一的结构改动）：标题 + 计数 + 两个动作固定在上边。
-		 *   负外边距是为了让底色铺满整宽（父容器有内边距），再补回同样的内边距。
-		 *   底色用页面底（宿主令牌 bg-base）而不是卡片色 —— 它压在滚动内容之上，不能半透明。
+		 * ★ **吸顶头部**（P1）：标题 + 计数 + 两个动作固定在上边。
+		 *
+		 * ★ 写法有讲究（第一版写错，用户实测："卡牌被切了"）：
+		 *   ① **不要用负上边距** —— 负 margin 会把后面的网格一起往上拉 18px，卡片就被头部盖住了；
+		 *      只用负**左右**外边距（横向不参与纵向流布局），让底色铺满整宽；
+		 *   ② 用 `top: -18px` 把"被钉住"的位置抬到滚动口之上 18px —— 正好是它的上内边距，
+		 *      吸顶时文字仍贴顶可见，底色也不留缝；未吸顶时它在流里的位置与原来完全一致。
+		 *   底色用页面底（宿主令牌 bg-base）：它压在滚动内容之上，不能半透明。
 		 */
 		h("div", {
 			key: "top",
 			style: {
-				position: "sticky", top: 0, zIndex: 5,
+				position: "sticky", top: "-18px", zIndex: 5,
 				display: "flex", alignItems: "baseline", gap: GAP.sm, flexWrap: "wrap",
-				// 负外边距吃掉 PAGE 的内边距（18px 22px），再用同值内边距补回来：
-				// 未吸顶时观感与原来一致；吸顶时底色铺满到容器顶端，不会漏出滚过的内容。
-				margin: "-18px -22px " + GAP.sm, padding: "18px 22px " + GAP.sm,
+				margin: "0 -22px " + GAP.sm, padding: "18px 22px " + GAP.sm,
 				background: "var(--dsw-alias-bg-base)", borderBottom: "1px solid " + V.line
 			}
 		}, [
@@ -899,7 +902,20 @@ function FeatureView(props) {
 				: (d.outputs ? d.outputs.total : 0)
 	}));
 	return h("div", null, [
-		h("div", { key: "top", style: { display: "flex", alignItems: "baseline", gap: "9px", flexWrap: "wrap", marginBottom: GAP.xs } }, [
+		/**
+		 * ★ 详情页头部**也吸顶**（用户实测指出的缺口：决策记录可能几百条，滚下去还得看得见
+		 *   "在哪个功能里"、随时能刷新）。写法与卡片墙一致：负**左右**外边距铺满整宽，
+		 *   `top: -18px` 把钉住的位置抬到滚动口之上（正好是上内边距），**不用负上边距**。
+		 */
+		h("div", {
+			key: "top",
+			style: {
+				position: "sticky", top: "-18px", zIndex: 5,
+				display: "flex", alignItems: "baseline", gap: GAP.sm, flexWrap: "wrap",
+				margin: "0 -22px " + GAP.sm, padding: "18px 22px " + GAP.sm,
+				background: "var(--dsw-alias-bg-base)", borderBottom: "1px solid " + V.line
+			}
+		}, [
 			Btn({ key: "back", label: "‹ 卡片墙", onPick: props.onBack }),
 			h("div", { key: "t", style: { fontSize: "17px", fontWeight: 700 } }, d.topic),
 			h("div", { key: "s", style: { flex: 1 } }),
