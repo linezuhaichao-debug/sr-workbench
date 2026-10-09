@@ -730,15 +730,19 @@ function Dashboard(props) {
 			 *   现在：**flex 换行 + 自然宽度**（卡片 340px 起，窄屏可缩）——
 			 *   卡片紧挨着排、行满了才换行，中间不再有空档；宽度不跟着面板膨胀。
 			 */
-			style: { display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: GAP.md, marginTop: GAP.sm }
+			// 不写 alignItems ⇒ 默认 `stretch`：同一行的卡**等高**（新建卡内容少，否则会矮一截）
+			style: { display: "flex", flexWrap: "wrap", gap: GAP.md, marginTop: GAP.sm }
 		}, feats.map((f) => h("div", {
 			key: f.topic,
-			/** 卡片**自然宽度**：340px 起，面板窄时可缩到更小；上限 520px 免得两三个功能被拉成一条。 */
-			style: { flex: "0 1 340px", minWidth: 0, maxWidth: "520px" }
+			/**
+			 * 卡片**自然宽度**：340px 起，面板窄时可缩；上限 520px 免得两三个功能被拉成一条。
+			 * `display: flex` 是为了让里面的卡**跟着行高撑满**（等高就靠它）。
+			 */
+			style: { display: "flex", flex: "0 1 340px", minWidth: 0, maxWidth: "520px" }
 		},
 		h(FeatureCard, { feature: f, onOpen: () => props.onOpen(f.topic) }))).concat([
 			/** ★ 卡片墙的**最后一张卡**就是〔＋ 新建功能〕（用户口径）。 */
-			h("div", { key: "__new", style: { flex: "0 1 340px", minWidth: 0, maxWidth: "520px" } },
+			h("div", { key: "__new", style: { display: "flex", flex: "0 1 340px", minWidth: 0, maxWidth: "520px" } },
 				h(NewCard, { onPick: props.onNew, off: props.newOpen }))
 		])),
 		/**
