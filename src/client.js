@@ -784,7 +784,13 @@ function DecisionEntry(props) {
 	return h("div", {
 		style: {
 			position: "relative", borderLeft: "2px solid " + V.line2, paddingLeft: GAP.md,
-			paddingBottom: GAP.md, contentVisibility: "auto", containIntrinsicSize: "auto 96px"
+			/**
+			 * ★ **不要加 `content-visibility: auto`**（加过，用户实测："中间为什么会有这么大空隙"）。
+			 *   它配合 `containIntrinsicSize` 会给"被跳过渲染"的元素一个**预估高度占位**，
+			 *   于是条目中间出现一大块空白。这个优化不值得换一个视觉缺陷：
+			 *   决策记录顶多几百条，直接渲染完全够用。
+			 */
+			paddingBottom: GAP.md
 		}
 	}, [
 		h("div", {

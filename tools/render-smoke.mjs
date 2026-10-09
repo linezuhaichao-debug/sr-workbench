@@ -278,6 +278,13 @@ async function realDetail() {
 }
 const real = await realDetail();
 
+// ★ 反面：决策记录里**不许出现 content-visibility 的占位空隙**（加过，用户实测能看到一大块空白）
+const bundleSrc = fs.readFileSync(path.join("lib", "client.js"), "utf8");
+if (/contentVisibility/.test(bundleSrc)) {
+	console.error("✗ 产物里还有 contentVisibility —— 它会在条目中间留占位空隙，用户实测过");
+	process.exit(1);
+}
+
 if (real) {
 	// 真数据那两遍**只断言"渲染得出来、该在的字在"** —— 真数据里有什么内容是数据的事，
 	// 不是这一层的判据（本仓库的测试纪律：条数不写死）。
