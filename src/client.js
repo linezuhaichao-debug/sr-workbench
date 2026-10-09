@@ -47,7 +47,7 @@ import { ENTRANCES } from "./pure/analysisdoc.ts";
 import { toAbs } from "./pure/path.ts";
 import { relTimeOf } from "./pure/reltime.ts";
 // ★ 设计令牌：间距/字号/圆角/动效的唯一参数源（面板里不许再写裸数字）
-import { FONT, GAP, RADIUS } from "./ui/tokens.js";
+import { COLOR, FONT, GAP, LEADING, LINE, RADIUS, SHADOW } from "./ui/tokens.js";
 import {
 	buildConfigInstruction, CONFIG_FIELDS, pointerCandidates, POINTER_REL, validateConfigValues, workspaceMissing
 } from "./pure/configentry.ts";
@@ -355,7 +355,7 @@ function FeatureCard(props) {
 			border: "1px solid " + (warn ? V.warn : (hover || focus ? V.brand : V.line)),
 			borderRadius: "9px", background: V.panel, padding: "12px 14px", cursor: "pointer",
 			display: "flex", flexDirection: "column", gap: GAP.xs, minHeight: "132px", boxSizing: "border-box",
-			boxShadow: focus ? "0 0 0 2px " + V.brand + "33" : (hover ? "0 2px 8px #0000000f" : "none"),
+			boxShadow: focus ? "0 0 0 " + LINE.ring + " " + COLOR.accentSoft : (hover ? SHADOW.hover : "none"),
 			transition: "border-color 120ms ease, box-shadow 120ms ease",
 			outline: "none"
 		}
@@ -365,7 +365,7 @@ function FeatureCard(props) {
 			warn ? chip("缺桶", V.warn) : (done ? chip("已定稿", V.ok) : null)
 		]),
 		// 阶段步进器：走到的实心（带件数），没走到的空心
-		h("div", { key: "st", style: { display: "flex", alignItems: "center", gap: "6px", margin: "3px 0 1px", flexWrap: "wrap" } },
+		h("div", { key: "st", style: { display: "flex", alignItems: "center", gap: GAP.xs, margin: GAP.xs + " 0 1px", flexWrap: "wrap" } },
 			STAGES.map((s, i) => {
 				const n = c[s.key] || 0;
 				const on = n > 0;
@@ -385,20 +385,27 @@ function FeatureCard(props) {
 						}
 					}),
 					h("span", {
-						key: "lb", style: { fontSize: "10.5px", color: on ? V.ink : V.idle, whiteSpace: "nowrap" }
+						key: "lb",
+					style: { fontSize: "10.5px", color: on ? V.ink : V.idle, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }
 					}, s.label + (on ? " " + n : ""))
 				]);
 			})),
 		h("div", { key: "l", style: { fontSize: "11.5px", color: warn ? V.warn : V.muted } }, f.line),
 		["decisions", "evidence", "other"].some((k) => (c[k] || 0) > 0)
-			? h("div", { key: "c", style: { display: "flex", gap: "10px", flexWrap: "wrap", fontSize: FONT.meta, color: V.muted } },
+			? h("div", {
+				key: "c",
+				style: { display: "flex", gap: GAP.sm, flexWrap: "wrap", fontSize: FONT.meta, color: V.muted, fontVariantNumeric: "tabular-nums" }
+			},
 				["decisions", "evidence", "other"].filter((k) => (c[k] || 0) > 0)
 					.map((k) => h("span", { key: k },
 						(k === "decisions" ? "决策" : k === "evidence" ? "证据" : "其它") + " " + c[k])))
 			: null,
 		h("div", {
 			key: "f",
-			style: { display: "flex", alignItems: "baseline", gap: GAP.sm, fontSize: FONT.meta, color: V.idle, marginTop: "auto", paddingTop: "6px" }
+			style: {
+				display: "flex", alignItems: "baseline", gap: GAP.sm, fontSize: FONT.meta, color: V.idle,
+				marginTop: "auto", paddingTop: "6px", fontVariantNumeric: "tabular-nums"
+			}
 		}, [
 			// 相对时间（"3 分钟前"）；解析不出来就退回原始时间戳，绝不编
 			h("span", { key: "d", title: f.lastDecisionAt || "", style: { fontFamily: MONO, flex: 1, wordBreak: "break-all" } },
@@ -508,9 +515,27 @@ function Dashboard(props) {
 	const feats = d.features || [];
 	const nothing = feats.length === 0 && props.phase !== "loading";
 	return h("div", null, [
-		h("div", { key: "top", style: { display: "flex", alignItems: "baseline", gap: "10px", marginBottom: GAP.xs, flexWrap: "wrap" } }, [
-			h("div", { key: "t", style: { fontSize: "17px", fontWeight: 700 } }, "策划工作台"),
-			h("div", { key: "n", style: { fontSize: "12px", color: V.muted } }, "功能 " + feats.length + (d.srWs ? "　｜　" + d.srWs : "")),
+		/**
+		 * ★ **吸顶头部**（P1 唯一的结构改动）：标题 + 计数 + 两个动作固定在上边。
+		 *   负外边距是为了让底色铺满整宽（父容器有内边距），再补回同样的内边距。
+		 *   底色用页面底（宿主令牌 bg-base）而不是卡片色 —— 它压在滚动内容之上，不能半透明。
+		 */
+		h("div", {
+			key: "top",
+			style: {
+				position: "sticky", top: 0, zIndex: 5,
+				display: "flex", alignItems: "baseline", gap: GAP.sm, flexWrap: "wrap",
+				// 负外边距吃掉 PAGE 的内边距（18px 22px），再用同值内边距补回来：
+				// 未吸顶时观感与原来一致；吸顶时底色铺满到容器顶端，不会漏出滚过的内容。
+				margin: "-18px -22px " + GAP.sm, padding: "18px 22px " + GAP.sm,
+				background: "var(--dsw-alias-bg-base)", borderBottom: "1px solid " + V.line
+			}
+		}, [
+			h("div", { key: "t", style: { fontSize: FONT.page, fontWeight: 700, lineHeight: LEADING.tight } }, "策划工作台"),
+			h("div", {
+				key: "n",
+				style: { fontSize: FONT.body, color: V.muted, fontVariantNumeric: "tabular-nums" }
+			}, "功能 " + feats.length + (d.srWs ? "　｜　" + d.srWs : "")),
 			h("div", { key: "s", style: { flex: 1 } }),
 			Btn({ key: "r", label: "刷新", icon: PRIMITIVES && PRIMITIVES.IconRefreshOutlineRegular, onPick: props.onRefresh, off: props.phase === "loading" }),
 			Btn({ key: "n", label: "新建功能", icon: PRIMITIVES && PRIMITIVES.IconPlusOutlineRegular, tone: "primary", onPick: props.onNew, off: props.newOpen })
@@ -530,10 +555,10 @@ function Dashboard(props) {
 			: null,
 		nothing ? h("div", {
 			key: "e",
-			style: { border: "1px dashed " + V.line2, borderRadius: "9px", padding: "26px", textAlign: "center", color: V.muted }
+			style: { border: "1px dashed " + V.line2, borderRadius: RADIUS.card, padding: GAP.xl, textAlign: "center", color: V.muted }
 		}, [
 			h("div", { key: "a" }, "还没有功能。"),
-			h("div", { key: "b", style: { marginTop: "6px", fontSize: "12px" } }, "点右上角〔新建功能〕建第一个。")
+			h("div", { key: "b", style: { marginTop: GAP.xs, fontSize: FONT.body } }, "点右上角〔新建功能〕建第一个。")
 		]) : null,
 		h("div", {
 			key: "g",
@@ -543,7 +568,7 @@ function Dashboard(props) {
 			 *   `auto-fit` 让**空轨道塌掉**、卡片自己长宽；再用 maxWidth 兜住上限，
 			 *   免得只有一两个功能时被拉成一条。
 			 */
-			style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: GAP.md }
+			style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: GAP.md, marginTop: GAP.sm }
 		}, feats.map((f) => h("div", { key: f.topic, style: { display: "flex", maxWidth: "520px", minWidth: 0 } },
 			h(FeatureCard, { feature: f, onOpen: () => props.onOpen(f.topic) })))),
 		/**
