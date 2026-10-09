@@ -437,3 +437,19 @@ git show pre-migration-baseline:legacy/pre-migration/package.json
   加载期那条网仍是 `npm run smoke`；静态那条是 `no-undef`（`pure/port/load` 与组合根源码）。
 - **决策记录的三道保证里有一道不在面板这边**：面板只读那个文件；真正写它的是会话里的 agent。
   详见 [`outputs\策划工作台-操作文档.md`](../outputs/策划工作台-操作文档.md) 第三节与「已知限制」。
+
+## 技能用法弹窗（面板上怎么看 sr 技能怎么用）
+
+卡片墙头部有〔技能用法〕按钮，点开是一个弹窗：**主线五步 → 独立技能 → 速查表 → 共用规则**（默认折叠）。
+
+**内容只有一个来源**：包内 `skills/sr-askme/`（`SKILL.md` 的教学节 + `references/teaching/*.md`）。
+面板**不复制**任何一句教学文字 —— 技能改了，重开弹窗即变。
+
+数据由**宿主半侧**递：`GET /sr-workbench/teaching.json`（每次请求现读，`no-store`）。
+为什么不让面板自己读：面板只有"借会话读**绝对路径**"这一种能力，而技能在 `node_modules` 下 ——
+面板不知道那个路径，也不该猜（与配置落点那次同一类问题）。
+
+- `webServer` 走**可选访问**（`ctx.get`）：拿不到就记一条 INFO 说清"这一版拿不到"，**技能本身照常注册**；
+- 判据：`npm run check:teaching`（进 `build:safe`）—— 路由注册得住 / handler 真跑：200 + JSON + `no-store` +
+  内容齐（主线 ≥4 步、速查 ≥8 行、规则 2 节、教学卡 ≥8 张）/ **主线提到的技能必须有出处** / 没有 webServer 也不炸；
+- 设计稿：`outputs\技能用法弹窗-设计方案.md`；界面预览：`outputs\技能用法弹窗-界面预览.html`。
