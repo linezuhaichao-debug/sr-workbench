@@ -253,7 +253,7 @@ const DASH = {
 	counts: { features: 2 }
 };
 pass("卡片墙", {
-	Panel: [INDEX, "idle", null, DASH, { kind: "cards" }, null, 0, false, false, "", false, null]
+	Panel: [INDEX, "idle", null, DASH, null, { kind: "cards" }, null, 0, false, false, "", false, null]
 }, [
 	"策划工作台", "功能 2",
 	// 阶段步进器的文案（"头脑 3" 而不是 "头脑风暴 3"）+ 相对时间（形状由下面那条正则钉）
@@ -281,7 +281,7 @@ const real = await realDetail();
 if (real) {
 	// 真数据那两遍**只断言"渲染得出来、该在的字在"** —— 真数据里有什么内容是数据的事，
 	// 不是这一层的判据（本仓库的测试纪律：条数不写死）。
-	const realPanel = [INDEX, "idle", null, DASH, { kind: "feature", topic: real.topic }, real.detail, 0, false, false, "", false, null];
+	const realPanel = [INDEX, "idle", null, DASH, null, { kind: "feature", topic: real.topic }, real.detail, 0, false, false, "", false, null];
 	pass("详情 · 真数据（" + real.topic + "）· 头脑风暴", { Panel: realPanel }, [
 		real.topic, "头脑风暴", "决策记录", "最终产物",
 		"四个入口", "竞品分析", "问答式访谈", "旧文档分析", "人工补充", "已有的分析结论"
@@ -293,6 +293,15 @@ if (real) {
 		"CS-20261009-001.yaml", "CS-20261009-001_读回验收报告.md"
 	]);
 }
+
+// ── ③' 配置向导：这台机器还没配好时，卡片墙位置必须出现向导 ────────────────
+const WIZ_IDX = Object.assign({}, INDEX, { needConfig: true, cfgObj: { sr_workspace: "", sr_project: "" }, triedPaths: ["D:\\X\\.dsh\\sr-workbench\\config.local.json"], configFile: "" });
+pass("配置向导（无配置）", { Panel: [WIZ_IDX, "idle", null, DASH, { values: {}, roots: [], triedPaths: ["D:\\X\\.dsh\\sr-workbench\\config.local.json"], saving: false }, { kind: "cards" }, null, 0, false, false, "", false, null] }, [
+	"先配一下本机路径", "策划工作区", "Unity 工程", "策划配置目录", "GTGenerator 工作目录",
+	"必填", "选择…", "保存并验证", "在会话里问答配置（/sr-askme）", "面板找过哪些路径",
+	"%USERPROFILE%"
+]);
+
 
 // ── ④ 功能详情：合成数据（把每一条分支都走到）────────────────────────────
 const TOPIC = "联盟讨伐";
@@ -353,7 +362,7 @@ const DETAIL = {
 };
 
 const featureScript = {
-	Panel: [INDEX, "idle", null, DASH, { kind: "feature", topic: TOPIC }, DETAIL, 0, false, false, "", false, null]
+	Panel: [INDEX, "idle", null, DASH, null, { kind: "feature", topic: TOPIC }, DETAIL, 0, false, false, "", false, null]
 };
 
 pass("详情 · 三块都在（合成）", featureScript, [
@@ -390,7 +399,7 @@ const decisionText = pass("决策记录 · 无模板（合成）", Object.assign
 if (decisionText.includes("条目格式")) { results.push({ pass: "决策记录 · 无模板", missing: ["（不该有）条目格式"] }); console.error("✗ [决策记录] 有真实条目时还在显示「条目格式」模板"); }
 // 没有条目时**要**出现（那是唯一需要它的场合）
 const emptyLog = Object.assign({}, DETAIL, { decisions: { rel: "decisions/决策记录.md", abs: "D:\\X\\decisions\\决策记录.md", readError: "", log: { present: false, entries: [], issues: [], preamble: "", title: "", text: "" } } });
-pass("决策记录 · 空文件要有模板（合成）", Object.assign({}, featureScript, { Panel: [INDEX, "idle", null, DASH, { kind: "feature", topic: TOPIC }, emptyLog, 0, false, false, "", false, null], FeatureView: ["decisions"] }), ["条目格式", "还没有决策记录"]);
+pass("决策记录 · 空文件要有模板（合成）", Object.assign({}, featureScript, { Panel: [INDEX, "idle", null, DASH, null, { kind: "feature", topic: TOPIC }, emptyLog, 0, false, false, "", false, null], FeatureView: ["decisions"] }), ["条目格式", "还没有决策记录"]);
 
 // ── ⑤ 新建表单（开着、并且已经算好计划）────────────────────────────────
 const plan = {
@@ -398,7 +407,7 @@ const plan = {
 	buckets: ["evidence", "analysis", "gdd", "decisions"], message: "", next: ""
 };
 pass("新建功能表单", {
-	Panel: [INDEX, "idle", null, DASH, { kind: "cards" }, null, 0, false, true, "新功能", false, plan]
+	Panel: [INDEX, "idle", null, DASH, null, { kind: "cards" }, null, 0, false, true, "新功能", false, plan]
 }, ["新建功能", "将建立", "D:\\X\\features\\新功能", "evidence\\", "decisions\\"]);
 
 
@@ -407,7 +416,7 @@ pass("新建功能表单", {
 // 两条路都要有网：官方组件在场 ⇒ 必须真用上；不在场 ⇒ 必须退回自绘
 // ════════════════════════════════════════════════════════════════════════════
 // ★ 要用**卡片墙那份 state 脚本**渲染才有按钮（初始帧只有一行「正在解析工作台锚点…」）
-scripts = { Panel: [INDEX, "idle", null, DASH, { kind: "cards" }, null, 0, false, false, "", false, null] };
+scripts = { Panel: [INDEX, "idle", null, DASH, null, { kind: "cards" }, null, 0, false, false, "", false, null] };
 const dashboardText = renderToText(mainEntry.component(slotProps)).join(" ");
 
 // ★ 「最近决策」后面必须是**相对时间**（刚刚 / N 分钟前 / N 小时前 / N 天前 / N 个月前 / N 年前）。

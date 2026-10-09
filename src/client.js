@@ -46,6 +46,9 @@ import { INTAKE } from "./pure/intake.ts";
 import { ENTRANCES } from "./pure/analysisdoc.ts";
 import { toAbs } from "./pure/path.ts";
 import { relTimeOf } from "./pure/reltime.ts";
+import {
+	buildConfigInstruction, CONFIG_FIELDS, pointerCandidates, POINTER_REL, validateConfigValues, workspaceMissing
+} from "./pure/configentry.ts";
 // ★ 官方 UI 原子库的唯一引入点（守卫式：拿不到就退回自绘控件）—— 见 `src/ui/atoms.js` 的文件头
 import { HAS_PRIMITIVES, PRIMITIVES, primitivesNote } from "./ui/atoms.js";
 import {
@@ -400,6 +403,60 @@ function FeatureCard(props) {
 				f.lastDecisionAt ? "最近决策 " + (relTimeOf(f.lastDecisionAt) || f.lastDecisionAt) : "还没有决策"),
 			hover || focus ? h("span", { key: "o", style: { color: ACCENT_FILL, whiteSpace: "nowrap" } }, "打开 ›") : null
 		])
+	]);
+}
+
+/**
+ * **配置向导**（无本机配置时取代卡片墙）。
+ *
+ * 为什么要有它：同事拿到插件、或自己重装之后，本机没有 `config.local.json` 是**正常状态**，
+ * 不该只丢一句"先跑 /sr-askme"。这里把四个字段摆出来，能点系统目录选择框就别手打路径。
+ *
+ * ★ 面板**不写盘**（整块面板的纪律）：〔保存并验证〕只是把值**交给一条会话**去写，
+ *   写完面板**回读核对**（读到 + 必填齐才算成功）。会话写配置时还会把"配置在哪"写进
+ *   `<工作区根>\.dsh\sr-workbench.path`（指针文件）—— 浏览器里拿不到家目录，
+ *   面板靠这个相对路径认路。
+ */
+function ConfigWizard(props) {
+	const v = props.values || {};
+	const issues = props.issues || [];
+	const issueOf = (k) => (issues.filter((i) => i.key === k)[0] || {}).message || "";
+	const field = (f) => h("div", { key: f.key, style: { marginBottom: "10px" } }, [
+		h("div", { key: "l", style: { display: "flex", alignItems: "baseline", gap: "6px", marginBottom: "3px" } }, [
+			h("span", { key: "n", style: { fontSize: "12.5px", fontWeight: 600 } }, f.label),
+			f.required ? h("span", { key: "r", style: { fontSize: "10.5px", color: V.bad } }, "必填")
+				: h("span", { key: "r", style: { fontSize: "10.5px", color: V.idle } }, "选填"),
+			h("span", { key: "h", style: { fontSize: "11px", color: V.muted, flex: 1 } }, f.hint)
+		]),
+		h("div", { key: "i", style: { display: "flex", gap: "6px" } }, [
+			h("input", {
+				key: "in", type: "text", value: String(v[f.key] || ""), placeholder: "D:\\...",
+				onChange: (e) => props.onField(f.key, e.target.value),
+				style: {
+					flex: 1, minWidth: 0, font: "inherit", fontSize: "12px", padding: "5px 8px", borderRadius: "5px",
+					border: "1px solid " + (issueOf(f.key) ? V.bad : V.line2), background: "transparent", color: V.ink
+				}
+			}),
+			Btn({ key: "p", label: "选择…", onPick: () => props.onPick(f.key), off: props.picking })
+		]),
+		issueOf(f.key) ? h("div", { key: "e", style: { fontSize: "11px", color: V.bad, marginTop: "3px" } }, issueOf(f.key)) : null
+	]);
+
+	return h(Card, { key: "wiz", title: "先配一下本机路径", note: "这台机器还没有配置 —— 同事第一次用、或你重装之后都是这样" }, [
+		(props.notice ? h(Notice, { key: "n", notice: props.notice }) : null),
+		h("div", { key: "why", style: { fontSize: "11.5px", color: V.muted, marginBottom: "10px" } },
+			"配置是**本机私有**的，落 " + "%USERPROFILE%\\.dsh\\sr-workbench\\config.local.json（不在技能目录里 —— 插件升一次级就没了）。" +
+			"面板自己不写盘：点〔保存并验证〕会把这份值**交给一条会话去写**，写完面板回读核对。"),
+		...CONFIG_FIELDS.map(field),
+		h("div", { key: "act", style: { display: "flex", gap: "8px", alignItems: "center", marginTop: "4px" } }, [
+			Btn({ key: "s", label: props.saving ? "正在写…" : "保存并验证", tone: "primary", onPick: props.onSave, off: props.saving }),
+			Btn({ key: "a", label: "在会话里问答配置（/sr-askme）", onPick: props.onAskme, off: props.saving }),
+			h("span", { key: "t", style: { fontSize: "11px", color: V.idle, flex: 1 } },
+				props.saving ? "等会话写完（最长约 60 秒），面板会自己回读核对。" : "")
+		]),
+		h(Fold, { key: "dbg", label: "面板找过哪些路径", note: "（找不到配置时看这个）" },
+			h("pre", { style: PRE }, (props.triedPaths || []).join("\n") + "\n" +
+				"（还会读每个工作区根下的 " + POINTER_REL + " 指针，看配置被写到哪了）"))
 	]);
 }
 
@@ -890,6 +947,49 @@ function Panel(props) {
 	const [phase, setPhase] = React.useState("idle");
 	const [notice, setNotice] = React.useState(null);
 	const [dash, setDash] = React.useState(null);
+	/** 配置向导：非空 = 这台机器还没配好（值 / 试过的路径 / 保存中标志都在里面）。 */
+	const [wiz, setWiz] = React.useState(null);
+	const saveConfig = async () => {
+		const w = wiz;
+		if (!w) return;
+		const chk = validateConfigValues(w.values);
+		if (!chk.ok) { setWiz(Object.assign({}, w, { issues: chk.issues })); setNotice({ kind: "warn", text: "还有字段没填对。" }); return; }
+		setNotice(null);
+		setWiz(Object.assign({}, w, { saving: true, issues: [] }));
+		try {
+			const r = await props.__saveConfig({ values: w.values, roots: w.roots || [], configPathHint: w.configPathHint || "" });
+			if (!r || !r.ok) {
+				setWiz(Object.assign({}, wiz, { saving: false }));
+				setNotice({ kind: "warn", text: "写配置没成：" + String((r && r.error) || "未知原因"),
+					next: "面板不写盘 —— 写盘的是会话。去那条会话看它跑到哪了；或点〔在会话里问答配置〕让它边问边写。" });
+				return;
+			}
+			setWiz(null);
+			setNotice({ kind: "ok", text: "配置已写好并核对通过：" + String(r.path || "") });
+			const again = await props.__index({ rows: sessionRows, wsPaths: wsPaths, archived: archived });
+			setIdx(again);
+		} catch (e) {
+			setWiz(Object.assign({}, wiz, { saving: false }));
+			setNotice({ kind: "err", text: "写配置失败：" + String((e && e.message) || e) });
+		}
+	};
+
+	const askmeConfig = async () => {
+		const w = wiz;
+		if (!w) return;
+		setNotice(null);
+		setWiz(Object.assign({}, w, { saving: true }));
+		try {
+			const r = await props.__askmeConfig({ roots: w.roots || [] });
+			setWiz(Object.assign({}, wiz, { saving: false }));
+			if (!r || !r.ok) { setNotice({ kind: "err", text: "发起配置失败：" + String((r && r.error) || "") }); return; }
+			setNotice({ kind: "info", text: "已把 /sr-askme 发进会话 —— 去那边回答问题即可。",
+				next: "答完配置会自己出现（面板每 5 秒重读一次）。" });
+		} catch (e) {
+			setWiz(Object.assign({}, wiz, { saving: false }));
+			setNotice({ kind: "err", text: "发起配置失败：" + String((e && e.message) || e) });
+		}
+	};
 	const [view, setView] = React.useState({ kind: "cards" });
 	const [detail, setDetail] = React.useState(null);
 	const [rev, setRev] = React.useState(0);
@@ -907,7 +1007,32 @@ function Panel(props) {
 		let alive = true;
 		const ac = new AbortController();
 		props.__index({ rows: sessionRows, wsPaths: wsPaths, archived: archived, signal: ac.signal }).then(
-			(r) => { if (alive) setIdx(r); },
+			(r) => {
+				if (!alive) return;
+				setIdx(r);
+				/**
+				 * ★ 这台机器还没配好 ⇒ **进配置向导**（用户口径：同事第一次用、自己重装之后没配置，是正常状态）。
+				 *   只是缺一两个字段时用读到的值预填，别让人重打一遍。
+				 */
+				if (r && r.ok === true && r.needConfig) {
+					const o = r.cfgObj || {};
+					setWiz((prev) => Object.assign({}, prev, {
+						values: {
+							sr_workspace: String(o.sr_workspace || "").trim(),
+							sr_project: String(o.sr_project || "").trim(),
+							config_root: String(o.config_root || "").trim(),
+							gtgenerator_workdir: String(o.gtgenerator_workdir || "").trim()
+						},
+						configPathHint: String(r.configFile || "") || String(props.__configPath || "") || "",
+						roots: wsPaths.slice(),
+						triedPaths: (r.triedPaths || []).slice(),
+						issues: [],
+						saving: false
+					}));
+				} else {
+					setWiz(null);
+				}
+			},
 			(e) => { if (alive) setIdx({ ok: false, error: String((e && e.message) || e) }); }
 		);
 		return () => { alive = false; ac.abort(); };
@@ -1042,7 +1167,33 @@ function Panel(props) {
 		idx && idx.ok && (idx.note || []).length
 			? h("div", { key: "in", style: { fontSize: "11.5px", color: V.muted, marginBottom: "8px" } }, idx.note.join("　"))
 			: null,
-		idx && idx.ok && view.kind === "cards"
+		idx && idx.ok && idx.needConfig
+			? h(ConfigWizard, {
+				key: "wiz",
+				values: (wiz || {}).values || {},
+				issues: (wiz || {}).issues || [],
+				triedPaths: (wiz || {}).triedPaths || [],
+				configPathHint: (wiz || {}).configPathHint || "",
+				saving: !!(wiz || {}).saving,
+				picking: !!(wiz || {}).picking,
+				notice: notice,
+				onField: (k, v) => setWiz((prev) => Object.assign({}, prev, {
+					values: Object.assign({}, (prev || {}).values, { [k]: v }), issues: []
+				})),
+				onPick: async (k) => {
+					setWiz((prev) => Object.assign({}, prev, { picking: true }));
+					const p = await props.__pickDirectory();
+					setWiz((prev) => Object.assign({}, prev, {
+						picking: false,
+						values: p ? Object.assign({}, (prev || {}).values, { [k]: p }) : (prev || {}).values
+					}));
+					if (!p) setNotice({ kind: "warn", text: "没拿到目录（这台机器可能没有系统目录选择框）—— 直接手打路径即可。" });
+				},
+				onSave: saveConfig,
+				onAskme: askmeConfig
+			})
+			: null,
+		idx && idx.ok && !idx.needConfig && view.kind === "cards"
 			? h(Dashboard, {
 				key: "dash", dash: dash, phase: phase, notice: notice,
 				onRefresh: refresh, onOpen: (t) => { setNotice(null); setView({ kind: "feature", topic: t }); },
@@ -1315,6 +1466,88 @@ export function apply(ctx, config) {
 	 *   3. **正式认领**：只认**面板自己的**（标题前缀 / 自己写的缓存），且必须能列出 root；
 	 *   4. 认不着就新建。
 	 */
+	/**
+	 * 配置向导的落地动作之一：**把值交给会话去写，然后回读核对**（面板不写盘）。
+	 * @returns `{ ok, path?, error? }` —— 成功时给出配置的绝对路径。
+	 */
+	const saveConfigTo = async (o) => {
+		const values = (o && o.values) || {};
+		const roots = ((o && o.roots) || []).slice();
+		const hint = String((o && o.configPathHint) || "");
+		const signal = o && o.signal;
+		const rows0 = await sessionRowsNow(signal);
+		const borrow = pickIndexSession(rows0, "", { borrow: true });
+		let sid = borrow ? borrow.id : "";
+		if (!sid) {
+			const cr = await ctx.remote.session.create({ cwd: String(values.sr_workspace || "").trim() });
+			if (!cr || cr.ok !== true) return { ok: false, error: "没有可用会话，且新建会话失败：" + humanError(cr) };
+			sid = idText(cr.value && (cr.value.sessionId || cr.value));
+		}
+		const inst = buildConfigInstruction({
+			values: values,
+			configPathHint: hint,
+			pointerPaths: pointerCandidates(roots),
+			stamp: todayCompact()
+		});
+		const pr = await ctx.remote.session.prompt({ sessionId: sid, content: [{ type: "text", text: inst }], mode: "queue" });
+		if (!pr || pr.ok !== true) return { ok: false, error: "把指令发给会话失败：" + humanError(pr) };
+
+		// 回读核对：先读指针（配置被写到哪了），再读那份配置，比对必填字段
+		const want = String(values.sr_workspace || "").trim().replace(/[\\/]+$/, "").toLowerCase();
+		for (let i = 0; i < 30; i++) {
+			await new Promise((r) => setTimeout(r, 2000));
+			const cands2 = [];
+			for (const p of pointerCandidates(roots)) {
+				try {
+					const r = await read(sid, p, { offset: 1, limit: 5 }, signal);
+					if (r && r.ok === true && r.value && typeof r.value.text === "string" && r.value.text.trim() !== "") {
+						cands2.push(r.value.text.trim().split(/\r?\n/)[0].trim());
+					}
+				} catch (e) { /* 还没写指针 */ }
+			}
+			if (hint) cands2.push(hint);
+			for (const p of cands2) {
+				try {
+					const r = await read(sid, p, { offset: 1, limit: 200 }, signal);
+					if (!r || r.ok !== true || !r.value || typeof r.value.text !== "string") continue;
+					const obj = JSON.parse(r.value.text);
+					if (obj && String(obj.sr_workspace || "").replace(/[\\/]+$/, "").toLowerCase() === want) {
+						return { ok: true, path: p, cfg: obj, sid: sid };
+					}
+				} catch (e) { /* 换下一个 */ }
+			}
+		}
+		return { ok: false, error: "回读没核对上（等了 60 秒）—— 去会话里看它跑到哪了", sid: sid };
+	};
+
+	/** 落地动作之二：把 `/sr-askme` 发进会话（边问边写），并让它写指针文件。 */
+	const runAskme = async (o) => {
+		const roots = ((o && o.roots) || []).slice();
+		const signal = o && o.signal;
+		const rows0 = await sessionRowsNow(signal);
+		const borrow = pickIndexSession(rows0, "", { borrow: true });
+		let sid = borrow ? borrow.id : "";
+		if (!sid) {
+			const cr = await ctx.remote.session.create({});
+			if (!cr || cr.ok !== true) return { ok: false, error: "没有可用会话，且新建会话失败：" + humanError(cr) };
+			sid = idText(cr.value && (cr.value.sessionId || cr.value));
+		}
+		const lines = ["/sr-askme 引导我配置这台机器的 sr 路径。", "", "规矩（面板要靠它认路）：",
+			"· 配置写到 $env:USERPROFILE\\.dsh\\sr-workbench\\config.local.json（本机私有，别放进技能目录）；",
+			"· 写完后把配置的绝对路径（一行）写进下面这些指针文件（目录不存在先建）："];
+		for (const p of pointerCandidates(roots)) lines.push("  " + p);
+		lines.push("· 跑完只回报一行 OK <配置绝对路径> 或 FAILED <原因>。");
+		const pr = await ctx.remote.session.prompt({ sessionId: sid, content: [{ type: "text", text: lines.join("\n") }], mode: "queue" });
+		if (!pr || pr.ok !== true) return { ok: false, error: "把指令发给会话失败：" + humanError(pr) };
+		return { ok: true, sid: sid };
+	};
+
+	/** 现取一次会话行（向导动作要用；不等 store 的那份快照）。 */
+	const sessionRowsNow = async (signal) => {
+		const L = await listSessions(signal);
+		return L.ok ? rowsFromList(L.value) : [];
+	};
+
 	const resolveIndexSession = async (o) => {
 		const note = [];
 		const signal = o.signal;
@@ -1353,6 +1586,19 @@ export function apply(ctx, config) {
 		for (const p of configPathCandidates(roots)) cands.push(p);
 		let cfgPath = "";
 		let cfgObj = null;
+		/**
+		 * ★ **指针文件**（用户口径 A 方案）：配置的正经落点是用户目录，但**浏览器拿不到家目录**，
+		 *   所以会话写完配置后会把"配置在哪"写进 `<工作区根>\.dsh\sr-workbench.path`（一行文本）。
+		 *   这里先读指针、再去读它指的那份配置 —— 新机器上第一次配完，面板就能自己认路。
+		 */
+		for (const p of pointerCandidates(roots)) {
+			try {
+				const r = await read(boot.id, p, { offset: 1, limit: 5 }, signal);
+				if (!r || r.ok !== true || !r.value || typeof r.value.text !== "string") continue;
+				const pointed = r.value.text.trim().split(/\r?\n/)[0].trim();
+				if (pointed !== "" && cands.indexOf(pointed) < 0) cands.unshift(pointed);
+			} catch (e) { /* 没指针就算了 */ }
+		}
 		for (const p of cands) {
 			try {
 				const r = await read(boot.id, p, { offset: 1, limit: 200 }, signal);
@@ -1363,9 +1609,28 @@ export function apply(ctx, config) {
 		}
 		const srWs = cfgObj ? String(cfgObj.sr_workspace).replace(/[\\/]+$/, "") : "";
 		const root = srWs || cfg.projectRoot || DEFAULT_ROOT;
-		if (!cfgObj) {
-			note.push("没读到 sr 配置（试过 " + cands.length + " 个候选路径）—— 工作区锚点未知；先跑一次 `/sr-askme`，" +
-				"或确认**工作区根**下有 `.agents\\skills\\sr-askme\\config.local.json`。");
+		/**
+		 * ★ 读不到配置（或必填字段不齐）⇒ 返回 `needConfig` 让面板进**配置向导**，
+		 *   而不是只说一句"先跑 /sr-askme"。同时把**试过哪些候选**如实带出去 ——
+		 *   向导里要显示它（用户据此判断是不是路径不对）。
+		 */
+		/**
+		 * ★ **只有工作区锚点缺失**才进配置向导（面板干活全靠它）。
+		 *   配置在、只是别的必填字段（`sr_project` 之类）缺 —— 那是**技能侧**的要求，
+		 *   面板照常干活，只提示一句（2026-10-09 实测：把它当硬条件会把新建功能一起挡掉）。
+		 */
+		if (!cfgObj || workspaceMissing(cfgObj)) {
+			note.push(cfgObj
+				? "本机配置在 `" + cfgPath + "`，但**工作区锚点 `sr_workspace` 是空的** —— 在配置向导里补上。"
+				: "没读到 sr 配置（试过 " + cands.length + " 个候选路径）。");
+			return {
+				ok: true, sid: boot.id, root: root, srWs: srWs, configFile: cfgPath, source: "need-config", needConfig: true,
+				cfgObj: cfgObj, triedPaths: cands.slice(), note: note
+			};
+		}
+		const softMissing = CONFIG_FIELDS.filter((f) => f.required && !String((cfgObj || {})[f.key] || "").trim()).map((f) => f.key);
+		if (softMissing.length > 0) {
+			note.push("本机配置缺 " + softMissing.join("、") + "（技能会问；补了更省事）—— 配置在 `" + cfgPath + "`。");
 		}
 		srWsCache = srWs;
 
@@ -1664,6 +1929,19 @@ export function apply(ctx, config) {
 		return h(PanelErrorBoundary, null,
 			h(Panel, Object.assign({}, props, {
 				__index: resolveIndexSession,
+			__saveConfig: saveConfigTo,
+			__askmeConfig: runAskme,
+			/** 面板配好的配置路径（浏览器拿不到家目录，认路全靠它 + 工作区根下的指针文件）。 */
+			__configPath: String((cfg && cfg.configPath) || ""),
+			/** 系统目录选择框（native 后端才有；拿不到就返回空串，界面提示手打）。 */
+			__pickDirectory: async () => {
+				const uw = svc(ctx, "uiWorkspace");
+				if (!uw || typeof uw.pickDirectory !== "function") return "";
+				try {
+					const picked = await uw.pickDirectory();
+					return typeof picked === "string" ? picked : (picked && (picked.path || picked.directory)) || "";
+				} catch (e) { return ""; }
+			},
 				__dashboard: dashboardLoader,
 				__feature: featureLoader,
 				__createFacts: createFactsRunner,
