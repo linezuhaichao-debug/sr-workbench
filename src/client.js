@@ -153,34 +153,43 @@ function chip(text, color) {
 function Btn(props) {
 	const tone = props.tone || "plain";
 	const off = !!props.off;
+	/** ★ `big`：主行动按钮放大一档（用户口径：「这个按钮放大一下」—— 头脑风暴的〔交给工作会话〕）。 */
+	const big = !!props.big;
 	const [hover, setHover] = React.useState(false);
 	if (HAS_PRIMITIVES) {
 		const primary = tone === "primary";
 		return h(PRIMITIVES.Button, {
 			variant: primary ? "primary" : "outline",
-			size: "sm",
-			icon: props.icon ? h(props.icon, { size: 14 }) : void 0,
+			size: big ? "md" : "sm",
+			icon: props.icon ? h(props.icon, { size: big ? 16 : 14 }) : void 0,
 			disabled: off,
 			title: props.title || "",
 			onClick: off ? void 0 : props.onPick,
 			onMouseEnter: () => setHover(true),
 			onMouseLeave: () => setHover(false),
-			style: primary
-				? {
-					background: hover && !off ? ACCENT_HOVER : ACCENT_FILL,
-					color: "#fff",
-					transition: "background 120ms ease"
-				}
-				// 次按钮：官方 `outline` 的描边是 `--dsw-alias-border-l3` 且只有 0.5px，白底上看不见 ——
-				// 换成契约里的 `--dsw-alias-border-l2`（1px），这才是"看得出是按钮"
-				: { border: "1px solid " + V.line2 }
+			style: Object.assign(
+				primary
+					? {
+						background: hover && !off ? ACCENT_HOVER : ACCENT_FILL,
+						color: "#fff",
+						transition: "background 120ms ease"
+					}
+					// 次按钮：官方 `outline` 的描边是 `--dsw-alias-border-l3` 且只有 0.5px，白底上看不见 ——
+					// 换成契约里的 `--dsw-alias-border-l2`（1px），这才是"看得出是按钮"
+					: { border: "1px solid " + V.line2 },
+				big ? { fontSize: FONT.body, padding: "6px 16px", fontWeight: 600 } : null
+			)
 		}, props.label);
 	}
 	return h("button", {
 		type: "button", disabled: off, title: props.title || "",
 		onClick: off ? void 0 : props.onPick,
 		style: {
-			font: "inherit", fontSize: FONT.body, padding: "4px 11px", borderRadius: RADIUS.control,
+			font: "inherit", fontSize: FONT.body,
+			// ★ `big` 在这一支也要放大（两条臂观感一致：拿到官方组件 / 拿不到时的自绘）
+			padding: big ? "6px 16px" : "4px 11px",
+			fontWeight: big ? 600 : 400,
+			borderRadius: RADIUS.control,
 			cursor: off ? "default" : "pointer", whiteSpace: "nowrap",
 			border: "1px solid " + (tone === "primary" ? ACCENT_FILL : V.line2),
 			background: tone === "primary" ? ACCENT_FILL : "transparent",
@@ -684,7 +693,7 @@ function BrainstormModule(props) {
 				h("div", { key: "n", style: { color: V.muted } }, preview.next)
 			]) : null,
 			h("div", { key: "a", style: { display: "flex", gap: GAP.sm, alignItems: "center", flexWrap: "wrap" } }, [
-				Btn({ key: "s", label: props.sending ? "正在发…" : "交给工作会话", tone: "primary", off: !!preview.blocked || props.sending, onPick: () => props.onSend(preview.instruction) }),
+				Btn({ key: "s", label: props.sending ? "正在发…" : "交给工作会话", tone: "primary", big: true, off: !!preview.blocked || props.sending, onPick: () => props.onSend(preview.instruction) }),
 				h("span", { key: "n", style: { fontSize: FONT.meta, color: V.muted } }, props.sessionNote || "")
 			]),
 			h(Fold, { key: "p", label: "看将要发出去的指令", note: "（逐字就是发出去的那一份）" },
