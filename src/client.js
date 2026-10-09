@@ -769,13 +769,19 @@ function rich(text) {
 }
 
 /**
+ * 标签列的宽度：装得下小标签（2 字 + 内边距 + 边框 ≈ 43px）再加一点呼吸。
+ * 原来是 98px —— 用户实测「间隙还是太大」，那一半是空档。
+ */
+const LABEL_COL = "56px";
+
+/**
  * 一条决策（P2 时间线形态）。
  *
  * 改之前是"一大片文字"：时间、第几条、正文混在一行行里，靠 `决策/依据/影响` 小标签区分。
  * 现在：
  *   · 左侧 2px 时间轴 + 7px 圆点（**最新一条用强调色**，其余用边线色）；
  *   · 头部一行：时间（等宽数字）+ 第 N 条 + 标题；
- *   · 正文：`决策 / 依据 / 影响` 用**固定宽度的标签列**（98px）左对齐，内容右边对齐成一条线；
+ *   · 正文：`决策 / 依据 / 影响` 用**固定宽度的标签列**（LABEL_COL）左对齐，内容右边对齐成一条线；
  *   · `content-visibility: auto` —— 几百条时只渲染视口附近的（长列表不卡）。
  */
 function DecisionEntry(props) {
@@ -790,7 +796,7 @@ function DecisionEntry(props) {
 			 *   于是条目中间出现一大块空白。这个优化不值得换一个视觉缺陷：
 			 *   决策记录顶多几百条，直接渲染完全够用。
 			 */
-			paddingBottom: GAP.md
+			paddingBottom: GAP.sm
 		}
 	}, [
 		h("div", {
@@ -808,27 +814,27 @@ function DecisionEntry(props) {
 			h("span", { key: "n", style: { fontSize: FONT.meta, color: V.idle, fontVariantNumeric: "tabular-nums" } }, "第 " + e.index + " 条"),
 			e.title ? h("span", { key: "x", style: { fontSize: FONT.meta, color: V.muted } }, "· " + e.title) : null
 		]),
-		h("div", { key: "b", style: { marginTop: GAP.xs } }, bodyParts(e.body).map((p, i) => {
+		h("div", { key: "b", style: { marginTop: GAP.xs, lineHeight: LEADING.meta } }, bodyParts(e.body).map((p, i) => {
 			if (p.kind === "gap") return h("div", { key: i, style: { height: GAP.xs } });
 			if (p.kind === "li") {
-				return h("div", { key: i, style: { fontSize: FONT.body, display: "flex", gap: GAP.md, alignItems: "baseline" } }, [
-					h("span", { key: "s", style: { flex: "0 0 98px", color: V.idle } }, "·"),
+				return h("div", { key: i, style: { fontSize: FONT.body, display: "flex", gap: GAP.sm, alignItems: "baseline" } }, [
+					h("span", { key: "s", style: { flex: "0 0 " + LABEL_COL, color: V.idle } }, "·"),
 					h("span", { key: "t", style: { flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" } }, rich(p.text))
 				]);
 			}
 			if (p.kind === "label") {
 				return h("div", {
 					key: i,
-					style: { fontSize: FONT.body, display: "flex", gap: GAP.md, alignItems: "baseline", marginTop: "2px" }
+					style: { fontSize: FONT.body, display: "flex", gap: GAP.sm, alignItems: "baseline" }
 				}, [
 					/**
-					 * ★ 标签列：**外面是固定宽度的列（98px）**，里面是小标签。
+					 * ★ 标签列：**外面是固定宽度的列（LABEL_COL）**，里面是小标签。
 					 *   · 列宽固定 ⇒ 三行左对齐、内容右边也对齐；
 					 *   · 三个标签**样式完全一致**（用户口径：原来"决策"加重、"依据/影响"不加重，看着不齐）。
 					 */
 					h("span", {
 						key: "l",
-						style: { flex: "0 0 98px", display: "flex", alignItems: "baseline" }
+						style: { flex: "0 0 " + LABEL_COL, display: "flex", alignItems: "baseline" }
 					}, [
 						h("span", {
 							key: "c",
@@ -844,8 +850,8 @@ function DecisionEntry(props) {
 			}
 			return h("div", {
 				key: i,
-				style: { fontSize: FONT.body, display: "flex", gap: GAP.md, whiteSpace: "pre-wrap", wordBreak: "break-word" }
-			}, [h("span", { key: "s", style: { flex: "0 0 98px" } }, ""), h("span", { key: "t", style: { flex: 1, minWidth: 0 } }, rich(p.text))]);
+				style: { fontSize: FONT.body, display: "flex", gap: GAP.sm, whiteSpace: "pre-wrap", wordBreak: "break-word" }
+			}, [h("span", { key: "s", style: { flex: "0 0 " + LABEL_COL } }, ""), h("span", { key: "t", style: { flex: 1, minWidth: 0 } }, rich(p.text))]);
 		}))
 	]);
 }
