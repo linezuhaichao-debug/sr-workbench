@@ -252,13 +252,15 @@ const DASH = {
 	],
 	counts: { features: 2 }
 };
+// ★ 头部多了〔技能用法〕（T1）—— 卡片墙那遍一起盯住它，免得哪天被顺手删掉
 pass("卡片墙", {
 	Panel: [INDEX, "idle", null, DASH, null, { kind: "cards" }, null, 0, false, false, "", false, null]
 }, [
 	"策划工作台", "功能 2",
 	// 阶段步进器的文案（"头脑 3" 而不是 "头脑风暴 3"）+ 相对时间（形状由下面那条正则钉）
 	"联盟讨伐", "已定稿", "头脑 3", "成稿 1", "定稿 2", "宣讲 1", "决策 2", "最近决策",
-	"空功能", "缺桶", "桶没建全", "还没有决策"
+	"空功能", "缺桶", "桶没建全", "还没有决策",
+	"技能用法"
 ]);
 
 // ── ③ 功能详情：三块数据都用**真实工作区**喂进去 ──────────────────────────
@@ -301,6 +303,37 @@ if (real) {
 		"CS-20261009-001.yaml", "CS-20261009-001_读回验收报告.md"
 	]);
 }
+
+// ── ③'' 技能用法弹窗（T1/T2）：内容来自宿主那一页，面板只渲染 ────────────────
+const TEACH_OK = {
+	ok: true,
+	steps: [
+		{ n: 1, title: "入口", text: "- 一句话创意 → `/sr-concept`\n- 竞品录屏 → `/sr-analysis`" },
+		{ n: 2, title: "成稿", text: "`/sr-gdd-human` 出成稿" }
+	],
+	standalone: "**独立技能**（不在主线，需要时单独用）：`/sr-gtgenerator`、`/sr-gdd-review`",
+	routes: [
+		{ want: "我有个创意", skill: "`/sr-concept`" },
+		{ want: "把这条规则落成配置表", skill: "`/sr-config`" }
+	],
+	rules: [
+		{ title: "产出落盘位置", body: "features\\<主题>\\ 下只有四个桶：evidence / analysis / gdd / decisions" },
+		{ title: "数值铁律", body: "见 references/sr_project_context.md" }
+	],
+	cards: [{ id: "sr-concept", title: "SR-Concept 使用卡", body: "# SR-Concept 使用卡", rel: "references/teaching/sr-concept.md" }],
+	problems: []
+};
+pass("技能用法弹窗", { Panel: [INDEX, "idle", null, DASH, null, { kind: "cards" }, null, 0, false, false, "", false, null], Dashboard: [true], TeachingModal: ["ok", TEACH_OK, "", false] }, [
+	"SR 系列技能 · 工作流程", "用法都在 /sr-askme", "主线：2 步",
+	"入口", "/sr-concept", "成稿", "/sr-gdd-human",
+	"独立技能", "我想做什么 → 用哪个", "把这条规则落成配置表", "/sr-config",
+	"共用规则", "产出落盘位置", "数值铁律",
+	"SR-Concept 使用卡", "✕ 关闭", "知道了", "内容来源"
+]);
+// 反面：解析不全时**如实说**（显示 problems），而不是显示空壳
+pass("技能用法弹窗 · 解析不全", { Panel: [INDEX, "idle", null, DASH, null, { kind: "cards" }, null, 0, false, false, "", false, null], Dashboard: [true], TeachingModal: ["bad", { ok: false, problems: ["速查表解析不出来"] }, "", false] }, [
+	"技能素材没解析全", "速查表解析不出来"
+]);
 
 // ── ③' 配置向导：这台机器还没配好时，卡片墙位置必须出现向导 ────────────────
 const WIZ_IDX = Object.assign({}, INDEX, { needConfig: true, cfgObj: { sr_workspace: "", sr_project: "" }, triedPaths: ["D:\\X\\.dsh\\sr-workbench\\config.local.json"], configFile: "" });
