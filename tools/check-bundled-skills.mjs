@@ -16,6 +16,7 @@
  * 退出码：0 = 通过；1 = 失败
  */
 
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,13 +64,33 @@ for (const s of skills) {
 	walk(path.join(ROOT, s.name), "");
 	resourceFiles += n;
 	if (n <= 1) problems.push(`${s.name}：除 SKILL.md 外没有兄弟资源（references 才是技能的精华）—— 实际 ${n} 个文件`);
-	// ★ 钉子：每个技能都该有 CONTRIBUTORS。2026-10-09 实测丢过一批（盘上被删、git 索引里还在，
-	//   某次 add -A 把删除记进了提交），而当时的判据只查「有没有兄弟资源」——gdd-fix/gdd-review
-	//   只剩 SKILL.md 才被逮到，其余静默丢了 8 个。这条按名字逐个点。
-	if (!fs.existsSync(path.join(ROOT, s.name, "CONTRIBUTORS"))) problems.push(`${s.name}：缺 CONTRIBUTORS`);
+
 }
 if (privateFiles.length) problems.push("包里混进了本机私有文件：" + privateFiles.join("、"));
 else ok(`兄弟资源合计 ${resourceFiles} 个文件 · 无 *.local.json`);
+
+// ── ③' 通用钉子：**git 跟踪的每个 skills/ 文件都必须在盘上**
+//   2026-10-09 实测：一批文件在**工作树**里消失了（git 索引里还在），某次 `git add -A` 把删除记进了提交；
+//   当时的判据只查"有没有兄弟资源"，结果只逮到两个只剩 SKILL.md 的技能，其余静默丢。
+//   这条不点名任何文件：谁丢了都红。（不依赖 git 时跳过并如实说明。）
+try {
+	const tracked = execFileSync("git", ["-C", REPO, "ls-files", "skills/"], { encoding: "utf8" })
+		.split("\n").map((x) => x.trim()).filter(Boolean);
+	const missing = tracked.filter((rel) => !fs.existsSync(path.join(REPO, ...rel.split("/"))));
+	if (missing.length) problems.push("git 跟踪但盘上不见了：" + missing.slice(0, 8).join("、") + (missing.length > 8 ? " 等 " + missing.length + " 个" : ""));
+	else ok("git 跟踪的 " + tracked.length + " 个 skills/ 文件都在盘上");
+} catch (e) {
+	/**
+	 * ★ 只放过"这台机器没有 git / 不是 git 仓库"两种情形。
+	 *   其它错误（比如我自己写错、import 漏了）**照旧红** ——
+	 *   判据最怕的就是"静默失效"：刚才那一版 catch 太宽，把 `execFileSync is not defined`
+	 *   一起吞了，于是这条钉子形同不存在。
+	 */
+	const msg = String((e && e.message) || e);
+	const noGit = /ENOENT|not a git repository|command not found/i.test(msg);
+	if (!noGit) problems.push("git 对账没跑成（不许静默跳过）：" + msg.slice(0, 120));
+	else console.log("  · 跳过 git 对账（这台机器没有 git 或不是仓库）");
+}
 
 // ── ④ 用真实 apply() 注册一遍，并核对 resourceBase 指到的文件真读得到
 const registered = [];
