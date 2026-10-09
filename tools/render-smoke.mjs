@@ -297,7 +297,7 @@ if (real) {
 	// ★ 「这个功能的 4 个桶」整块已去掉；这里只该有五组产物（组头带桶名小字）
 	//   搬完位置后：变更集与验收报告在 gdd\ 那一类里（这两条断言就是搬迁的实测证据）
 	pass("详情 · 真数据（" + real.topic + "）· 最终产物", { Panel: realPanel, FeatureView: ["outputs"] }, [
-		"最终产物", "头脑风暴的产物", "成稿", "定稿", "HTML 宣讲稿", "配置表", "analysis\\", "gdd\\",
+		"最终产物", "头脑风暴的产物", "成稿", "定稿", "宣讲稿", "配置表", "analysis\\", "gdd\\",
 		"CS-20261009-001.yaml", "CS-20261009-001_读回验收报告.md"
 	]);
 }
@@ -357,7 +357,7 @@ const DETAIL = {
 			{ key: "brainstorm", label: "头脑风暴的产物", note: "analysis\\ 里的全部内容", dynamic: "", dir: "analysis", count: 1, files: [{ name: "experience-report_x_20260915.md", rel: "analysis/experience-report_x_20260915.md", dir: "analysis", subdir: "", group: "brainstorm", kindLabel: "", note: "" }] },
 			{ key: "draft", label: "成稿", note: "gdd\\<主题>_<日期>.md", dynamic: "", dir: "gdd", count: 1, files: [{ name: "联盟讨伐_20260918.md", rel: "gdd/联盟讨伐_20260918.md", dir: "gdd", subdir: "", group: "draft", kindLabel: "", note: "" }] },
 			{ key: "final", label: "定稿", note: "gdd\\*_定稿.md", dynamic: "现有 2 份，按文件名日期标最新的一份", dir: "gdd", count: 1, files: [{ name: "联盟讨伐_20260923_定稿.md", rel: "gdd/联盟讨伐_20260923_定稿.md", dir: "gdd", subdir: "", group: "final", kindLabel: "", note: "最新定稿" }] },
-			{ key: "speech", label: "HTML 宣讲稿", note: "gdd\\*_宣讲_<日期>.html", dynamic: "", dir: "gdd", count: 1, files: [{ name: "联盟讨伐_宣讲_20260924.html", rel: "gdd/联盟讨伐_宣讲_20260924.html", dir: "gdd", subdir: "", group: "speech", kindLabel: "", note: "" }] },
+			{ key: "speech", label: "宣讲稿", note: "gdd\\*_宣讲_<日期>.html", dynamic: "", dir: "gdd", count: 1, files: [{ name: "联盟讨伐_宣讲_20260924.html", rel: "gdd/联盟讨伐_宣讲_20260924.html", dir: "gdd", subdir: "", group: "speech", kindLabel: "", note: "" }] },
 			// ★ 新分类：配置表（表本体 + change set 都能落进来）
 			{ key: "config", label: "配置表", note: "配置这条线的交付物", dynamic: "", dir: "gdd · analysis", count: 2, files: [
 				{ name: "联盟讨伐_配置表_20261009.xlsx", rel: "gdd/联盟讨伐_配置表_20261009.xlsx", dir: "gdd", subdir: "", group: "config", kindLabel: "", note: "" },
@@ -388,7 +388,7 @@ pass("详情 · 决策记录（合成）", Object.assign({}, featureScript, { Fe
 ]);
 
 const outText = pass("详情 · 最终产物（合成）", Object.assign({}, featureScript, { FeatureView: ["outputs"] }), [
-	"最终产物", "头脑风暴的产物", "成稿", "定稿", "HTML 宣讲稿", "最新定稿", "现有 2 份",
+	"最终产物", "头脑风暴的产物", "成稿", "定稿", "宣讲稿", "最新定稿", "现有 2 份",
 	"其它（不属上面四类）",
 	"不是 4 个桶的目录（如实列出）：source", "功能根下的散文件：feature.json"
 ]);

@@ -89,7 +89,7 @@ export const OUTPUT_GROUPS = [
 	{ key: "brainstorm", label: "头脑风暴的产物", dir: "analysis", note: "analysis\\ 里的全部内容（体验报告 / 问题卡 / 复刻规格 / 概念稿 / 旧文档分析 / 人工补充）" },
 	{ key: "draft", label: "成稿", dir: "gdd", note: "gdd\\<主题>_<日期>.md —— 只含纯规则与设计" },
 	{ key: "final", label: "定稿", dir: "gdd", note: "gdd\\*_定稿.md —— 供程序使用的那一份" },
-	{ key: "speech", label: "HTML 宣讲稿", dir: "gdd", note: "gdd\\*_宣讲_<日期>.html —— 宣讲用的网页" },
+	{ key: "speech", label: "宣讲稿", dir: "gdd", note: "gdd\\*_宣讲_<日期>.html —— 宣讲用的网页" },
 	{ key: "config", label: "配置表", dir: "gdd", note: "配置这条线的交付物：运行时表（.xlsx / .xlsm / .csv）、change set（CS-*.yaml）、读回验收报告" },
 	{ key: "other", label: "其它（不属上面五类）", dir: "", note: "审查 / 修订点 / 定稿 HTML 派生件 / 认不出名字的文件 —— 如实列出，不丢" }
 ] as const;

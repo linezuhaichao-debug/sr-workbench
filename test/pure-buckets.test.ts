@@ -61,7 +61,7 @@ test("分类键 → 显示信息只有一处（界面不自己写标签）", () 
 	assert.equal(outputGroupInfo("brainstorm").label, "头脑风暴的产物");
 	assert.equal(outputGroupInfo("draft").label, "成稿");
 	assert.equal(outputGroupInfo("final").label, "定稿");
-	assert.equal(outputGroupInfo("speech").label, "HTML 宣讲稿");
+	assert.equal(outputGroupInfo("speech").label, "宣讲稿");
 	assert.ok(outputGroupInfo("other").label.includes("其它"));
 	assert.equal(outputGroupInfo("没这个键").label, "没这个键", "认不出来就原样返回，不编");
 });
