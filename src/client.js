@@ -814,7 +814,7 @@ function DecisionEntry(props) {
 			h("span", { key: "n", style: { fontSize: FONT.meta, color: V.idle, fontVariantNumeric: "tabular-nums" } }, "第 " + e.index + " 条"),
 			e.title ? h("span", { key: "x", style: { fontSize: FONT.meta, color: V.muted } }, "· " + e.title) : null
 		]),
-		h("div", { key: "b", style: { marginTop: GAP.xs, lineHeight: LEADING.meta } }, bodyParts(e.body).map((p, i) => {
+		h("div", { key: "b", style: { marginTop: GAP.xs, lineHeight: LEADING.loose } }, bodyParts(e.body).map((p, i) => {
 			if (p.kind === "gap") return h("div", { key: i, style: { height: GAP.xs } });
 			if (p.kind === "li") {
 				return h("div", { key: i, style: { fontSize: FONT.body, display: "flex", gap: GAP.sm, alignItems: "baseline" } }, [

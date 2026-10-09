@@ -54,7 +54,11 @@ export const FONT = {
 export const WEIGHT = { normal: 400, medium: 500, semibold: 600, bold: 700 };
 
 /** 行高。 */
-export const LEADING = { meta: 1.5, body: 1.6, tight: 1.35 };
+/**
+ * 行高。`loose` 是给**长正文**用的（决策记录那种一行几十字的）：
+ * 用户口径「行间距稍微大一点」—— 1.5 太挤、1.7 读起来正好。
+ */
+export const LEADING = { meta: 1.5, body: 1.6, loose: 1.7, tight: 1.35 };
 
 /** 圆角。 */
 export const RADIUS = { card: "8px", control: "5px", chip: "3px" };
