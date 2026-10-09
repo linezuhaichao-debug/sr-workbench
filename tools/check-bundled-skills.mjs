@@ -27,6 +27,12 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..");
 const ROOT = skillsRootOf(REPO);
 const EXPECTED = 10;   // sr-config-heroskill 已改名 skill-hero-config 并搬出插件（不算 sr 系列）
+/**
+ * **纯文本技能**：本来就只有 SKILL.md，没有 references / scripts。
+ * （以前它们靠随包的 `CONTRIBUTORS` 署名文件凑够 2 个文件；用户 2026-10-09 把署名文件删了。）
+ * 名单外的技能若没有兄弟资源 ⇒ 红 —— 那才是这条规则真正要防的（新技能忘了带 references）。
+ */
+const PROSE_ONLY = new Set(["sr-gdd-fix", "sr-gdd-review"]);
 
 const problems = [];
 const ok = (s) => console.log("  ✓ " + s);
@@ -63,7 +69,11 @@ for (const s of skills) {
 	};
 	walk(path.join(ROOT, s.name), "");
 	resourceFiles += n;
-	if (n <= 1) problems.push(`${s.name}：除 SKILL.md 外没有兄弟资源（references 才是技能的精华）—— 实际 ${n} 个文件`);
+	if (n <= 1 && !PROSE_ONLY.has(s.name)) {
+		problems.push(`${s.name}：除 SKILL.md 外没有兄弟资源（references 才是技能的精华）—— 实际 ${n} 个文件`);
+	} else if (n <= 1) {
+		console.log(`  · ${s.name}：纯文本技能（只有 SKILL.md），在名单里放行`);
+	}
 
 }
 if (privateFiles.length) problems.push("包里混进了本机私有文件：" + privateFiles.join("、"));

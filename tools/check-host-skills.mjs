@@ -18,6 +18,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ARTIFACT = path.join(REPO, "lib", "index.js");
+/**
+ * **纯文本技能**：本来就只有 SKILL.md，没有 references。
+ * （署名文件 `CONTRIBUTORS` 已被用户删掉，这两个技能因此变成 0 兄弟资源 —— 显式写出来。）
+ * 名单外的技能没有兄弟资源 ⇒ 仍然红。
+ */
+const PROSE_ONLY = ["sr-gdd-fix", "sr-gdd-review"];
 
 const problems = [];
 const check = (label, fn) => {
@@ -95,6 +101,8 @@ check("resourceBase 指向包内 skills\\，且正文与该文件逐字一致", 
 });
 check("兄弟资源真的在包内目录里（references 才是技能的精华）", () => {
 	for (const s of registered) {
+		// ★ 纯文本技能（本来只有 SKILL.md）放行 —— 名单与 check-bundled-skills.mjs 一致
+		if (PROSE_ONLY.indexOf(s.name) >= 0) continue;
 		const dir = s.resourceBase.path;
 		const sub = fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() || e.name !== "SKILL.md");
 		assert.ok(sub.length > 0, s.name + " 除 SKILL.md 外没有任何兄弟资源");
