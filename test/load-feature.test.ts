@@ -123,7 +123,12 @@ test("扫描：不是 4 个桶的目录与功能根散文件都如实列出来",
 	const topic = topics()[0];
 	const scan = await scanFeature(testPort(), featureRoot(topic));
 	const rootDirs = fs.readdirSync(featureRoot(topic), { withFileTypes: true }).filter((x) => x.isDirectory()).map((x) => x.name);
-	const strangers = rootDirs.filter((x) => !BUCKETS.some((b) => b.toLowerCase() === x.toLowerCase()));
+	// ★ 与 scanFeature **同一口径**：以「.」开头的工具目录（.dsh / .git / .svn）不算「不是 4 个桶的目录」——
+	//   面板自己在工作区根下建 .dsh 放指针文件；这类目录不是内容。真值这边也要按同一规则算，
+	//   否则用例会拿「盘上所有目录」去比「面板列出的内容目录」，两边口径不一致（这条就是那么红的）。
+	const strangers = rootDirs
+		.filter((x) => x.startsWith(".") === false)
+		.filter((x) => !BUCKETS.some((b) => b.toLowerCase() === x.toLowerCase()));
 	assert.deepEqual(scan.strangerDirs.slice().sort(), strangers.slice().sort());
 });
 

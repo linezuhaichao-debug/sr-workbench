@@ -76,7 +76,15 @@ export async function scanFeature(port: WorkspacePort, root: string, signal?: Ab
 	}
 
 	const rootFiles = (await listFiles(port, r, signal, true)).slice().sort();
+	/**
+	 * 不是 4 个桶的目录 —— 如实列出，但**跳过 `.` 开头的工具目录**（`.dsh` / `.git` / `.svn` …）。
+	 * 判据：它们不是"内容"，是工具与版本控制的痕迹；面板自己也会在工作区根下建 `.dsh` 放指针文件
+	 * （用户问过"这个 .dsh 有必要吗" —— 指针有必要，但不该出现在功能目录里：
+	 *  指针只写工作区根，见 `pure/configentry.ts` 的 `looksFeatureDir`）。
+	 * ★ 桶本身缺了照旧如实报（`missing`），这条只管"多出来的东西"。
+	 */
 	const strangerDirs = rootDirs
+		.filter((d) => String(d).startsWith(".") === false)
 		.filter((d) => !(BUCKETS as readonly string[]).some((b) => b.toLowerCase() === String(d).toLowerCase()))
 		.sort();
 

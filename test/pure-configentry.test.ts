@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-	buildConfigInstruction, configIncomplete, CONFIG_FIELDS, looksAbsolutePath, pointerCandidates, pointerPathOf,
+	buildConfigInstruction, configIncomplete, CONFIG_FIELDS, looksAbsolutePath, looksFeatureDir, pointerCandidates, pointerPathOf,
 	validateConfigValues, workspaceMissing
 } from "../src/pure/configentry.ts";
 
@@ -60,6 +60,20 @@ test("指针文件：跟着工作区根走，去重去空", () => {
 		"D:\\WS\\.dsh\\sr-workbench.path",
 		"E:\\Other\\.dsh\\sr-workbench.path"
 	]);
+});
+
+test("指针候选：用户填的 sr_workspace 优先，功能目录一律排除", () => {
+	// 面板把"功能目录"也当成工作区根过（用户侧边栏里就有"联盟讨伐"这个工作区）——
+	// 那会把 .dsh 写进 features\<主题>\，被面板如实列成"不是 4 个桶的目录"（用户问过这个）。
+	assert.equal(looksFeatureDir("D:\\WS\\features\\联盟讨伐"), true);
+	assert.equal(looksFeatureDir("D:\\WS\\features\\联盟讨伐\\"), true);
+	assert.equal(looksFeatureDir("D:\\WS"), false);
+	assert.equal(looksFeatureDir("D:\\WS\\features"), false, "features 这一层本身还算根");
+	const c = pointerCandidates(["D:\\WS\\features\\联盟讨伐", "D:\\WS"], "D:\\WS");
+	assert.equal(c[0], "D:\\WS\\.dsh\\sr-workbench.path", "用户填的那个排第一");
+	assert.equal(c.length, 1, "功能目录被排除 ⇒ 与第一个重复后只剩一条");
+	const c2 = pointerCandidates(["D:\\WS\\features\\X", "E:\\Other"], "D:\\WS");
+	assert.deepEqual(c2, ["D:\\WS\\.dsh\\sr-workbench.path", "E:\\Other\\.dsh\\sr-workbench.path"]);
 });
 
 test("写配置指令：内容、落点、指针、回报格式都要说清", () => {

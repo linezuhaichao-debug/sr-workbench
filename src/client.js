@@ -1486,7 +1486,7 @@ export function apply(ctx, config) {
 		const inst = buildConfigInstruction({
 			values: values,
 			configPathHint: hint,
-			pointerPaths: pointerCandidates(roots),
+			pointerPaths: pointerCandidates(roots, values.sr_workspace),
 			stamp: todayCompact()
 		});
 		const pr = await ctx.remote.session.prompt({
@@ -1500,7 +1500,7 @@ export function apply(ctx, config) {
 		for (let i = 0; i < 30; i++) {
 			await new Promise((r) => setTimeout(r, 2000));
 			const cands2 = [];
-			for (const p of pointerCandidates(roots)) {
+			for (const p of pointerCandidates(roots, values.sr_workspace)) {
 				try {
 					const r = await read(sid, p, { offset: 1, limit: 5 }, signal);
 					if (r && r.ok === true && r.value && typeof r.value.text === "string" && r.value.text.trim() !== "") {
@@ -1538,7 +1538,7 @@ export function apply(ctx, config) {
 		const lines = ["/sr-askme 引导我配置这台机器的 sr 路径。", "", "规矩（面板要靠它认路）：",
 			"· 配置写到 $env:USERPROFILE\\.dsh\\sr-workbench\\config.local.json（本机私有，别放进技能目录）；",
 			"· 写完后把配置的绝对路径（一行）写进下面这些指针文件（目录不存在先建）："];
-		for (const p of pointerCandidates(roots)) lines.push("  " + p);
+		for (const p of pointerCandidates(roots, (o && o.srWorkspace) || "")) lines.push("  " + p);
 		lines.push("· 跑完只回报一行 OK <配置绝对路径> 或 FAILED <原因>。");
 		const pr = await ctx.remote.session.prompt({
 			requestId: "wb-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),

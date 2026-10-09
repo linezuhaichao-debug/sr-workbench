@@ -28,18 +28,35 @@ export function pointerPathOf(root: unknown): string {
 	return base === "" ? "" : base + "\\" + POINTER_REL;
 }
 
-/** 各已知工作区根 → 指针候选（去重、去空）。 */
-export function pointerCandidates(roots: unknown[]): string[] {
+/**
+ * 这像不像**工作区根**（而不是某个功能目录）。
+ * 判据：路径末尾是不是 `features\<主题>` 这一层 —— 指针文件**不能**写进功能目录，
+ * 那会污染功能目录（面板会把它如实列成"不是 4 个桶的目录"）。
+ */
+export function looksFeatureDir(root: unknown): boolean {
+	const s = String(root === null || root === undefined ? "" : root).replace(/[\\/]+$/, "");
+	return /[\\/]features[\\/][^\\/]+$/i.test(s);
+}
+
+/**
+ * 指针候选：**先放用户刚填的 `sr_workspace`**（那是确定的工作区根），再放其余已知根里
+ * **像工作区根的**（功能目录一律排除）。
+ */
+export function pointerCandidates(roots: unknown[], srWorkspace?: unknown): string[] {
 	const out: string[] = [];
 	const seen: Record<string, true> = {};
-	for (const r of roots || []) {
-		const p = pointerPathOf(r);
-		if (p === "") continue;
+	const push = (raw: unknown, skipFeatureDir: boolean) => {
+		const s = raw === null || raw === undefined ? "" : String(raw);
+		if (skipFeatureDir && looksFeatureDir(s)) return;
+		const p = pointerPathOf(s);
+		if (p === "") return;
 		const k = p.toLowerCase();
-		if (seen[k]) continue;
+		if (seen[k]) return;
 		seen[k] = true;
 		out.push(p);
-	}
+	};
+	push(srWorkspace, false);            // 用户填的那个：无条件收
+	for (const r of roots || []) push(r, true);   // 其余：功能目录不要
 	return out;
 }
 
