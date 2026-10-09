@@ -35,6 +35,19 @@ test("内容照原样带出来（标签与注释之外一个字不改）", () =>
 	assert.equal(labelLineOf("决策：A028 另开 CS-20261009-002 补写")!.text, "A028 另开 CS-20261009-002 补写");
 });
 
+test("看不见的字符（零宽空格 / BOM / 不换行空格）不许让标签失效", () => {
+	// 用户实测：界面上完全看不出来，但正则就认不出了 ⇒ 先归一化再匹配
+	assert.equal(labelLineOf("**影响**\u200b：入口门槛在配置侧暂缺")!.label, "影响");
+	assert.equal(labelLineOf("\ufeff**依据**\u00a0：一个 change set")!.label, "依据");
+	assert.equal(labelLineOf("影响\u200d：x")!.label, "影响");
+});
+
+test("兜底：标签与冒号之间还夹着别的字符也要认，但中间隔太远就不算", () => {
+	assert.equal(labelLineOf("**影响**（见 DEF-002）—— 入口门槛暂缺：需在 CS-002 落地后闭合")!.label, "影响");
+	assert.equal(labelLineOf("影响 → 中间夹了箭头与说明：内容")!.label, "影响");
+	assert.equal(labelLineOf("影响" + "。".repeat(40) + "：不算标签"), null, "中间隔 40 字太远，当普通段落");
+});
+
 test("白名单之外不瞎猜：不是标签的行一律 null（当普通段落渲染）", () => {
 	for (const line of [
 		"副作用：入口门槛缺替",

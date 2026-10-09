@@ -26,6 +26,25 @@ export function labelLineOf(line: unknown): { label: string; text: string } | nu
 		"\\s*(?:[（(\\[][^）)\\]]{0,24}[）)\\]]\\s*)?" +
 		"[:：]\\s*(.*)$"
 	);
-	const m = re.exec(String(line === null || line === undefined ? "" : line));
-	return m === null ? null : { label: m[1], text: m[2] };
+	/**
+	 * ★ 两段式（2026-10-09 加固）：用户实测仍有个别行没被认出，而磁盘原文按上面的规则**是能认的**
+	 *   ⇒ 怀疑行里混了**看不见的字符**（零宽空格、BOM、不换行空格… 界面上完全看不出来）。
+	 *   所以先**归一化**再匹配；仍不中就走**兜底**（行首白名单标签 + 30 字内有冒号 ⇒ 认）。
+	 */
+	const s = String(line === null || line === undefined ? "" : line)
+		.replace(/[\u200b-\u200f\u2028\u2029\ufeff\u00a0]/g, " ");
+	const m = re.exec(s);
+	if (m !== null) return { label: m[1], text: m[2] };
+
+	/**
+	 * 兜底：只吃「标签 + 至多 30 字 + 冒号」，不会把普通段落误伤成标签行。
+	 * 正常写法在第 ① 步就返回了，走到这儿的都是"还夹着别的字符"的形态。
+	 */
+	const head = new RegExp("^\\s*(?:[-*·•]\\s*)?(?:\\*\\*|__)?\\s*(" + BODY_LABELS.join("|") + ")");
+	const h = head.exec(s);
+	if (h === null) return null;
+	const rest = s.slice(h[0].length);
+	const colon = rest.search(/[:：]/);
+	if (colon < 0 || colon > 30) return null;
+	return { label: h[1], text: rest.slice(colon + 1).replace(/^\s+/, "").replace(/^(\*\*|__)/, "") };
 }
