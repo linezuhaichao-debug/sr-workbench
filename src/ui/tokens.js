@@ -39,15 +39,15 @@ export const GAP = {
 /** 字号阶梯（五档）。含数字的元数据请配 `fontVariantNumeric`。 */
 export const FONT = {
 	/** 11px / 1.5 —— 元数据：件数、路径、时间、提示 */
-	meta: "11px",
+	meta: "12px",
 	/** 12.5px / 1.6 —— 正文 */
-	body: "12.5px",
+	body: "13.5px",
 	/** 13px / 1.4 / 600 —— 小标题 */
-	title: "13px",
+	title: "14px",
 	/** 15px / 1.35 / 600 —— 功能名、模块标题 */
-	card: "15px",
+	card: "16px",
 	/** 20px / 1.3 / 700 —— 页面标题 */
-	page: "20px"
+	page: "21px"
 };
 
 /** 字重（与 `FONT` 搭配用）。 */

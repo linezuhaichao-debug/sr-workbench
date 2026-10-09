@@ -444,10 +444,10 @@ test("P0 令牌化：刻度上的裸间距/字号/圆角不许再出现在面板
 		const n = (src.match(re) || []).length;
 		if (n > 0) bad.push("间距 " + px + " ×" + n);
 	}
-	for (const px of ["11px", "12.5px", "13px", "15px"]) {
-		const n = (src.match(new RegExp('fontSize: "' + px + '"', "g")) || []).length;
-		if (n > 0) bad.push("字号 " + px + " ×" + n);
-	}
+	// ★ 字号现在**一处裸值都不许有**（2026-10-09 全部收进 FONT 阶梯：12 / 13.5 / 14 / 16 / 21）——
+	//   用户口径"整体字号太小"，抬字号时正是靠这条把 45 处离刻度值一次收干净的。
+	const bareFont = (src.match(/fontSize: "[\d.]+px"/g) || []).length;
+	if (bareFont > 0) bad.push("字号裸值 ×" + bareFont);
 	for (const px of ["3px", "5px", "8px"]) {
 		const n = (src.match(new RegExp('borderRadius: "' + px + '"', "g")) || []).length;
 		if (n > 0) bad.push("圆角 " + px + " ×" + n);

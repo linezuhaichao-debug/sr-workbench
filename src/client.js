@@ -47,6 +47,7 @@ import { ENTRANCES } from "./pure/analysisdoc.ts";
 import { toAbs } from "./pure/path.ts";
 import { relTimeOf } from "./pure/reltime.ts";
 import { groupTimeline } from "./pure/timeline.ts";
+import { hasBold, inlineRuns } from "./pure/richtext.ts";
 // ★ 设计令牌：间距/字号/圆角/动效的唯一参数源（面板里不许再写裸数字）
 import { COLOR, FONT, GAP, LEADING, LINE, RADIUS, SHADOW } from "./ui/tokens.js";
 import {
@@ -116,7 +117,7 @@ const PAGE = {
 	fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif", fontSize: FONT.title, lineHeight: 1.6
 };
 const PRE = {
-	fontFamily: MONO, fontSize: "11.5px", whiteSpace: "pre-wrap", wordBreak: "break-word",
+	fontFamily: MONO, fontSize: FONT.meta, whiteSpace: "pre-wrap", wordBreak: "break-word",
 	background: V.panel2, border: "1px solid " + V.line, borderRadius: "6px", padding: GAP.sm, margin: 0,
 	maxHeight: "300px", overflow: "auto"
 };
@@ -132,7 +133,7 @@ const PRE = {
  */
 function chip(text, color) {
 	return h("span", {
-		style: { fontSize: "10.5px", color: color, border: "1px solid " + color, borderRadius: RADIUS.chip, padding: "0 5px", whiteSpace: "nowrap" }
+		style: { fontSize: FONT.meta, color: color, border: "1px solid " + color, borderRadius: RADIUS.chip, padding: "0 5px", whiteSpace: "nowrap" }
 	}, text);
 }
 
@@ -178,7 +179,7 @@ function Btn(props) {
 		type: "button", disabled: off, title: props.title || "",
 		onClick: off ? void 0 : props.onPick,
 		style: {
-			font: "inherit", fontSize: "12px", padding: "4px 11px", borderRadius: RADIUS.control,
+			font: "inherit", fontSize: FONT.body, padding: "4px 11px", borderRadius: RADIUS.control,
 			cursor: off ? "default" : "pointer", whiteSpace: "nowrap",
 			border: "1px solid " + (tone === "primary" ? ACCENT_FILL : V.line2),
 			background: tone === "primary" ? ACCENT_FILL : "transparent",
@@ -195,7 +196,7 @@ function Fold(props) {
 		h("button", {
 			key: "h", type: "button", onClick: () => setOpen(!open),
 			style: {
-				font: "inherit", fontSize: "11.5px", padding: "2px 0", border: "none",
+				font: "inherit", fontSize: FONT.meta, padding: "2px 0", border: "none",
 				background: "transparent", color: V.muted, cursor: "pointer", textAlign: "left"
 			}
 		}, (open ? "▾ " : "▸ ") + props.label + (props.note ? "　" + props.note : "")),
@@ -226,7 +227,7 @@ function Notice(props) {
  * 需要复制时用鼠标选中即可。
  */
 function PathLine(props) {
-	return h("div", { style: { display: "flex", gap: GAP.sm, alignItems: "center", fontSize: "11.5px", color: V.muted } }, [
+	return h("div", { style: { display: "flex", gap: GAP.sm, alignItems: "center", fontSize: FONT.meta, color: V.muted } }, [
 		h("code", { key: "c", style: { fontFamily: MONO, wordBreak: "break-all" } }, String(props.text || "")),
 		typeof props.onOpen === "function"
 			? h("button", {
@@ -269,7 +270,7 @@ function Card(props) {
 			style: { display: "flex", alignItems: "baseline", gap: GAP.sm, marginBottom: GAP.sm, flexWrap: "wrap" }
 		}, [
 			h("div", { key: "t", style: { fontSize: FONT.title, fontWeight: 600 } }, props.title),
-			h("div", { key: "n", style: { fontSize: "11.5px", color: V.muted, flex: 1 } }, props.note || ""),
+			h("div", { key: "n", style: { fontSize: FONT.meta, color: V.muted, flex: 1 } }, props.note || ""),
 			props.actions || null
 		]),
 		props.children
@@ -300,11 +301,11 @@ function FileRow(props) {
 		props.note ? h("span", {
 			key: "n",
 			style: {
-				fontSize: "10.5px", color: V.muted, whiteSpace: "nowrap",
+				fontSize: FONT.meta, color: V.muted, whiteSpace: "nowrap",
 				border: "1px solid " + V.line2, borderRadius: RADIUS.chip, padding: "0 4px"
 			}
 		}, props.note) : null,
-		props.sub ? h("span", { key: "s", style: { fontSize: "10.5px", color: V.idle, fontFamily: MONO } }, props.sub) : null
+		props.sub ? h("span", { key: "s", style: { fontSize: FONT.meta, color: V.idle, fontFamily: MONO } }, props.sub) : null
 	]);
 }
 
@@ -387,11 +388,11 @@ function FeatureCard(props) {
 					}),
 					h("span", {
 						key: "lb",
-					style: { fontSize: "10.5px", color: on ? V.ink : V.idle, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }
+					style: { fontSize: FONT.meta, color: on ? V.ink : V.idle, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }
 					}, s.label + (on ? " " + n : ""))
 				]);
 			})),
-		h("div", { key: "l", style: { fontSize: "11.5px", color: warn ? V.warn : V.muted } }, f.line),
+		h("div", { key: "l", style: { fontSize: FONT.meta, color: warn ? V.warn : V.muted } }, f.line),
 		["decisions", "evidence", "other"].some((k) => (c[k] || 0) > 0)
 			? h("div", {
 				key: "c",
@@ -434,8 +435,8 @@ function ConfigWizard(props) {
 	const field = (f) => h("div", { key: f.key, style: { marginBottom: "10px" } }, [
 		h("div", { key: "l", style: { display: "flex", alignItems: "baseline", gap: "6px", marginBottom: "3px" } }, [
 			h("span", { key: "n", style: { fontSize: FONT.body, fontWeight: 600 } }, f.label),
-			f.required ? h("span", { key: "r", style: { fontSize: "10.5px", color: V.bad } }, "必填")
-				: h("span", { key: "r", style: { fontSize: "10.5px", color: V.idle } }, "选填"),
+			f.required ? h("span", { key: "r", style: { fontSize: FONT.meta, color: V.bad } }, "必填")
+				: h("span", { key: "r", style: { fontSize: FONT.meta, color: V.idle } }, "选填"),
 			h("span", { key: "h", style: { fontSize: FONT.meta, color: V.muted, flex: 1 } }, f.hint)
 		]),
 		h("div", { key: "i", style: { display: "flex", gap: "6px" } }, [
@@ -443,7 +444,7 @@ function ConfigWizard(props) {
 				key: "in", type: "text", value: String(v[f.key] || ""), placeholder: "D:\\...",
 				onChange: (e) => props.onField(f.key, e.target.value),
 				style: {
-					flex: 1, minWidth: 0, font: "inherit", fontSize: "12px", padding: "5px 8px", borderRadius: RADIUS.control,
+					flex: 1, minWidth: 0, font: "inherit", fontSize: FONT.body, padding: "5px 8px", borderRadius: RADIUS.control,
 					border: "1px solid " + (issueOf(f.key) ? V.bad : V.line2), background: "transparent", color: V.ink
 				}
 			}),
@@ -454,7 +455,7 @@ function ConfigWizard(props) {
 
 	return h(Card, { key: "wiz", title: "先配一下本机路径", note: "这台机器还没有配置 —— 同事第一次用、或你重装之后都是这样" }, [
 		(props.notice ? h(Notice, { key: "n", notice: props.notice }) : null),
-		h("div", { key: "why", style: { fontSize: "11.5px", color: V.muted, marginBottom: "10px" } },
+		h("div", { key: "why", style: { fontSize: FONT.meta, color: V.muted, marginBottom: "10px" } },
 			"配置是**本机私有**的，落 " + "%USERPROFILE%\\.dsh\\sr-workbench\\config.local.json（不在技能目录里 —— 插件升一次级就没了）。" +
 			"面板自己不写盘：点〔保存并验证〕会把这份值**交给一条会话去写**，写完面板回读核对。"),
 		...CONFIG_FIELDS.map(field),
@@ -491,22 +492,22 @@ function CreateForm(props) {
 			}),
 			Btn({ label: busy ? "正在建…" : "建立", tone: "primary", off: off, onPick: props.onSubmit })
 		]),
-		check && !check.ok ? h("div", { key: "c", style: { marginTop: "7px", fontSize: "12px", color: V.warn } }, [
+		check && !check.ok ? h("div", { key: "c", style: { marginTop: "7px", fontSize: FONT.body, color: V.warn } }, [
 			h("div", { key: "m" }, check.message),
 			h("div", { key: "n", style: { color: V.muted } }, check.next)
 		]) : null,
-		plan && !plan.ok ? h("div", { key: "p", style: { marginTop: "7px", fontSize: "12px", color: V.warn } }, [
+		plan && !plan.ok ? h("div", { key: "p", style: { marginTop: "7px", fontSize: FONT.body, color: V.warn } }, [
 			h("div", { key: "m" }, plan.message),
 			h("div", { key: "n", style: { color: V.muted } }, plan.next)
 		]) : null,
 		plan && plan.ok ? h("div", { key: "ok", style: { marginTop: "9px" } }, [
-			h("div", { key: "r", style: { fontSize: "11.5px", color: V.muted } }, "将建立："),
-			h("code", { key: "c", style: { fontFamily: MONO, fontSize: "12px", wordBreak: "break-all" } }, plan.root + "\\"),
+			h("div", { key: "r", style: { fontSize: FONT.meta, color: V.muted } }, "将建立："),
+			h("code", { key: "c", style: { fontFamily: MONO, fontSize: FONT.body, wordBreak: "break-all" } }, plan.root + "\\"),
 			h("div", { key: "b", style: { marginTop: "5px" } }, plan.buckets.map((b) => h("div", {
-				key: b, style: { fontFamily: MONO, fontSize: "11.5px", color: V.muted }
+				key: b, style: { fontFamily: MONO, fontSize: FONT.meta, color: V.muted }
 			}, b + "\\　—　" + bucketHint(b))))
 		]) : null,
-		h("div", { key: "h", style: { marginTop: "10px", fontSize: "11.5px", color: V.muted } },
+		h("div", { key: "h", style: { marginTop: "10px", fontSize: FONT.meta, color: V.muted } },
 			"面板只建【目录】与【会话】；决策记录.md 由会话里的 agent 在这个功能第一次做决策时按统一格式创建（格式见功能详情 › 决策记录）。")
 	]);
 }
@@ -580,7 +581,7 @@ function Dashboard(props) {
 		 *   观感与宿主不一致，得让你知道为什么。拿得到就一个字都不多（不占位置）。
 		 */
 		HAS_PRIMITIVES ? null : h("div", {
-			key: "__ui", style: { fontSize: "10.5px", color: V.idle, marginTop: GAP.md }
+			key: "__ui", style: { fontSize: FONT.meta, color: V.idle, marginTop: GAP.md }
 		}, primitivesNote())
 	]);
 }
@@ -670,20 +671,20 @@ function BrainstormModule(props) {
 				h("div", { key: "c", style: { fontSize: FONT.meta, marginTop: "3px", color: V.muted } }, "已有产物 " + (counts[e.id] || 0) + " 件")
 			]))),
 			(FIELDS[pick] || []).map((f) => h("div", { key: f.k, style: { marginBottom: "7px" } }, [
-				h("div", { key: "l", style: { fontSize: "11.5px", color: V.muted, marginBottom: "3px" } }, f.label),
+				h("div", { key: "l", style: { fontSize: FONT.meta, color: V.muted, marginBottom: "3px" } }, f.label),
 				h("textarea", {
 					key: "i", rows: f.lines,
 					style: Object.assign({}, IN, { resize: "vertical", fontFamily: f.mono ? MONO : "inherit" }),
 					value: form[f.k] || "", onChange: (ev) => setField(f.k, ev.target.value)
 				})
 			])),
-			preview.blocked ? h("div", { key: "b", style: { fontSize: "12px", color: V.warn, marginBottom: "7px" } }, [
+			preview.blocked ? h("div", { key: "b", style: { fontSize: FONT.body, color: V.warn, marginBottom: "7px" } }, [
 				h("div", { key: "m" }, preview.blocked),
 				h("div", { key: "n", style: { color: V.muted } }, preview.next)
 			]) : null,
 			h("div", { key: "a", style: { display: "flex", gap: GAP.sm, alignItems: "center", flexWrap: "wrap" } }, [
 				Btn({ key: "s", label: props.sending ? "正在发…" : "交给工作会话", tone: "primary", off: !!preview.blocked || props.sending, onPick: () => props.onSend(preview.instruction) }),
-				h("span", { key: "n", style: { fontSize: "11.5px", color: V.muted } }, props.sessionNote || "")
+				h("span", { key: "n", style: { fontSize: FONT.meta, color: V.muted } }, props.sessionNote || "")
 			]),
 			h(Fold, { key: "p", label: "看将要发出去的指令", note: "（逐字就是发出去的那一份）" },
 				h("pre", { style: PRE }, preview.instruction || "（还没填够 —— 上面那句说明了缺什么）"))
@@ -692,39 +693,39 @@ function BrainstormModule(props) {
 			(g.total || 0) === 0
 				? h("div", { style: { color: V.muted, fontSize: FONT.body } }, "analysis\\ 还是空的 —— 上面四个入口任选一个开始。")
 				: h("div", null, (g.entries || []).map((en) => h("div", { key: en.id, style: { marginBottom: "10px" } }, [
-					h("div", { key: "h", style: { fontSize: "12px", fontWeight: 600 } }, en.label + "（" + en.count + "）"),
+					h("div", { key: "h", style: { fontSize: FONT.body, fontWeight: 600 } }, en.label + "（" + en.count + "）"),
 					en.count === 0
-						? h("div", { key: "e", style: { fontSize: "11.5px", color: V.muted } }, "这一路还没走过")
+						? h("div", { key: "e", style: { fontSize: FONT.meta, color: V.muted } }, "这一路还没走过")
 						: h("div", { key: "l" }, en.files.map((f) => h(FileRow, {
 							key: f.rel, name: f.name, rel: f.rel, root: d.root, onOpen: props.onOpen
 						})))
 				])).concat((g.other || []).length ? [
 					h("div", { key: "__other", style: { marginBottom: "10px" } }, [
-						h("div", { key: "h", style: { fontSize: "12px", fontWeight: 600 } }, "其他 / 来源未知（" + g.other.length + "）"),
+						h("div", { key: "h", style: { fontSize: FONT.body, fontWeight: 600 } }, "其他 / 来源未知（" + g.other.length + "）"),
 						h("div", { key: "l" }, g.other.map((f) => h(FileRow, { key: f.rel, name: f.name, rel: f.rel, root: d.root, onOpen: props.onOpen })))
 					])
 				] : []))),
 		((b.legacy || []).length || (b.humannote || []).length || (b.unreadable || []).length)
 			? h(Card, { key: "fmt", title: "固定格式的两类产物", note: "旧文档分析（四段固定章节）· 人工补充（原话与结论并排）" }, [
 				(b.legacy || []).map((x) => h("div", { key: "L" + x.rel, style: { marginBottom: "6px" } }, [
-					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600 } }, "旧文档分析：" + x.name),
-					(x.missing || []).length ? h("div", { key: "m", style: { fontSize: "11.5px", color: V.warn } }, "缺固定章节：" + x.missing.join("、")) : null,
-					(x.extra || []).length ? h("div", { key: "e", style: { fontSize: "11.5px", color: V.muted } }, "多出来的章节：" + x.extra.map((s) => s.title).join("、")) : null
+					h("div", { key: "t", style: { fontSize: FONT.body, fontWeight: 600 } }, "旧文档分析：" + x.name),
+					(x.missing || []).length ? h("div", { key: "m", style: { fontSize: FONT.meta, color: V.warn } }, "缺固定章节：" + x.missing.join("、")) : null,
+					(x.extra || []).length ? h("div", { key: "e", style: { fontSize: FONT.meta, color: V.muted } }, "多出来的章节：" + x.extra.map((s) => s.title).join("、")) : null
 				])),
 				(b.humannote || []).map((x) => h("div", { key: "H" + x.rel, style: { marginBottom: "6px" } }, [
-					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600 } }, "人工补充：" + x.name),
-					h("div", { key: "q", style: { fontSize: "11.5px", color: V.muted, whiteSpace: "pre-wrap" } },
+					h("div", { key: "t", style: { fontSize: FONT.body, fontWeight: 600 } }, "人工补充：" + x.name),
+					h("div", { key: "q", style: { fontSize: FONT.meta, color: V.muted, whiteSpace: "pre-wrap" } },
 						x.quote && x.quote.found ? x.quote.raw : "（没有 `> 原话：…` 那一行）"),
-					(x.missing || []).length ? h("div", { key: "m", style: { fontSize: "11.5px", color: V.warn } }, "缺固定章节：" + x.missing.join("、")) : null
+					(x.missing || []).length ? h("div", { key: "m", style: { fontSize: FONT.meta, color: V.warn } }, "缺固定章节：" + x.missing.join("、")) : null
 				])),
 				(b.unreadable || []).length
-					? h("div", { key: "u", style: { fontSize: "11.5px", color: V.warn } },
+					? h("div", { key: "u", style: { fontSize: FONT.meta, color: V.warn } },
 						"读不动的文件：" + b.unreadable.map((u) => u.name + "（" + u.why + "）").join("；"))
 					: null
 			])
 			: null,
 		(b.notes || []).length
-			? h("div", { key: "notes", style: { fontSize: "11.5px", color: V.muted } }, b.notes.map((s, i) => h("div", { key: i }, "· " + s)))
+			? h("div", { key: "notes", style: { fontSize: FONT.meta, color: V.muted } }, b.notes.map((s, i) => h("div", { key: i }, "· " + s)))
 			: null
 	]);
 }
@@ -748,6 +749,19 @@ function bodyParts(body) {
 		out.push({ kind: "p", text: line });
 	}
 	return out;
+}
+
+/**
+ * 行内渲染：把 `**加粗**` 渲染成真粗体（用户口径：原样显示星号很难读）。
+ *
+ * 解析在 `pure/richtext.ts`（有 7 条用例，含"标记之外一个字都不许吞"）。
+ * 只有真出现加粗时才建数组，普通文字走原样 —— 少建节点。
+ */
+function rich(text) {
+	if (!hasBold(text)) return text;
+	return inlineRuns(text).map((r, i) => r.bold
+		? h("strong", { key: i, style: { fontWeight: 600 } }, r.text)
+		: h("span", { key: i }, r.text));
 }
 
 /**
@@ -789,7 +803,7 @@ function DecisionEntry(props) {
 			if (p.kind === "li") {
 				return h("div", { key: i, style: { fontSize: FONT.body, display: "flex", gap: GAP.md, alignItems: "baseline" } }, [
 					h("span", { key: "s", style: { flex: "0 0 98px", color: V.idle } }, "·"),
-					h("span", { key: "t", style: { flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" } }, p.text)
+					h("span", { key: "t", style: { flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" } }, rich(p.text))
 				]);
 			}
 			if (p.kind === "label") {
@@ -798,9 +812,9 @@ function DecisionEntry(props) {
 					style: { fontSize: FONT.body, display: "flex", gap: GAP.md, alignItems: "baseline", marginTop: "2px" }
 				}, [
 					/**
-					 * ★ 标签列：**外面是固定宽度的列（98px）**，里面还是原来的**小标签**。
-					 *   第一版我为了对齐把标签改成了纯文字 —— 用户实测直接说"还不如之前，之前还有小标签"。
-					 *   两全的做法：列宽固定保证三行左对齐，标签本身保留边框/底色/字重（"决策"加重）。
+					 * ★ 标签列：**外面是固定宽度的列（98px）**，里面是小标签。
+					 *   · 列宽固定 ⇒ 三行左对齐、内容右边也对齐；
+					 *   · 三个标签**样式完全一致**（用户口径：原来"决策"加重、"依据/影响"不加重，看着不齐）。
 					 */
 					h("span", {
 						key: "l",
@@ -809,20 +823,19 @@ function DecisionEntry(props) {
 						h("span", {
 							key: "c",
 							style: {
-								color: p.label === "决策" ? V.ink : V.muted,
-								fontWeight: p.label === "决策" ? 600 : 400, fontSize: FONT.meta,
+								color: V.muted, fontWeight: 400, fontSize: FONT.meta,
 								border: "1px solid " + V.line2, borderRadius: RADIUS.chip, padding: "0 5px",
 								whiteSpace: "nowrap"
 							}
 						}, p.label)
 					]),
-					h("span", { key: "t", style: { flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" } }, p.text)
+					h("span", { key: "t", style: { flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" } }, rich(p.text))
 				]);
 			}
 			return h("div", {
 				key: i,
 				style: { fontSize: FONT.body, display: "flex", gap: GAP.md, whiteSpace: "pre-wrap", wordBreak: "break-word" }
-			}, [h("span", { key: "s", style: { flex: "0 0 98px" } }, ""), h("span", { key: "t", style: { flex: 1, minWidth: 0 } }, p.text)]);
+			}, [h("span", { key: "s", style: { flex: "0 0 98px" } }, ""), h("span", { key: "t", style: { flex: 1, minWidth: 0 } }, rich(p.text))]);
 		}))
 	]);
 }
@@ -852,12 +865,12 @@ function DecisionsModule(props) {
 			])
 		}, [
 			h("div", { key: "p" }, PathLine({ text: abs })),
-			h("div", { key: "s", style: { fontSize: "11.5px", color: V.muted, marginTop: "5px" } },
+			h("div", { key: "s", style: { fontSize: FONT.meta, color: V.muted, marginTop: "5px" } },
 				log.present
 					? "共 " + (log.entries || []).length + " 条" + (entries[0] ? "　｜　最近一条 " + entries[0].at : "")
 					: "这个文件还不存在 —— 会话里的 agent 在该功能第一次做决策时会按下面的格式创建它。"),
 			(log.issues || []).length
-				? h("div", { key: "i", style: { marginTop: "7px", fontSize: "11.5px", color: V.warn } }, log.issues.map((s, i) => h("div", { key: i }, "· " + s)))
+				? h("div", { key: "i", style: { marginTop: "7px", fontSize: FONT.meta, color: V.warn } }, log.issues.map((s, i) => h("div", { key: i }, "· " + s)))
 				: null
 		]),
 		showFormat
@@ -929,13 +942,13 @@ function OutputsModule(props) {
 						style: { display: "flex", alignItems: "baseline", gap: GAP.sm, borderBottom: "1px solid " + V.line, paddingBottom: "3px", marginBottom: GAP.xs }
 					}, [
 						h("div", { key: "t", style: { fontSize: FONT.body, fontWeight: 600 } }, g.label),
-						g.dir ? h("code", { key: "d", style: { fontFamily: MONO, fontSize: "10.5px", color: V.idle } }, g.dir + "\\") : null,
+						g.dir ? h("code", { key: "d", style: { fontFamily: MONO, fontSize: FONT.meta, color: V.idle } }, g.dir + "\\") : null,
 						h("div", { key: "s", style: { flex: 1 } }),
 						h("div", { key: "c", style: { fontSize: FONT.meta, color: g.count ? V.muted : V.idle } }, g.count + " 件")
 					]),
 					g.dynamic ? h("div", { key: "dy", style: { fontSize: FONT.meta, color: V.warn, margin: "2px 0 3px" } }, g.dynamic) : null,
 					g.count === 0
-						? h("div", { key: "e", style: { fontSize: "11.5px", color: V.idle, paddingLeft: "2px" } }, "这一类还没有")
+						? h("div", { key: "e", style: { fontSize: FONT.meta, color: V.idle, paddingLeft: "2px" } }, "这一类还没有")
 						: h("div", { key: "l", style: { paddingLeft: "2px" } }, g.files.map((f) => h(FileRow, {
 							key: f.rel, name: f.name, rel: f.rel, root: d.root,
 							sub: f.subdir ? f.subdir + "\\" : "", note: f.note, onOpen: props.onOpen
@@ -987,7 +1000,7 @@ function FeatureView(props) {
 			}
 		}, [
 			Btn({ key: "back", label: "‹ 卡片墙", onPick: props.onBack }),
-			h("div", { key: "t", style: { fontSize: "17px", fontWeight: 700 } }, d.topic),
+			h("div", { key: "t", style: { fontSize: FONT.page, fontWeight: 700 } }, d.topic),
 			h("div", { key: "s", style: { flex: 1 } }),
 			Btn({ key: "r", label: "刷新", onPick: props.onRefresh, off: props.phase === "loading" }),
 			props.sessionId ? Btn({ key: "o", label: "打开工作会话", onPick: () => props.onOpenSession(props.sessionId) }) : null
@@ -999,15 +1012,15 @@ function FeatureView(props) {
 		 *   （想看目录直接点上面的〔打开路径〕），但"不静默丢"的纪律得有地方落。
 		 */
 		(d.strangerDirs || []).length
-			? h("div", { key: "sd", style: { fontSize: "11.5px", color: V.warn, marginBottom: "6px" } },
+			? h("div", { key: "sd", style: { fontSize: FONT.meta, color: V.warn, marginBottom: "6px" } },
 				"不是 4 个桶的目录（如实列出）：" + d.strangerDirs.join("、"))
 			: null,
 		(d.rootFiles || []).length
-			? h("div", { key: "rf", style: { fontSize: "11.5px", color: V.muted, marginBottom: "6px" } },
+			? h("div", { key: "rf", style: { fontSize: FONT.meta, color: V.muted, marginBottom: "6px" } },
 				"功能根下的散文件：" + d.rootFiles.join("、"))
 			: null,
 		(d.missing || []).length
-			? h("div", { key: "m", style: { fontSize: "12px", color: V.warn, marginBottom: GAP.sm } },
+			? h("div", { key: "m", style: { fontSize: FONT.body, color: V.warn, marginBottom: GAP.sm } },
 				"这个功能缺桶：" + d.missing.join("、") + " —— 面板只建不删，不会替你补，请手工建这几个目录。")
 			: null,
 		h(Notice, { key: "n", notice: props.notice }),
@@ -1033,7 +1046,7 @@ class PanelErrorBoundary extends React.Component {
 		const e = this.state.err;
 		if (!e) return this.props.children;
 		return h("div", { style: Object.assign({}, PAGE, { color: V.bad }) }, [
-			h("h1", { key: "t", style: { fontSize: "16px", margin: "0 0 10px", color: V.ink } }, "策划工作台 · 渲染失败"),
+			h("h1", { key: "t", style: { fontSize: FONT.card, margin: "0 0 10px", color: V.ink } }, "策划工作台 · 渲染失败"),
 			h("div", { key: "m", style: { fontSize: FONT.title, marginBottom: "10px" } }, String((e && e.message) || e)),
 			h("pre", { key: "s", style: Object.assign({}, PRE, { maxHeight: "400px", color: V.muted }) }, String((e && e.stack) || "").slice(0, 3000))
 		]);
@@ -1278,7 +1291,7 @@ function Panel(props) {
 			})
 			: null,
 		idx && idx.ok && (idx.note || []).length
-			? h("div", { key: "in", style: { fontSize: "11.5px", color: V.muted, marginBottom: GAP.sm } }, idx.note.join("　"))
+			? h("div", { key: "in", style: { fontSize: FONT.meta, color: V.muted, marginBottom: GAP.sm } }, idx.note.join("　"))
 			: null,
 		idx && idx.ok && idx.needConfig
 			? h(ConfigWizard, {
