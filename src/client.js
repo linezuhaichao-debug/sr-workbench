@@ -797,14 +797,25 @@ function DecisionEntry(props) {
 					key: i,
 					style: { fontSize: FONT.body, display: "flex", gap: GAP.md, alignItems: "baseline", marginTop: "2px" }
 				}, [
-					// ★ 固定宽度标签列：三行标签左边对齐，"决策"加重（其余是材料）
+					/**
+					 * ★ 标签列：**外面是固定宽度的列（98px）**，里面还是原来的**小标签**。
+					 *   第一版我为了对齐把标签改成了纯文字 —— 用户实测直接说"还不如之前，之前还有小标签"。
+					 *   两全的做法：列宽固定保证三行左对齐，标签本身保留边框/底色/字重（"决策"加重）。
+					 */
 					h("span", {
 						key: "l",
-						style: {
-							flex: "0 0 98px", color: p.label === "决策" ? V.ink : V.muted,
-							fontWeight: p.label === "决策" ? 600 : 400, fontSize: FONT.meta
-						}
-					}, p.label),
+						style: { flex: "0 0 98px", display: "flex", alignItems: "baseline" }
+					}, [
+						h("span", {
+							key: "c",
+							style: {
+								color: p.label === "决策" ? V.ink : V.muted,
+								fontWeight: p.label === "决策" ? 600 : 400, fontSize: FONT.meta,
+								border: "1px solid " + V.line2, borderRadius: RADIUS.chip, padding: "0 5px",
+								whiteSpace: "nowrap"
+							}
+						}, p.label)
+					]),
 					h("span", { key: "t", style: { flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" } }, p.text)
 				]);
 			}
