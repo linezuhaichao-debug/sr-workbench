@@ -46,6 +46,7 @@ import { INTAKE } from "./pure/intake.ts";
 import { ENTRANCES } from "./pure/analysisdoc.ts";
 import { toAbs } from "./pure/path.ts";
 import { relTimeOf } from "./pure/reltime.ts";
+import { groupTimeline } from "./pure/timeline.ts";
 // ★ 设计令牌：间距/字号/圆角/动效的唯一参数源（面板里不许再写裸数字）
 import { COLOR, FONT, GAP, LEADING, LINE, RADIUS, SHADOW } from "./ui/tokens.js";
 import {
@@ -749,35 +750,68 @@ function bodyParts(body) {
 	return out;
 }
 
+/**
+ * 一条决策（P2 时间线形态）。
+ *
+ * 改之前是"一大片文字"：时间、第几条、正文混在一行行里，靠 `决策/依据/影响` 小标签区分。
+ * 现在：
+ *   · 左侧 2px 时间轴 + 7px 圆点（**最新一条用强调色**，其余用边线色）；
+ *   · 头部一行：时间（等宽数字）+ 第 N 条 + 标题；
+ *   · 正文：`决策 / 依据 / 影响` 用**固定宽度的标签列**（98px）左对齐，内容右边对齐成一条线；
+ *   · `content-visibility: auto` —— 几百条时只渲染视口附近的（长列表不卡）。
+ */
 function DecisionEntry(props) {
 	const e = props.entry;
-	return h("div", { style: { borderLeft: "2px solid " + V.line2, paddingLeft: GAP.md, marginBottom: "14px", position: "relative" } }, [
+	const first = !!props.first;
+	return h("div", {
+		style: {
+			position: "relative", borderLeft: "2px solid " + V.line2, paddingLeft: GAP.md,
+			paddingBottom: GAP.md, contentVisibility: "auto", containIntrinsicSize: "auto 96px"
+		}
+	}, [
 		h("div", {
 			key: "dot",
-			style: { position: "absolute", left: "-5px", top: "7px", width: "8px", height: "8px", borderRadius: "50%", background: V.brand }
+			style: {
+				position: "absolute", left: "-5px", top: "6px", width: "7px", height: "7px", borderRadius: "50%",
+				background: first ? COLOR.accent : V.line2
+			}
 		}),
 		h("div", { key: "t", style: { display: "flex", alignItems: "baseline", gap: GAP.sm, flexWrap: "wrap" } }, [
-			h("span", { key: "a", style: { fontFamily: MONO, fontSize: FONT.body, fontWeight: 600 } }, e.at || "（没有时间戳）"),
-			h("span", { key: "n", style: { fontSize: FONT.meta, color: V.muted } }, "第 " + e.index + " 条"),
-			e.title ? h("span", { key: "x", style: { fontSize: "12px", color: V.muted } }, "· " + e.title) : null
+			h("span", {
+				key: "a",
+				style: { fontFamily: MONO, fontSize: FONT.meta, color: V.ink, fontVariantNumeric: "tabular-nums" }
+			}, e.at || "（没有时间戳）"),
+			h("span", { key: "n", style: { fontSize: FONT.meta, color: V.idle, fontVariantNumeric: "tabular-nums" } }, "第 " + e.index + " 条"),
+			e.title ? h("span", { key: "x", style: { fontSize: FONT.meta, color: V.muted } }, "· " + e.title) : null
 		]),
 		h("div", { key: "b", style: { marginTop: GAP.xs } }, bodyParts(e.body).map((p, i) => {
-			if (p.kind === "gap") return h("div", { key: i, style: { height: "5px" } });
-			if (p.kind === "li") return h("div", { key: i, style: { paddingLeft: GAP.md, fontSize: FONT.body } }, "· " + p.text);
+			if (p.kind === "gap") return h("div", { key: i, style: { height: GAP.xs } });
+			if (p.kind === "li") {
+				return h("div", { key: i, style: { fontSize: FONT.body, display: "flex", gap: GAP.md, alignItems: "baseline" } }, [
+					h("span", { key: "s", style: { flex: "0 0 98px", color: V.idle } }, "·"),
+					h("span", { key: "t", style: { flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" } }, p.text)
+				]);
+			}
 			if (p.kind === "label") {
-				return h("div", { key: i, style: { fontSize: FONT.body, display: "flex", gap: "7px", alignItems: "baseline", marginTop: "2px" } }, [
+				return h("div", {
+					key: i,
+					style: { fontSize: FONT.body, display: "flex", gap: GAP.md, alignItems: "baseline", marginTop: "2px" }
+				}, [
+					// ★ 固定宽度标签列：三行标签左边对齐，"决策"加重（其余是材料）
 					h("span", {
 						key: "l",
 						style: {
-							flex: "0 0 auto", color: p.label === "决策" ? V.ink : V.muted,
-							fontWeight: p.label === "决策" ? 600 : 400, fontSize: "11.5px",
-							border: "1px solid " + V.line2, borderRadius: "4px", padding: "0 5px"
+							flex: "0 0 98px", color: p.label === "决策" ? V.ink : V.muted,
+							fontWeight: p.label === "决策" ? 600 : 400, fontSize: FONT.meta
 						}
 					}, p.label),
-					h("span", { key: "t", style: { whiteSpace: "pre-wrap", wordBreak: "break-word" } }, p.text)
+					h("span", { key: "t", style: { flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" } }, p.text)
 				]);
 			}
-			return h("div", { key: i, style: { fontSize: FONT.body, whiteSpace: "pre-wrap", wordBreak: "break-word" } }, p.text);
+			return h("div", {
+				key: i,
+				style: { fontSize: FONT.body, display: "flex", gap: GAP.md, whiteSpace: "pre-wrap", wordBreak: "break-word" }
+			}, [h("span", { key: "s", style: { flex: "0 0 98px" } }, ""), h("span", { key: "t", style: { flex: 1, minWidth: 0 } }, p.text)]);
 		}))
 	]);
 }
@@ -825,7 +859,32 @@ function DecisionsModule(props) {
 				? h(Card, { key: "list", title: "全部决策", note: "最新的在最上面" },
 					entries.length === 0
 						? h("div", { style: { color: V.muted, fontSize: FONT.body } }, "文件在，但还没有带时间戳的条目 —— 照上面那份格式追加第一条。")
-						: entries.map((e) => h(DecisionEntry, { key: e.index, entry: e })))
+						: (() => {
+					/**
+					 * ★ **按天分组**（P2）：今天 / 昨天 / 本周 / 更早，每组一个组头 + 一条贯穿细线。
+					 *   分组只按**日期**（不按时间差）——"昨天 23:50"与"今天 00:10"只差 20 分钟，
+					 *   但那是两天，分两组才符合直觉。分组逻辑在 `pure/timeline.ts`（有用例）。
+					 */
+					const groups = groupTimeline(entries);
+					const firstIndex = entries.length > 0 ? entries[0].index : -1;
+					return h("div", null, groups.map((g, gi) => h("div", {
+						key: "g-" + g.bucket,
+						style: gi === 0 ? null : { marginTop: GAP.lg }
+					}, [
+						h("div", {
+							key: "h",
+							style: { display: "flex", alignItems: "center", gap: GAP.sm, marginBottom: GAP.sm }
+						}, [
+							h("span", { key: "l", style: { fontSize: FONT.meta, color: V.ink, fontWeight: 600 } }, g.label),
+							h("span", {
+								key: "n",
+								style: { fontSize: FONT.meta, color: V.idle, fontVariantNumeric: "tabular-nums" }
+							}, g.entries.length + " 条"),
+							h("span", { key: "r", style: { flex: 1, height: "1px", background: V.line } })
+						]),
+						...g.entries.map((e) => h(DecisionEntry, { key: e.index, entry: e, first: e.index === firstIndex }))
+					])));
+				})())
 				: h(Card, { key: "empty", title: "还没有决策记录" },
 					h("div", { style: { fontSize: FONT.body, color: V.muted } },
 						"进了这个功能的工作会话之后，任何一步定了事，都让 agent 往 " + abs +
