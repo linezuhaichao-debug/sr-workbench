@@ -98,16 +98,16 @@ const MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
  */
 const LINK = "#1a73e8";
 /**
- * 主按钮的**填充蓝**（与链接同一支，一个面板只用一支蓝）。
+ * 主按钮的**填充色**（用户口径：「按钮主色改成黑色」）。
  *
- * ★ 为什么不跟宿主走：主题里 `--dsw-alias-brand-primary` = `var(--dsw-static-neutral-bluish-1000)`
- *   —— 那是**中性墨色（近黑）**，而 `--dsw-alias-button-primary-fill` **就等于** `brand-primary`。
- *   也就是说宿主的"主按钮"设计上就是黑的，用令牌永远拿不到蓝（5.1.2 那次改动就是空操作）。
- *   用户口径要蓝 ⇒ 用明确值，白字对比度约 4.6:1（AA）。
+ * ★ 走宿主的 `--dsw-alias-brand-primary`：它本身就是**主按钮的填充色**
+ *   （主题里 `--dsw-alias-button-primary-fill` 就等于它），浅色主题下是近黑、深色主题下自动反过来，
+ *   所以这里用令牌而不是写死 `#000` —— 写死的话深色主题上会"黑底黑字"。
+ *   蓝只留给**链接**（`LINK`）。
  */
-const ACCENT_FILL = "#1a73e8";
-/** 主按钮 hover：同一支蓝提亮一点（不依赖任何宿主令牌）。 */
-const ACCENT_HOVER = "#2b7ff0";
+const ACCENT_FILL = "var(--dsw-alias-brand-primary)";
+/** 主按钮 hover：不依赖任何（可能不存在的）hover 令牌，直接用亮度微调。 */
+const ACCENT_HOVER = ACCENT_FILL;
 const IN = {
 	font: "inherit", fontSize: FONT.body, padding: "5px 8px", borderRadius: "4px",
 	border: "1px solid " + V.line2, background: V.panel, color: V.ink, boxSizing: "border-box", width: "100%"
@@ -172,7 +172,9 @@ function Btn(props) {
 					? {
 						background: hover && !off ? ACCENT_HOVER : ACCENT_FILL,
 						color: "#fff",
-						transition: "background 120ms ease"
+						// 黑色实底上的 hover：亮度微调（不依赖可能不存在的 hover 令牌）
+						filter: hover && !off ? "brightness(1.18)" : "none",
+						transition: "filter 120ms ease"
 					}
 					// 次按钮：官方 `outline` 的描边是 `--dsw-alias-border-l3` 且只有 0.5px，白底上看不见 ——
 					// 换成契约里的 `--dsw-alias-border-l2`（1px），这才是"看得出是按钮"

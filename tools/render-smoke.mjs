@@ -473,7 +473,16 @@ if (WITH_PRIM) {
 	if (prim.length === 0) { results.push({ pass: "按钮配色", missing: ["（没有主按钮）"] }); }
 	for (const p of prim) {
 		const bg = p.style && p.style.background;
-		if (bg !== "#1a73e8") { results.push({ pass: "按钮配色", missing: ["主按钮底色不是蓝：" + String(bg)] }); console.error("✗ [按钮配色] 主按钮底色 = " + String(bg)); }
+		/**
+		 * ★ 主按钮的填充色**跟宿主令牌走**（用户口径：「按钮主色改成黑色」）：
+		 *   `--dsw-alias-brand-primary` 就是主题里主按钮的填充色（浅色近黑 / 深色自动反过来）。
+		 *   这里钉住"用的是这支令牌"，而不是某个写死的色号 —— 写死会在深色主题上变成黑底黑字。
+		 *   （旧断言钉的是蓝 `#1a73e8`；蓝现在只留给链接。）
+		 */
+		if (bg !== "var(--dsw-alias-brand-primary)") {
+			results.push({ pass: "按钮配色", missing: ["主按钮底色不是宿主 brand-primary：" + String(bg)] });
+			console.error("✗ [按钮配色] 主按钮底色 = " + String(bg));
+		}
 	}
 	if (sec.length === 0) results.push({ pass: "按钮配色", missing: ["（没有次按钮）"] });
 	for (const p of sec) {
