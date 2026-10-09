@@ -199,6 +199,47 @@ function Btn(props) {
 	}, props.label);
 }
 
+/**
+ * **返回卡片墙**：圆形图标按钮（用户口径：「用圆形和返回箭头 SVG，跟功能标题一样大」）。
+ *
+ * 尺寸对齐功能标题（`FONT.page` = 21px）：直径 34px、箭头 20px —— 视觉上与标题等高。
+ * 箭头优先用官方图标（它们本身就是 SVG）；官方那套里没有返回箭头时**自绘一个**——
+ * 这里是唯一允许自绘的地方，理由：用户明确要"圆形 + 返回箭头"，而图标名在宿主契约里
+ * 不保证存在，宁可用一个等价的自绘箭头，也不让按钮退化成纯文字。
+ */
+function BackBtn(props) {
+	const [hover, setHover] = React.useState(false);
+	const ICON = PRIMITIVES && (
+		PRIMITIVES.IconArrowLeftOutlineRegular || PRIMITIVES.IconChevronLeftOutlineRegular ||
+		PRIMITIVES.IconArrowBackOutlineRegular || null
+	);
+	const size = 34;
+	return h("button", {
+		key: "back", type: "button", title: "返回卡片墙", "aria-label": "返回卡片墙",
+		onClick: props.onPick,
+		onMouseEnter: () => setHover(true),
+		onMouseLeave: () => setHover(false),
+		style: {
+			width: size, height: size, flex: "0 0 auto", padding: 0,
+			display: "inline-flex", alignItems: "center", justifyContent: "center",
+			borderRadius: "50%", cursor: "pointer",
+			border: "1px solid " + (hover ? COLOR.accent : V.line2),
+			background: hover ? "var(--dsw-alias-bg-layer-2)" : "transparent",
+			color: hover ? COLOR.accent : V.ink,
+			transition: "border-color 120ms ease, background 120ms ease, color 120ms ease"
+		}
+	}, ICON
+		? h(ICON, { size: 20 })
+		// 自绘箭头（24×24 视框里画一个左向箭头，线宽 2，圆头圆角）
+		: h("svg", {
+			width: 20, height: 20, viewBox: "0 0 24 24", fill: "none",
+			stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round"
+		}, [
+			h("path", { key: "l", d: "M19 12H5" }),
+			h("path", { key: "h", d: "M12 19l-7-7 7-7" })
+		]));
+}
+
 /** 折叠区：**收起时里面的字根本不渲染**（不是拿 CSS 藏）。 */
 function Fold(props) {
 	const [open, setOpen] = React.useState(!!props.open);
@@ -1029,7 +1070,7 @@ function FeatureView(props) {
 				background: "var(--dsw-alias-bg-base)", borderBottom: "1px solid " + V.line
 			}
 		}, [
-			Btn({ key: "back", label: "‹ 卡片墙", onPick: props.onBack }),
+			BackBtn({ key: "back", onPick: props.onBack }),
 			h("div", { key: "t", style: { fontSize: FONT.page, fontWeight: 700 } }, d.topic),
 			h("div", { key: "s", style: { flex: 1 } }),
 			Btn({ key: "r", label: "刷新", onPick: props.onRefresh, off: props.phase === "loading" }),
