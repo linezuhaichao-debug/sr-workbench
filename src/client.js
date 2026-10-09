@@ -691,10 +691,11 @@ function BrainstormModule(props) {
 				h("pre", { style: PRE }, preview.instruction || "（还没填够 —— 上面那句说明了缺什么）"))
 		]),
 		/**
-		 * ★ 标题下面那句「按四个入口分组；点文件名用系统默认程序打开」**去掉了**（用户口径：「这句话去掉」）。
-		 *   分组标题自己就说清了"按入口分"；文件名一直是蓝的可点，不必再教一遍。
+		 * ★ 这一段的标题与说明**都去掉了**（用户口径：先说「这句话去掉」，接着说「已有的分析结论 也删了」）。
+		 *   留下的就是那张列表本身：分组标题（`竞品分析（4）`）+ 蓝色文件名。
+		 *   ★ 去掉的只是**标题**，外面那层卡片容器留着（它给列表一个边界，不然会跟上面的输入区糊在一起）。
 		 */
-		h(Card, { key: "have", title: "已有的分析结论" },
+		h(Card, { key: "have" },
 			(g.total || 0) === 0
 				? h("div", { style: { color: V.muted, fontSize: FONT.body } }, "analysis\\ 还是空的 —— 上面四个入口任选一个开始。")
 				: h("div", null, (g.entries || []).map((en) => h("div", { key: en.id, style: { marginBottom: "10px" } }, [
