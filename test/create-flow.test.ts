@@ -425,6 +425,14 @@ test("面板不写盘：整个组合根里没有一处写文件内容的调用",
 	assert.ok(src.includes("createDirectory"), "建目录走 uiWorkspace.createDirectory");
 });
 
+test("配置向导：保存/askme 发出的 session.prompt 必须带 requestId（wire 形状）", () => {
+	const src = fs.readFileSync(BUNDLE, "utf8");
+	// remote 的 wire 形状要求 requestId：漏了会被边界校验拒掉（实测：写配置那一步直接失败）
+	const calls = [...src.matchAll(/session\.prompt\(\{([\s\S]{0,200}?)\}\)/g)].map((m) => m[1]);
+	assert.ok(calls.length >= 2, "至少应有两处 session.prompt 调用，实际 " + calls.length);
+	for (const body of calls) assert.ok(body.includes("requestId"), "session.prompt 缺 requestId：" + body.slice(0, 80));
+});
+
 test("界面不占位：整理建议类的提示不顶在界面上（用户口径）", () => {
 	const src = fs.readFileSync(BUNDLE, "utf8");
 	// ① 「侧边栏里有 N 条索引会话」那句整理建议已经删掉（面板照旧用最新那条，功能不受影响）

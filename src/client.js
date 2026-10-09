@@ -1489,7 +1489,10 @@ export function apply(ctx, config) {
 			pointerPaths: pointerCandidates(roots),
 			stamp: todayCompact()
 		});
-		const pr = await ctx.remote.session.prompt({ sessionId: sid, content: [{ type: "text", text: inst }], mode: "queue" });
+		const pr = await ctx.remote.session.prompt({
+			requestId: "wb-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+			sessionId: sid, mode: "queue", content: [{ type: "text", text: inst }]
+		});
 		if (!pr || pr.ok !== true) return { ok: false, error: "把指令发给会话失败：" + humanError(pr) };
 
 		// 回读核对：先读指针（配置被写到哪了），再读那份配置，比对必填字段
@@ -1537,7 +1540,10 @@ export function apply(ctx, config) {
 			"· 写完后把配置的绝对路径（一行）写进下面这些指针文件（目录不存在先建）："];
 		for (const p of pointerCandidates(roots)) lines.push("  " + p);
 		lines.push("· 跑完只回报一行 OK <配置绝对路径> 或 FAILED <原因>。");
-		const pr = await ctx.remote.session.prompt({ sessionId: sid, content: [{ type: "text", text: lines.join("\n") }], mode: "queue" });
+		const pr = await ctx.remote.session.prompt({
+			requestId: "wb-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+			sessionId: sid, mode: "queue", content: [{ type: "text", text: lines.join("\n") }]
+		});
 		if (!pr || pr.ok !== true) return { ok: false, error: "把指令发给会话失败：" + humanError(pr) };
 		return { ok: true, sid: sid };
 	};
