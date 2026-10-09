@@ -433,6 +433,28 @@ test("配置向导：保存/askme 发出的 session.prompt 必须带 requestId�
 	for (const body of calls) assert.ok(body.includes("requestId"), "session.prompt 缺 requestId：" + body.slice(0, 80));
 });
 
+test("P0 令牌化：刻度上的裸间距/字号/圆角不许再出现在面板源码里", () => {
+	// 判据来源：`src/ui/tokens.js` 是唯一参数源。刻度上的值若还以字面量出现，说明有人绕过了令牌。
+	// （不在刻度上的 10.5/12/14.5/17 与 2/3/5/6/7/9/10/13/14 先留着 —— 各屏美化批次再归位。）
+	const src = fs.readFileSync(path.join(REPO, "src", "client.js"), "utf8");
+	const bad = [];
+	const SP = "gap|margin|marginTop|marginBottom|marginLeft|marginRight|padding|paddingTop|paddingBottom|paddingLeft|paddingRight";
+	for (const px of ["4px", "8px", "12px", "16px", "24px"]) {
+		const re = new RegExp("\\b(?:" + SP + '): "' + px + '"', "g");
+		const n = (src.match(re) || []).length;
+		if (n > 0) bad.push("间距 " + px + " ×" + n);
+	}
+	for (const px of ["11px", "12.5px", "13px", "15px"]) {
+		const n = (src.match(new RegExp('fontSize: "' + px + '"', "g")) || []).length;
+		if (n > 0) bad.push("字号 " + px + " ×" + n);
+	}
+	for (const px of ["3px", "5px", "8px"]) {
+		const n = (src.match(new RegExp('borderRadius: "' + px + '"', "g")) || []).length;
+		if (n > 0) bad.push("圆角 " + px + " ×" + n);
+	}
+	assert.deepEqual(bad, [], "这些值应当引用 src/ui/tokens.js：" + bad.join("、"));
+});
+
 test("界面不占位：整理建议类的提示不顶在界面上（用户口径）", () => {
 	const src = fs.readFileSync(BUNDLE, "utf8");
 	// ① 「侧边栏里有 N 条索引会话」那句整理建议已经删掉（面板照旧用最新那条，功能不受影响）

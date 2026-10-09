@@ -63,6 +63,10 @@ for (const s of skills) {
 	walk(path.join(ROOT, s.name), "");
 	resourceFiles += n;
 	if (n <= 1) problems.push(`${s.name}：除 SKILL.md 外没有兄弟资源（references 才是技能的精华）—— 实际 ${n} 个文件`);
+	// ★ 钉子：每个技能都该有 CONTRIBUTORS。2026-10-09 实测丢过一批（盘上被删、git 索引里还在，
+	//   某次 add -A 把删除记进了提交），而当时的判据只查「有没有兄弟资源」——gdd-fix/gdd-review
+	//   只剩 SKILL.md 才被逮到，其余静默丢了 8 个。这条按名字逐个点。
+	if (!fs.existsSync(path.join(ROOT, s.name, "CONTRIBUTORS"))) problems.push(`${s.name}：缺 CONTRIBUTORS`);
 }
 if (privateFiles.length) problems.push("包里混进了本机私有文件：" + privateFiles.join("、"));
 else ok(`兄弟资源合计 ${resourceFiles} 个文件 · 无 *.local.json`);
