@@ -223,10 +223,14 @@ function BackBtn(props) {
 			width: size, height: size, flex: "0 0 auto", padding: 0,
 			display: "inline-flex", alignItems: "center", justifyContent: "center",
 			borderRadius: "50%", cursor: "pointer",
-			border: "1px solid " + (hover ? COLOR.accent : V.line2),
+			/**
+			 * ★ 颜色按用户口径**用黑色**（`V.ink` = `--dsw-alias-label-primary`）：正常态与悬停态都不变蓝，
+			 *   悬停只靠**底色**（layer-2）与**边线加深**表达 —— 蓝色留给链接与主按钮。
+			 */
+			border: "1px solid " + (hover ? V.ink : V.line2),
 			background: hover ? "var(--dsw-alias-bg-layer-2)" : "transparent",
-			color: hover ? COLOR.accent : V.ink,
-			transition: "border-color 120ms ease, background 120ms ease, color 120ms ease"
+			color: V.ink,
+			transition: "border-color 120ms ease, background 120ms ease"
 		}
 	}, ICON
 		? h(ICON, { size: 20 })
