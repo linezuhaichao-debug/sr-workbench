@@ -72,14 +72,15 @@ test("配置表成组：change set + 验收报告 + 表本体各就各位，且�
 test("五类恒在（空组也出现，count=0）+ 其它兜底", () => {
 	const a = featureArtifacts(LISTING);
 	assert.deepEqual(a.groups.map((g) => g.key), ["brainstorm", "draft", "final", "speech", "config", "other"]);
-	// 每类都带**实际**桶名（界面只显示这个短标签）与一个空的 dynamic
-	assert.equal(a.groups[0].dir, "analysis");
+	// 每类都带桶名（界面只显示这个短标签）与一个空的 dynamic
+	assert.equal(a.groups[0].dir, "analysis", "有文件 ⇒ 显示**实际**位置");
 	assert.equal(a.groups[1].dir, "gdd");
-	assert.equal(a.groups[4].dir, "", "这一类这份清单里是空的，没有目录可说");
+	// ★ 空组回退到**规范落点**（用户实测：空的「定稿」「HTML 宣讲稿」组头没有路径，看着像坏了）
+	assert.equal(a.groups[4].dir, "gdd", "空组显示这一类该放哪里（规范落点），不是留空");
 	assert.equal(a.groups[5].dir, "gdd", "other 这份清单里的文件都在 gdd（含嵌套 UI\\）");
 	assert.ok(a.groups.every((g) => g.dynamic === ""), "没状况就不该有 dynamic");
 	assert.deepEqual(a.counts, { brainstorm: 3, draft: 1, final: 2, speech: 1, config: 0, other: 3 });
-	assert.equal(a.groups[4].dir, "", "这份清单里没有配置表条目");
+	assert.equal(a.groups[4].dir, "gdd", "配置表规范落点是 gdd\\（空组也显示它）");
 	assert.equal(a.total, 10, "面板列出的条目总数（一个都不丢）");
 	assert.equal(a.allPaths.length, a.total);
 	// 子目录里的文件带上了它的子目录

@@ -142,12 +142,17 @@ export function featureArtifacts(input: FeatureListing): {
 		 * `dir` = 这一类**实际**落在哪个桶（面板只显示这个短标签，长说明收进 tooltip）。
 		 * ★ 由**文件本身**算，不写死 —— 万一有文件落错了桶（比如配置交付物写进了 `analysis\`），
 		 *   组头照样如实显示它真正在哪，不替它粉饰。跨目录时按出现顺序列全（用 " · " 连起来）。
+		 *
+		 * ★ 空组（`定稿` / `HTML 宣讲稿` 这类还没产出的）**回退到这一类该在的桶**
+		 *   （`OUTPUT_GROUPS[].dir` 是**规范落点**，不是猜）—— 用户实测指出：
+		 *   空的「定稿」「HTML 宣讲稿」组头没有路径，而其它组都有，看着像坏了。
+		 *   语义仍是清楚的：**有文件时显示实际位置，没有文件时显示该放哪里**。
 		 */
 		const dirs: string[] = [];
 		for (const f of files) if (f.dir && dirs.indexOf(f.dir) < 0) dirs.push(f.dir);
 		return {
 			key: g.key, label: g.label, note: g.note, dynamic: "",
-			dir: dirs.join(" · "), count: files.length, files: files
+			dir: dirs.length > 0 ? dirs.join(" · ") : g.dir, count: files.length, files: files
 		};
 	});
 	const counts: Record<string, number> = {};
