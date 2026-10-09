@@ -292,7 +292,12 @@ function PathLine(props) {
 				key: "b", type: "button", onClick: () => props.onOpen(String(props.text || "")), title: "在文件管理器 / 默认程序里打开这个路径",
 				style: {
 					font: "inherit", fontSize: FONT.meta, border: "1px solid " + V.line2, background: "transparent",
-					color: LINK, borderRadius: "4px", padding: "0 6px", cursor: "pointer", whiteSpace: "nowrap", flex: "0 0 auto"
+					/**
+					 * ★ 颜色跟**左边那行路径同一个灰**（用户口径：「这个不要用蓝色，跟左边的路径一个灰就行」）。
+					 *   它不是"链接"，是路径行上的一个附属动作 —— 用链接的蓝会把它抬成一等公民，
+					 *   反而跟路径本身抢注意力。蓝留给真正的链接（文件名那种）。
+					 */
+					color: V.muted, borderRadius: "4px", padding: "0 6px", cursor: "pointer", whiteSpace: "nowrap", flex: "0 0 auto"
 				}
 			}, "打开路径")
 			: null
