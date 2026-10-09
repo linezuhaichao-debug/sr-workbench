@@ -303,12 +303,17 @@ function NewCard(props) {
 		onBlur: () => setFocus(false),
 		style: {
 			boxSizing: "border-box", minHeight: "132px", cursor: off ? "default" : "pointer",
-			border: "1px dashed " + (on ? V.brand : V.line2), borderRadius: RADIUS.card,
-			background: on ? "var(--dsw-alias-bg-layer-2)" : "transparent",
+			/**
+			 * ★ **边线、底色、阴影全部与正常功能卡一致**（用户口径：「大小 边线样式都跟正常的卡片一样」）。
+			 *   原来用虚线是为了"一眼看出这是动作不是功能"—— 用户否了：它就是卡片墙里的一张卡，
+			 *   靠**内容**（大加号 + 新建功能）区分，不靠边线。
+			 */
+			border: "1px solid " + (on ? V.brand : V.line2), borderRadius: RADIUS.card,
+			background: on ? "var(--dsw-alias-bg-layer-2)" : V.panel,
 			display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
 			gap: GAP.sm, color: on ? V.brand : V.muted, opacity: off ? 0.5 : 1,
-			boxShadow: focus ? "0 0 0 " + LINE.ring + " " + COLOR.accentSoft : (on ? SHADOW.hover : "none"),
-			transition: "border-color 120ms ease, background 120ms ease, color 120ms ease",
+			boxShadow: focus ? "0 0 0 " + LINE.ring + " " + COLOR.accentSoft : (on ? SHADOW.float : SHADOW.hover),
+			transition: "border-color 120ms ease, background 120ms ease, color 120ms ease, box-shadow 120ms ease",
 			outline: "none"
 		}
 	}, [
