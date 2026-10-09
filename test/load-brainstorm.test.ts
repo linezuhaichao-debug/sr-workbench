@@ -1,88 +1,151 @@
 /**
- * 头脑风暴工作面加载器（工单 23）—— 走 `WorkspacePort` 的**文件侧替身（node:fs 直读真盘）**。
+ * 头脑风暴工作面加载器 —— 走 `WorkspacePort` 的文件侧替身（`node:fs` 直读真盘）。
  *
- * ★ 两条路一起测：
- *   ① **真实工作区数据**：`features\讨伐`（原 `联盟悬赏`）的真产物清单（`loadFeatureDetail` 给）+ 真交接件的
- *      `source_skill` → 四入口归类结果；
- *   ② **格式样例**：`test/fixtures/analysis/` 里的两份新格式产物（§4.2 的两种新格式）→ 解析结果。
- * ★ 顺带钉住"出口判据那一句话是**搬**过来的，不是这一层重算的"（`notes` 只透传 `stage.note`）。
+ * 两条路一起测：
+ *   ① **真实工作区数据**：真产物清单 + 真交接件的 `source_skill` → 四入口归类结果
+ *      （条数**不写死**：与磁盘同一时刻的真值比）；
+ *   ② **格式样例**：两种固定格式（§4.2）的解析 —— 样例在临时目录里**当场写出来**，
+ *      不录 fixture（录下来的"正常"会掩盖真实数据的怪形状）。
  */
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import { loadBrainstorm } from "../src/load/brainstorm.ts";
 import { loadFeatureDetail } from "../src/load/feature.ts";
 import { createFsPort } from "../src/port/fs.ts";
+import { featureRoot, featureTopics, requireRealData, testPort } from "./paths.ts";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const FIX = path.join(HERE, "fixtures");
-const SR_ROOT = "D:\\TimeMachine\\GameDesignOS\\workspace";
-// ★ 2026-10-08 身份迁移：目录名 `联盟悬赏` → `讨伐`（文档名没变，正文改名不在那次范围里）
-const FEATURE = path.join(SR_ROOT, "features", "讨伐");
 const LEGACY_FILE = "legacy-analysis_飞船装置_20260930.md";
 const NOTE_FILE = "human-note_BOSS血量按联盟共享_20260921.md";
 
-test("真数据：联盟悬赏的分析产物按四入口归类（真文件名 + 真 source_skill）", async () => {
-	const port = createFsPort({ roots: [SR_ROOT] });
-	const detail = await loadFeatureDetail(port, { root: FEATURE });
-	const analysis = detail.artifacts.groups.filter((g: any) => g.key === "analysis")[0];
-	assert.ok(analysis && analysis.count >= 3, "联盟悬赏的 analysis 组应有产物");
+const LEGACY_TEXT = [
+	"---",
+	"doc_type: legacy_analysis",
+	"topic: 飞船装置",
+	"source: source/飞船装置_旧案.docx",
+	"analyzed_at: 20260930",
+	"---",
+	"",
+	"# 飞船装置（旧文档分析）",
+	"",
+	"## 仍然有效的结论",
+	"- 装置槽位是 3 个。",
+	"",
+	"## 已废弃 / 不适用",
+	"- 旧版按等级解锁 —— 已改成按章节进度解锁（理由：等级和进度脱钩了）。",
+	"",
+	"## 可复用条目（表格：旧文档位置 | 内容 | 去向）",
+	"| 旧文档位置 | 内容 | 去向 |",
+	"| --- | --- | --- |",
+	"| 3.2 节 | 槽位 3 个 | §4 R1 |",
+	"",
+	"## 原文（转换后）",
+	"（旧文档全文……）",
+	""
+].join("\n");
 
-	const got = await loadBrainstorm(port, { root: FEATURE, files: analysis.files, stage: detail.stage });
+const NOTE_TEXT = [
+	"---",
+	"doc_type: human_note",
+	"topic: BOSS血量",
+	"confidence: high",
+	"date: 20260921",
+	"author: 策划",
+	"---",
+	"",
+	"# BOSS 血量按联盟共享",
+	"",
+	"> 原话：「BOSS 的血条应该是全盟共享的，一个人打全盟都能看到」",
+	"",
+	"## 结论",
+	"血条展示按联盟聚合。",
+	"",
+	"## 边界",
+	"- （待定）",
+	"",
+	"## 落点",
+	"- §5 UI-M1 UE2 血条区",
+	""
+].join("\n");
+
+/** 当场写出两份样例，返回目录（收尾删掉）。 */
+function writeSamples(): string {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "srwb-brainstorm-"));
+	fs.mkdirSync(path.join(dir, "analysis"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "analysis", LEGACY_FILE), LEGACY_TEXT, "utf8");
+	fs.writeFileSync(path.join(dir, "analysis", NOTE_FILE), NOTE_TEXT, "utf8");
+	return dir;
+}
+
+test("真数据：分析产物按四入口归类，总数 == analysis 桶里的文件数", async () => {
+	requireRealData();
+	const topic = featureTopics()[0];
+	const port = testPort();
+	const detail = await loadFeatureDetail(port, { root: featureRoot(topic) });
+	assert.ok(detail.counts.brainstorm >= 0);
+
+	const got = await loadBrainstorm(port, {
+		root: featureRoot(topic),
+		files: detail.outputs.groups.filter((g: any) => g.key === "brainstorm")[0].files
+			.map((f: any) => ({ name: f.name, rel: f.rel, subdir: f.subdir }))
+	});
 	assert.deepEqual(got.groups.entries.map((e: any) => e.id), ["analysis", "concept", "legacy", "humannote"]);
-	// 真数据：concept-triage + feature-concept + handoff（它的 source_skill = sr-concept）
-	assert.equal(got.groups.counts.concept, 3);
-	assert.equal(got.groups.counts.legacy, 0);
-	// ★ 2026-09-30 数据漂移：真机上面板「人工补充」入口真的用了一次 ⇒ 这个功能现在有 1 份 human-note
-	assert.equal(got.groups.counts.humannote, 1);
-	assert.equal(got.groups.total, analysis.count);
-	assert.deepEqual(got.legacy, []);
-	assert.equal(got.humannote.length, 1);
-	assert.equal(got.humannote[0].name, "human-note_去掉折算伤害，只保留真实伤害_20260930.md");
-	// 原话逐字（人工补充那份的关键口径：原话不许被摘要替代）
-	assert.ok(got.humannote[0].quote.text.includes("结算显示和排行榜都只以真实伤害为准"), "原话逐字带出来：" + got.humannote[0].quote.text);
-	assert.deepEqual(got.unreadable, []);
-	// 出口判据（analysis 非空）→ 那句提示不该出现
-	assert.deepEqual(got.notes, []);
+	assert.equal(got.groups.total, detail.counts.brainstorm);
+	assert.deepEqual(got.unreadable, [], "真实数据里不该有读不动的产物");
+	// 每一件产物都必须落进某一个入口（或如实进 other），一件都不许消失
+	const sum = got.groups.entries.reduce((n: number, e: any) => n + e.count, 0) + got.groups.other.length;
+	assert.equal(sum, got.groups.total);
 });
 
-test("格式样例：两种新格式都解析出来（四段章节 / 原话逐字）", async () => {
-	const port = createFsPort();
-	const files = [
-		{ name: LEGACY_FILE, rel: "analysis/" + LEGACY_FILE },
-		{ name: NOTE_FILE, rel: "analysis/" + NOTE_FILE }
-	];
-	const got = await loadBrainstorm(port, {
-		root: FIX,
-		files: files,
-		stage: { note: "source 里有 2 个源文件，但 analysis 还是空的 —— 建议先跑一次分析" }
-	});
-	assert.equal(got.legacy.length, 1);
-	assert.equal(got.humannote.length, 1);
-	assert.equal(got.legacy[0].rel, "analysis/" + LEGACY_FILE);
-	assert.ok(got.legacy[0].abs.endsWith(LEGACY_FILE));
-	assert.deepEqual(got.legacy[0].sections.map((s: any) => s.present), [true, true, true, true]);
-	assert.equal(got.humannote[0].quote.text, "「BOSS 的血条应该是全盟共享的，一个人打全盟都能看到」");
-	assert.equal(got.groups.counts.legacy, 1);
-	assert.equal(got.groups.counts.humannote, 1);
-	// ★ 出口判据是**搬运**的：这一层不重算
-	assert.deepEqual(got.notes, ["source 里有 2 个源文件，但 analysis 还是空的 —— 建议先跑一次分析"]);
+test("格式样例：两种固定格式都解析出来（四段章节 / 原话逐字）", async () => {
+	const dir = writeSamples();
+	try {
+		const port = createFsPort({ roots: [dir] });
+		const files = [
+			{ name: LEGACY_FILE, rel: "analysis/" + LEGACY_FILE },
+			{ name: NOTE_FILE, rel: "analysis/" + NOTE_FILE }
+		];
+		const got = await loadBrainstorm(port, {
+			root: dir, files: files,
+			stage: { note: "source 里有 2 个源文件，但 analysis 还是空的 —— 建议先跑一次分析" }
+		});
+		assert.equal(got.legacy.length, 1);
+		assert.equal(got.humannote.length, 1);
+		assert.equal(got.legacy[0].rel, "analysis/" + LEGACY_FILE);
+		assert.ok(got.legacy[0].abs.endsWith(LEGACY_FILE));
+		assert.deepEqual(got.legacy[0].sections.map((s: any) => s.present), [true, true, true, true]);
+		assert.equal(got.legacy[0].source, "source/飞船装置_旧案.docx");
+		assert.equal(got.legacy[0].reuse.rows.length, 1);
+		assert.equal(got.humannote[0].quote.text, "「BOSS 的血条应该是全盟共享的，一个人打全盟都能看到」");
+		assert.equal(got.groups.counts.legacy, 1);
+		assert.equal(got.groups.counts.humannote, 1);
+		// ★ 出口判据是**搬运**的：这一层不重算
+		assert.deepEqual(got.notes, ["source 里有 2 个源文件，但 analysis 还是空的 —— 建议先跑一次分析"]);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("读不动的文件如实报出来（不当成「没有」）", async () => {
-	const port = createFsPort();
-	const got = await loadBrainstorm(port, {
-		root: FIX,
-		files: [
-			{ name: LEGACY_FILE, rel: "analysis/" + LEGACY_FILE },
-			{ name: "sr-gdd-handoff_不存在_20260930.json", rel: "analysis/sr-gdd-handoff_不存在_20260930.json" }
-		]
-	});
-	assert.equal(got.legacy.length, 1);
-	assert.equal(got.unreadable.length, 1);
-	assert.equal(got.unreadable[0].name, "sr-gdd-handoff_不存在_20260930.json");
-	assert.ok(got.unreadable[0].why.includes("source_skill"));
+	const dir = writeSamples();
+	try {
+		const port = createFsPort({ roots: [dir] });
+		const got = await loadBrainstorm(port, {
+			root: dir,
+			files: [
+				{ name: LEGACY_FILE, rel: "analysis/" + LEGACY_FILE },
+				{ name: "sr-gdd-handoff_不存在_20260930.json", rel: "analysis/sr-gdd-handoff_不存在_20260930.json" }
+			]
+		});
+		assert.equal(got.legacy.length, 1);
+		assert.equal(got.unreadable.length, 1);
+		assert.equal(got.unreadable[0].name, "sr-gdd-handoff_不存在_20260930.json");
+		assert.ok(got.unreadable[0].why.includes("source_skill"));
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });

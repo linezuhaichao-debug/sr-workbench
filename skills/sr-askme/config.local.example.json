@@ -1,0 +1,7 @@
+{
+  "sr_workspace": "<必填｜产出落盘根目录，如 D:\\sr-workspace>",
+  "sr_project": "<必填｜Unity 工程根目录，含 Assets\\，如 D:\\TimeMachine\\PlanetRoot>",
+  "config_root": "<仅 sr-config 需要｜策划配置 .xlsx/.xlsm 根目录，如 D:\\TimeMachine\\planner\\策划配置>",
+  "gtgenerator_workdir": "<可选｜GTGenerator 工作目录，含 gtypes.xml/normaltxt.xml；不用该 skill 可留空>",
+  "configured_at": "<首次配置日期 YYYYMMDD>"
+}

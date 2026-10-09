@@ -1,121 +1,127 @@
 /**
- * 宿主半侧（Node ESM 入口，构建成 `lib/index.js`）—— 工单 05：**技能随包注册**。
+ * 宿主半侧（Node ESM 入口，构建成 `lib/index.js`）—— **技能随插件走，包内就是唯一那份**。
  *
- * 为什么要有这半侧的行为：实测（`05-skill-catalog-premise.md`）证明 sr 技能的可见性**完全由 cwd 决定** ——
- * 同一台机器、同一个 profile，cwd 从 `D:\TimeMachine` 换到功能文件夹，10 个 sr 技能**全部消失**
- * （磁盘侧那 10 个来自 `.agents\skills`，靠"回退 cwd 才命中"）。所以让技能随包走不是优化，是硬前提。
+ * ── 这一版为什么改（2026-10-09，用户口径）────────────────────────────────────
+ *   上一版把 SKILL.md **正文内联**进 `lib/index.js`，兄弟资源（references / scripts / tools）
+ *   留给磁盘的 `.agents\skills`。用户一句话点破：**references 才是技能的精华** ——
+ *   于是"只有正文"的那份等于 11 个空壳（实测：11 个技能**每个**都有兄弟资源）。
+ *   而且同事的插件行不带 config，宿主半侧找不到他工作区的技能目录 ⇒ `resourceBase` 只能落 `opaque`，
+ *   也就是说**旧设计对同事本来就是坏的**。
  *
- * 做什么：把构建期生成进包里的 12 个 sr 技能，逐条 `ctx.skills.register(...)` 到**本行所属的层**
- * （宿主行 ⇒ cordis 无 scope ⇒ global 层 ⇒ 所有会话可见，与今天的行为一致）。
- * 不做什么：**不 `provide` 任何服务**，不碰磁盘技能目录的正文，不写任何文件。
+ *   这一版：技能源码落在**插件仓库的 `skills/`**（随 tgz 分发），`apply()` 时
+ *     ① 从 `<包根>/skills/<名>/SKILL.md` 读正文（运行时读，不再内联）；
+ *     ② `resourceBase` 直接指 `<包根>/skills/<名>` ⇒ **正文与 references 同源同包**，谁都读得到。
+ *   ⇒ 同事只装这一个包，`/sr-*` 就是**完整可用**的；用户自己也只维护这一份（改完重启 DSH 生效）。
  *
- * ── 兄弟资源（references / tools / resources）的取舍：**只嵌正文**（要点 §2 的方案 A）─────
- * 进包的只有 SKILL.md 正文（118.7 KB）；兄弟资源合计 1.51 MB（`sr-gdd-html` 一个占 1.09 MB）**没进包**。
- * 所以本文件对"有兄弟资源"的技能挂 `resourceBase`：
- *   · 磁盘技能目录存在 ⇒ `{kind:'directory', path: <磁盘根>/<技能名>}`（与磁盘侧今天给出的形状一致）；
- *   · 不存在（同事机器上没 clone 技能目录）⇒ `{kind:'opaque', description: …}`，**如实说明资源不可用**，
- *     绝不假装资源可用。
- * ★ 结论必须写清楚：**只嵌正文 ≠ 技能完整可用**。纯正文流程（sr-concept / sr-gdd-human / …）不受影响；
- *   依赖兄弟文件的环节（如 `sr-askme` 的 `references/decision.schema.json`、`sr-gdd-html` 的 `tools/`）
- *   仍然要本机那份磁盘技能目录。连兄弟资源一起打包是后续票的选项。
+ * ── 不做的事 ──────────────────────────────────────────────────────────────
+ *   · **不** `provide` 任何服务；**不**写任何文件（写盘是技能里 agent 的事）。
+ *   · **不**去猜磁盘技能根：技能的唯一出处就是包内 `skills/`（磁盘上若还有同名技能，
+ *     它按 `dsh-skill-filesystem` 的 rank（project-agents 200 < bundled 600）自然赢 —— 那是宿主规则，不归这里管）。
  *
- * ── 与磁盘侧同名技能的优先级（读 dsh-skill 源码得出，别改这里）─────────────────────────
- *   project-dsh 100 < project-agents 200 < **runtime 250** < custom 300 < user-dsh 400 < user-agents 500 < bundled 600
- *   ⇒ 在 `cwd` 命中 `.agents\skills` 的会话里（今天的工作会话），**磁盘那一份仍然赢**，本文件不改变
- *   现有行为；只有在 cwd 够不到磁盘技能目录时，随包这一份才顶上（`05-skill-catalog-premise.md` 的处理臂）。
+ * ── 排障 ─────────────────────────────────────────────────────────────────
+ *   契约里的技能一个都没注册？先看 `<包根>/skills/` 在不在（`npm pack` 的 `files` 里必须含 `skills`），
+ *   再看日志里那行 `[sr-workbench] 随包注册…`。
  */
 import fs from "node:fs";
 import path from "node:path";
-import { SKILLS, SKILLS_MANIFEST } from "./generated/skills.ts";
+import { fileURLToPath } from "node:url";
+
+import { parseSkillFile } from "./pure/skillmeta.ts";
 
 /** 要求 `ctx.skills`（`@deepseek-ai/dsh-skill` 的注册表服务）；插件行落在宿主 ⇒ 注册进 global 层。 */
 export const inject = ["skills"];
 
-/** 磁盘根找不到时给模型/用户看的话——必须**如实**说明兄弟资源不可用。 */
-const OPAQUE_DESCRIPTION =
-	"随包技能：只嵌入了 SKILL.md 正文，references/ tools/ resources/ 等兄弟资源没有随包分发，磁盘上也找不到技能目录";
+/** 技能目录名前缀（只收 `sr-*`）。 */
+const PREFIX = "sr-";
 
-/** 每个技能有几个兄弟资源（构建期量出来的，写进 SKILLS_MANIFEST.files）。 */
-const RESOURCE_FILES = new Map(SKILLS_MANIFEST.files.map((f) => [f.name, f.resources]));
+/** 本文件所在包的根目录（`lib/index.js` 的上一级）。 */
+export function packageRootOf(moduleUrl) {
+	return path.resolve(path.dirname(fileURLToPath(moduleUrl)), "..");
+}
 
-/**
- * 找"磁盘上的技能根"。只用于 `resourceBase`（兄弟资源解析），**技能的可见性不依赖它**。
- * 顺序：宿主行 config 的 `skillsRoot` → 环境变量 `SR_SKILLS_ROOT` →
- *       `<config.projectRoot>/.agents/skills`（与 `dsh-skill-filesystem` 的 project-agents 根同构，
- *        本机 web profile 的 `sr-workbench` 行里就配了 `projectRoot` ⇒ 换台机器只要配了它也能命中）→
- *       构建期记录的源目录（生成 `src/generated/skills.ts` 时的那台机器上的路径）。
- * 都不存在就返回 `undefined`（走 opaque）。
- * @param {{ skillsRoot?: unknown, projectRoot?: unknown } | undefined} config 宿主行传入的 config
- */
-function findDiskSkillsRoot(config) {
-	const candidates = [];
-	const push = (v) => { if (typeof v === "string" && v.trim() !== "") candidates.push(v); };
-	push(config?.skillsRoot);
-	push(process.env.SR_SKILLS_ROOT);
-	if (typeof config?.projectRoot === "string" && config.projectRoot.trim() !== "") {
-		candidates.push(path.join(config.projectRoot, ".agents", "skills"));
-	}
-	candidates.push(SKILLS_MANIFEST.source);
-	for (const candidate of candidates) {
-		try {
-			if (fs.statSync(candidate).isDirectory()) return path.resolve(candidate);
-		} catch {
-			// 不存在/没权限：试下一个候选，别让资源解析影响技能注册本身
-		}
-	}
-	return undefined;
+/** 包内技能根。 */
+export function skillsRootOf(pkgRoot) {
+	return path.join(pkgRoot, "skills");
 }
 
 /**
- * 给一条技能算 `resourceBase`。没有兄弟资源的技能**不挂**（没什么可解析的，别造字段）。
- * 导出是为了让仓内用例能直接钉住"磁盘根不在 ⇒ opaque"这条（真机上一直有磁盘根，测不到那一支）。
- * @param {string | undefined} diskRoot 磁盘技能根（找不到时 undefined）
- * @param {string} name 技能名（= 磁盘上的目录名）
+ * 扫一个技能根 → 可注册的技能数组 + **如实报出来的问题**（缺 frontmatter / 读不动 / 没正文…）。
+ * 导出是为了让仓内用例能在临时目录上钉住"缺东西时不注册"这条，而不必动真包。
+ * @param root 技能根（通常是 `<包根>/skills`）
  */
-export function resolveResourceBase(diskRoot, name) {
-	if ((RESOURCE_FILES.get(name) ?? 0) === 0) return undefined;
-	if (diskRoot !== undefined) {
-		const dir = path.join(diskRoot, name);
-		try {
-			if (fs.statSync(dir).isDirectory()) return { kind: "directory", path: dir };
-		} catch {
-			// 落到 opaque
-		}
+export function loadBundledSkills(root) {
+	const skills = [];
+	const problems = [];
+	let entries = [];
+	try {
+		entries = fs.readdirSync(root, { withFileTypes: true });
+	} catch (e) {
+		return { skills: skills, problems: ["技能根读不到：" + root + "（" + String((e && e.code) || e) + "）"] };
 	}
-	return { kind: "opaque", description: OPAQUE_DESCRIPTION };
+	for (const e of entries.filter((d) => d.isDirectory() && d.name.startsWith(PREFIX)).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+		const dir = path.join(root, e.name);
+		const file = path.join(dir, "SKILL.md");
+		let text = "";
+		try {
+			text = fs.readFileSync(file, "utf8");
+		} catch (err) {
+			problems.push(e.name + "：没有 SKILL.md（" + String((err && err.code) || err) + "）");
+			continue;
+		}
+		const parsed = parseSkillFile(text, e.name);
+		if (parsed === null) {
+			problems.push(e.name + "：SKILL.md 读不出 frontmatter（缺 `name`？）—— **不注册**，宁缺勿假");
+			continue;
+		}
+		if (parsed.body.trim() === "") {
+			problems.push(e.name + "：SKILL.md 只有 frontmatter、没有正文 —— **不注册**");
+			continue;
+		}
+		skills.push({
+			name: parsed.name,
+			description: parsed.description,
+			content: parsed.body,
+			invocation: parsed.invocation,
+			/** 正文与兄弟资源同在一个目录 ⇒ 模型读 references 走这里。 */
+			resourceBase: { kind: "directory", path: dir },
+			dir: dir
+		});
+	}
+	return { skills: skills, problems: problems };
 }
 
 /**
- * 注册全部随包技能。逐条来自 `src/generated/skills.ts`（构建期生成、入库、由 `npm run check:skills` 防漂移）。
+ * 注册全部随包技能（正文 + `resourceBase` 都指向包内 `skills/<名>/`）。
  * @param {any} ctx cordis 上下文（需要 `skills` 服务）
- * @param {{ skillsRoot?: unknown, projectRoot?: unknown } | undefined} config 宿主行 config
+ * @param {{ skillsRoot?: unknown } | undefined} config 宿主行 config（`skillsRoot` 只作排障用的覆盖项）
  */
 export function apply(ctx, config) {
-	const diskRoot = findDiskSkillsRoot(config);
-	let withResources = 0;
-	let opaque = 0;
+	const override = config && typeof config.skillsRoot === "string" && config.skillsRoot.trim() !== "" ? config.skillsRoot : "";
+	const root = override !== "" ? path.resolve(override) : skillsRootOf(packageRootOf(import.meta.url));
+	const { skills, problems } = loadBundledSkills(root);
 
-	for (const skill of SKILLS) {
-		const resourceBase = resolveResourceBase(diskRoot, skill.name);
-		if (resourceBase !== undefined) {
-			withResources += 1;
-			if (resourceBase.kind === "opaque") opaque += 1;
-		}
+	for (const s of skills) {
 		ctx.skills.register({
-			name: skill.name,
-			description: skill.description,
-			content: skill.content,
+			name: s.name,
+			description: s.description,
+			content: s.content,
 			source: "bundled",
-			invocation: skill.invocation,
-			// 省略 = 不挂这个字段（纯正文技能没有兄弟资源可解析）
-			...(resourceBase === undefined ? {} : { resourceBase }),
+			invocation: s.invocation,
+			resourceBase: s.resourceBase
 		});
 	}
 
-	const modelVisible = SKILLS.filter((s) => s.invocation.modelInvocable).length;
+	const modelVisible = skills.filter((s) => s.invocation.modelInvocable).length;
+	const bodyBytes = skills.reduce((a, s) => a + Buffer.byteLength(s.content, "utf8"), 0);
 	ctx.logger?.info?.(
-		`[sr-workbench] 随包注册 ${SKILLS.length} 个 sr 技能（模型可见 ${modelVisible} · 用户专用 ${SKILLS.length - modelVisible}）` +
-			`· 正文 ${(SKILLS_MANIFEST.bodyBytes / 1024).toFixed(1)} KB · 有兄弟资源 ${withResources} 个` +
-			`（磁盘技能根${diskRoot === undefined ? "未找到 ⇒ resourceBase=opaque" : "：" + diskRoot}${diskRoot === undefined ? "" : "，其中 " + opaque + " 个落到 opaque"}）`,
+		`[sr-workbench] 随包注册 ${skills.length} 个 sr 技能（模型可见 ${modelVisible} · 用户专用 ${skills.length - modelVisible}）` +
+			`· 正文 ${(bodyBytes / 1024).toFixed(1)} KB · 技能根 ${root}` +
+			(problems.length ? ` · ⚠ ${problems.length} 个没注册：${problems.join("；")}` : "")
 	);
+	if (skills.length === 0) {
+		ctx.logger?.warn?.(
+			`[sr-workbench] 一个技能都没注册 —— 检查 ${root} 是否存在、` +
+				`以及 package.json 的 files 里有没有 "skills"（打包漏了就会这样）`
+		);
+	}
 }

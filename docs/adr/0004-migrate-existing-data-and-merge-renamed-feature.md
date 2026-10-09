@@ -1,5 +1,8 @@
 # 已有数据迁入 features\ 结构，并把改名裂开的两个目录合并
 
+> ⚠️ **已被 [ADR 0007](./0007-v5-cards-and-a-single-decision-ledger.md) 取代**：身份层的合并/迁移不再做
+> （真实数据里那两次改名保持现状）。下面这份记录的是当时的一次性迁移，保留作历史。
+
 工作区根上**并存两代布局**：旧的扁平层（`analysis\` `concept\` `decisions\` `evidence\` `experiments\` `inbox\` `proposals\` `retrospectives\` `scripts\` `运行包_联盟悬赏\` `design-asset-index.json` + 它的 `.backup.20260929` + `game.designos.yaml`）和新的 `features\<主题>\<桶>\`（68 个文件）。两个 UE 交付 zip 也还在根上，而它们该去的归档位是 `features\<主题>\source\UE交付_<日期>\`。更关键的是：`features\神话宝库\`（38 个文件）与 `features\诸神降临\`（2 个文件）现在作为**两个功能**并存——改名裂开已经真实发生了。
 
 因此：**把旧层中属于某功能的产物迁进 `features\<主题>\<桶>\`；旧层原地保留并标注"历史归档，不再写入"**，面板只读新层。**`神话宝库` 与 `诸神降临` 认定为同一个功能**（同一 `feature_id`，`诸神降临` 为当前标签，`神话宝库` 进 `aliases`），38 个文件并入。`design-asset-index.json` 及其 backup 不迁移（§3.4 已砍掉该职能）。

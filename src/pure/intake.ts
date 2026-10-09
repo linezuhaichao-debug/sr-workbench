@@ -14,6 +14,11 @@
  *   这里只 **re-export**（`DRAFT_ACTIONS` / `buildDraftInstruction`）—— 面板侧读 `INTAKE` 就够，
  *   不会出现"client.js 里再抄一份"的第二份实现。
  *
+ * ★ v5（重写）：**文档生成工作面整屏删除** ⇒ 上面那条 re-export（以及 `./draftstep.ts` 整个模块）
+ *   一并删掉。这个模块现在只有一件事：**头脑风暴四入口的指令组装**。
+ *   四入口的**表**仍然只有一份（`./analysisdoc.ts` 的 `ENTRANCES`，这里 re-export 成
+ *   `BRAINSTORM_KINDS`）—— 界面卡片、前置条件、"已有的分析结论"的归类都读它。
+ *
  * ★ 工单 31（收口）：**老收件箱那一组删掉了** —— `INTAKE_KINDS`（四种方式的表）与
  *   `buildInstruction`（四种方式的组装器），以及只被它们引用的 `DOC_EXT` / `TEXT_EXT` /
  *   `isDoc` / `isTextExt` / `safeName` / `extOf`。
@@ -23,7 +28,6 @@
  */
 
 import { ENTRANCES, humanNoteName, legacyDocName } from "./analysisdoc.ts";
-import { DRAFT_ACTIONS_TABLE, DRAFT_PHASES, buildDraftInstruction } from "./draftstep.ts";
 
 const INTAKE = (function () {
 	const isWinAbs = (p) => /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p) || /^[\\/]/.test(p);
@@ -149,7 +153,7 @@ const INTAKE = (function () {
 			};
 		}
 		const outDir = root + "\\analysis";
-		const srcDir = root + "\\source";
+		const srcDir = root + "\\evidence";
 		const tail = "阶段交给了 skill / 会话里的 AI：" + e.handoff.replace(/（面板不重画流程）$/, "") +
 			" —— 有决策门就停下来等我拍板，不要自己往下走。";
 
@@ -217,10 +221,10 @@ const INTAKE = (function () {
 				"---",
 				"doc_type: legacy_analysis",
 				"topic: " + (topic || "<功能主题>"),
-				"source: source/<原件文件名>",
+				"source: evidence/<原件文件名>",
 				"analyzed_at: " + (date || "<YYYYMMDD>"),
 				"---",
-				"（`source:` 指向原件在 `source\\` 里的位置 —— 产出文档的身份信息必须指回原件。）",
+				"（`source:` 指向原件在 `evidence\\` 里的位置 —— 产出文档的身份信息必须指回原件。）",
 				"3) 正文按**四段固定章节**，标题逐字用这几个、一个都不少：",
 				"## 仍然有效的结论",
 				"## 已废弃 / 不适用",
@@ -302,17 +306,13 @@ const INTAKE = (function () {
 		//   `DOC_EXT` / `TEXT_EXT` / `extOf` / `isDoc` / `isTextExt` / `safeName`）——
 		//   "四种输入方式"这个语义现在只有一种做法：`BRAINSTORM_KINDS`（四入口）。
 		BRAINSTORM_KINDS: ENTRANCES,
-		// ★ 工单 24：文档生成工作面的动作 + 三段式组装器（表只有一份，在 `./draftstep.ts`）
-		//   ★ 工单 24c：`DRAFT_PHASES` 也一并 re-export —— Y 形两层（纸面动作 / 支线出口）
-		//     各画哪些动作由它给，**界面不再自己列 id**（列 id 就会变成第二份定义）。
-		DRAFT_ACTIONS: DRAFT_ACTIONS_TABLE,
-		DRAFT_PHASES: DRAFT_PHASES,
+		// ★ v5：文档生成工作面（`DRAFT_ACTIONS` / `buildDraftInstruction`）随那一屏一起删除 ——
+		//   面板只剩「头脑风暴 / 决策记录 / 最终产物」三个模块，这里也就只剩头脑风暴这一套。
 		parseMaterial: parseMaterial, parseMaterials: parseMaterials,
 		baseName: baseName,
 		deriveTopic: deriveTopic,
 		describeMaterials: describeMaterials, hasPathMaterial: hasPathMaterial,
-		buildBrainstormInstruction: buildBrainstormInstruction,
-		buildDraftInstruction: buildDraftInstruction
+		buildBrainstormInstruction: buildBrainstormInstruction
 	};
 })();
 

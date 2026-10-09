@@ -1,9 +1,7 @@
 /**
- * `WorkspacePort` 的**测试替身**（spec「测试接缝」明确要求）：
- *
- *   · 文件侧 = 直接用 `node:fs` 读**真实工作区**（不录制 fixture —— 录制件会把
- *     "真实定稿里有 4 处 fenced code 会崩"这类问题一起录成"正常"）；
- *   · 指令侧 = **记录器**：记下收到的指令文本与参数，不真的发出。
+ * `WorkspacePort` 的**测试替身**：文件侧直接用 `node:fs` 读**真实工作区**
+ * （不录制 fixture —— 录制件会把"真实文件里的怪形状"一起录成"正常"）；
+ * 指令侧 = **记录器**：记下收到的指令文本与参数，不真的发出。
  *
  * ★ 分页口径照 DSH（`WorkspaceFileText`）：行号 1-based，末行由结尾的 `\n` 终止
  *   （即 `"a\nb\n"` 是 2 行，不是 3 行）。
@@ -14,11 +12,11 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import type { ChangeEvent, DirEntry, ListResult, ReadRange, ReadResult, RemoteOutcome, StatResult, WorkspacePort } from "./types.ts";
+import type { DirEntry, ListResult, ReadRange, ReadResult, RemoteOutcome, StatResult, WorkspacePort } from "./types.ts";
 
 /** 一次指令侧调用的留痕。 */
 export interface RecordedCall {
-	method: "prompt" | "setPermission" | "renameSession" | "ensureWorkspace" | "createSession";
+	method: "prompt" | "execCommand" | "renameSession" | "ensureWorkspace" | "createSession";
 	args: unknown[];
 }
 
@@ -36,7 +34,7 @@ export function createRecorder(): Recorder {
 		instructions: () => calls.filter((c) => c.method === "prompt").map((c) => String(c.args[1])),
 		clear: () => {
 			calls.length = 0;
-		},
+		}
 	};
 }
 
@@ -45,8 +43,8 @@ export interface FsPortOptions {
 	roots?: string[];
 	/** 指令侧记录器；不传就内部建一个（`port.recorder` 始终可用）。 */
 	recorder?: Recorder;
-	/** `changes` 要盯的绝对路径（替身用轮询模拟；不给就只发一帧 `ready`）。 */
-	watchPaths?: string[];
+	/** `createSession` 要返回的 sessionId（测试要拿到一条可用的会话 id）。 */
+	sessionId?: string;
 }
 
 export type FsPort = WorkspacePort & { readonly recorder: Recorder };
@@ -67,7 +65,7 @@ function page(text: string, range?: ReadRange, absolutePath?: string, version?: 
 		lines: slice.length,
 		eof: consumed >= all.length,
 		version: version === undefined ? "" : version,
-		absolutePath,
+		absolutePath
 	};
 }
 
@@ -88,16 +86,7 @@ const within = (roots: string[] | undefined, target: string): boolean => {
 export function createFsPort(options: FsPortOptions = {}): FsPort {
 	const recorder = options.recorder || createRecorder();
 	const roots = options.roots;
-	/**
-	 * 版本串 —— ★ **照实测的宿主形状**（工单 25）：
-	 *   `dev:ino:size:mtimeNs:ctimeNs`（`dsh-fs-local` 的 `versionOf`，实测见
-	 *   `src/pure/fsstamp.ts` 的文件头）。
-	 *
-	 * ★ 为什么替身也要照这个形状：面板从版本串第 4 段取**文件时间**（`fsstamp.stampOf`），
-	 *   用它判「审查报告是不是比定稿旧」。替身若给一个别的形状（原来是 `mtimeMs:size`），
-	 *   离线用例就永远走"看不到时间"那条降级路，**那条升级路径就没人测**。
-	 *   注意：面板别处**照样把版本串当不透明串**（指纹 / 自激防护只比对、不解析）。
-	 */
+	/** 版本串照实测的宿主形状：`dev:ino:size:mtimeNs:ctimeNs`（面板只把它当**不透明**串比对）。 */
 	const versionOf = (p: string): string => {
 		const st = fs.statSync(p, { bigint: true });
 		return String(st.dev) + ":" + String(st.ino) + ":" + String(st.size) + ":" + String(st.mtimeNs) + ":" + String(st.ctimeNs);
@@ -154,40 +143,12 @@ export function createFsPort(options: FsPortOptions = {}): FsPort {
 			return { absolutePath: abs, version: versionOf(abs), bytes: Number(fs.statSync(abs, { bigint: true }).size) };
 		},
 
-		async *changes(signal?: AbortSignal): AsyncIterable<ChangeEvent> {
-			yield { kind: "ready" };
-			// 不做真监听：替身只如实报告"订阅已就绪"，再按 `watchPaths` 轮询（给窄轮询用例留的口子）
-			const seen = new Map<string, string>();
-			for (const p of options.watchPaths || []) {
-				try {
-					seen.set(path.resolve(p), versionOf(path.resolve(p)));
-				} catch (e) {
-					/* 起手就不存在的文件，第一轮就会报 absent */
-				}
-			}
-			while (seen.size > 0 && !(signal && signal.aborted)) {
-				await new Promise((r) => setTimeout(r, 50));
-				for (const p of Array.from(seen.keys())) {
-					try {
-						const v = versionOf(p);
-						if (seen.get(p) !== v) {
-							seen.set(p, v);
-							yield { kind: "change", change: { absolutePath: p, version: v } };
-						}
-					} catch (e) {
-						seen.delete(p);
-						yield { kind: "change", change: { absolutePath: p, absent: true } };
-					}
-				}
-			}
-		},
-
 		// ── 指令侧：只记录，不发出 ────────────────────────────────────
 		async prompt(sessionId: string, text: string): Promise<RemoteOutcome> {
 			return record("prompt", [sessionId, text]);
 		},
-		async setPermission(sessionId: string, presetName: string): Promise<RemoteOutcome> {
-			return record("setPermission", [sessionId, presetName]);
+		async execCommand(sessionId: string, line: string): Promise<RemoteOutcome> {
+			return record("execCommand", [sessionId, line]);
 		},
 		async renameSession(sessionId: string, title: string): Promise<RemoteOutcome> {
 			return record("renameSession", [sessionId, title]);
@@ -196,7 +157,8 @@ export function createFsPort(options: FsPortOptions = {}): FsPort {
 			return record("ensureWorkspace", [p]);
 		},
 		async createSession(request: unknown): Promise<RemoteOutcome> {
-			return record("createSession", [request]);
-		},
+			recorder.calls.push({ method: "createSession", args: [request] });
+			return { ok: true, value: { sessionId: options.sessionId || "sid-fake" } };
+		}
 	};
 }

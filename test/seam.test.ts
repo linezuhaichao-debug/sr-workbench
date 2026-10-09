@@ -97,24 +97,11 @@ test("load 层只吃 port：不碰 ctx / remote / window / React", () => {
 	}
 });
 
-test("actions 层是唯一副作用出口：不碰 ctx / remote / React，只 import port 与 pure", () => {
-	const files = walk(path.join(SRC, "actions"));
-	assert.ok(files.length >= 1);
-	const hits = forbidden(files, [/\bctx\b/, /\bremote\b/, /\bwindow\s*\./, /"react/]);
-	assert.deepEqual(hits, [], "actions 层不许出现这些：\n" + hits.join("\n"));
-	for (const f of files) {
-		for (const { no, line } of codeLines(fs.readFileSync(f, "utf8"))) {
-			const m = /^\s*import\s+.*from\s+["']([^"']+)["']/.exec(line);
-			if (m) assert.match(m[1], /^\.\/|^\.\.\/(pure|port)\//, path.basename(f) + ":" + no + " actions 只许 import pure / port / 同层（" + m[1] + "）");
-		}
-	}
-});
-
-test("只有组合根（src/client.js，将来是 client.tsx）与 port/dsh.ts 碰 ctx.remote", () => {
+test("只有组合根（src/client.js）与生产端口碰 ctx.remote", () => {
 	const hits: string[] = [];
 	for (const f of walk(SRC)) {
 		const rel = path.relative(SRC, f).replace(/\\/g, "/");
-		// 组合根：浏览器半侧现在是手写的 src/client.js（工单 03 的后续票才把它接回 pure/ 层）
+		// 组合根：浏览器半侧是手写的 src/client.js（纯函数与加载层都在它下面）
 		if (rel === "client.js" || rel === "client.ts" || rel === "client.tsx" || rel === "port/dsh.ts") continue;
 		for (const { no, line } of codeLines(fs.readFileSync(f, "utf8"))) {
 			if (/\bremote\.[a-zA-Z]/.test(line)) hits.push(rel + ":" + no + "  " + line.trim().slice(0, 80));

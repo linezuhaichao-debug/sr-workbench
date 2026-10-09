@@ -3,3 +3,9 @@ node_modules/
 
 # 临时实验目录
 .tmp-*/
+dist/
+
+# 本机私有文件：技能里可能被写出来的运行时配置（口径上落用户目录，这里再兜一层）
+*.local.json
+*.local.yaml
+!*.local.example.*

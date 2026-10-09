@@ -1,51 +1,35 @@
 /**
- * 新建功能（工单 22）—— **一个动作**：目录 + 六个桶 + 身份声明 + 专属工作区。
+ * 新建功能（v5 口径）—— 校验主题名、算出**要建什么**，仅此而已。
  *
- * ── 面板在这条路上的分工（本票的核心口径）────────────────────────────────────
- *   · 面板**不写盘**（`CONTEXT.md`「面板只读 / agent 执行」·`spec.md` Out of Scope「编辑文件」）：
- *     它做的是 ① 读事实 ② 把主题名校验干净 ③ 算好身份 ④ 把"要建什么"组装成一条**能直接照做**的
- *     指令（含逐字的 `feature.json` 与一段一把做完的脚本）⑤ 发出去 ⑥ **回读核对**。
- *   · 因此"不产生半成品"有两条落点：
- *       ① **先校验后创建** —— 校验不过就**一个字节都不写、连指令都不发**（面板侧可以断言的硬事实）；
- *       ② 建的动作在指令里被要求**要么全成、要么把这次建的删干净**（脚本里带 catch + 自清理，
- *          本票的 harness 把那段脚本原样跑过一遍，见报告）。
- *   · 回读核对不是可选项：`feature.json` 出现 + 六个桶齐全 + id 与面板算好的**逐字一致**，
- *     才算"建好了"；不一致就如实说（不装成功）。
+ * ── v5 与 v4 的分工变化（一句话：面板终于能自己写盘了）──────────────────────
+ * v4：面板在 Remote 层**没有写能力**（只有读 + 目录级操作），所以"新建"只能组装一条指令
+ *     发给 agent，再由 agent 用 PowerShell 把目录建出来；于是有了 `feature.json` 身份声明、
+ *     一段逐字的脚手架脚本、以及"回读核对"。
+ * v5：DSH 的 `uiWorkspace.createDirectory(parent, name)` 就是**建目录**的原语
+ *     （宿主 `directoryPicker` 的 browse 后端，直接 `mkdir` 一级），面板直接建：
  *
- * 纯函数：零依赖、零 IO。
+ *       ① `<SR 工作区>\features\<主题>\`            ← 建一个目录
+ *       ② 里面 4 个桶：evidence / analysis / gdd / decisions
+ *
+ *     全部本地完成，**不发指令、不经过 AI、不写任何文件内容**（决策记录.md 由会话里的
+ *     agent 在第一次决策时按格式创建 —— 那是它该干的事，见操作文档 §决策记录）。
+ *     代价：不再有 `feature.json`。**功能的身份就是目录名** —— 改名就换身份，
+ *     这是 v5 明确接受的取舍（要改名请在面板外改，并同步侧边栏工作区）。
+ *
+ * 纯函数、零 IO、零时钟（`compact` / `created` 由调用方给）。
  */
 
-import { FEATURE_ID_RE, identityClash, identityJsonText, identityOf, type IdentityHolder, type IdentityView, nameKey, nextFeatureId } from "./featureid.ts";
-
+import { BUCKETS, BUCKET_MEANING } from "./buckets.ts";
 /**
- * 六个桶的**规范顺序**：进（`source`）→ 出（`analysis` / `gdd` / `delivery`）→ 留痕（`decisions` / `evidence`）。
- * ★ 语义出处：`CONTEXT.md:20-28`（产物桶）+ `spec.md:137`。**顺序就是给人看的顺序**，
- *   所以它写在这里；与 `DIR_BUCKET` 的键集必须一致（`test/pure-createfeature.test.ts` 钉住这条，防两处漂移）。
- */
-export const BUCKET_ORDER = ["source", "analysis", "gdd", "delivery", "decisions", "evidence"];
-
-/** 每个桶在指令里的"装什么"（给 agent 看的一句话；语义抄 `CONTEXT.md`，不另立口径）。 */
-export const BUCKET_MEANING: Record<string, string> = {
-	source: "喂进去的原料（截图 / 录屏 / PV / 旧文档原件 / 外部交付包）",
-	analysis: "做出来的分析产物（体验报告 / 问题卡 / 复刻规格 / 竞品分析…）",
-	gdd: "成稿 / 定稿 / 定稿审查 / 界面图（定稿的 ASCII 图与 UI 图都在这）",
-	delivery: "交付物（宣讲 HTML / AI 读版 / 下游交付包）",
-	decisions: "过程留痕：决策（Human Gate 的结构化记录）",
-	evidence: "过程留痕：证据（抽帧 / 索引 / 时间戳账本 / readback）"
-};
-
-/**
- * 主题名的长度上限（**本票定的工作台口径**，不是 Windows 的物理极限——单段 255）。
- * 理由：主题名是"标签"，要能在一张卡、一行页签、一条指令里读完整；64 个字足够，
- * 而且它必须**明确写在这里**（写在报告里），免得校验变成"说不清的规则"。
+ * 主题名的长度上限（**工作台口径**，不是 Windows 的物理极限——单段 255）。
+ * 理由：主题名是"标签"，要能在一张卡、一行页签、一条指令里读完整。
  */
 export const TOPIC_MAX = 64;
 
 /** Windows 目录名不允许的字符（`\ / : * ? " < > |`）与不可见控制字符。 */
 const TOPIC_ILLEGAL = /[\\/:*?"<>|]/;
 const TOPIC_CONTROL = /[\u0000-\u001f\u007f]/;
-
-/** Windows 保留设备名（不分大小写；`CON.txt` 这种带扩展名的形式同样保留）。`COM0`/`LPT0` **不是**保留名。 */
+/** Windows 保留设备名（不分大小写；`CON.txt` 这种带扩展名的形式同样保留）。 */
 const TOPIC_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
 export interface TopicCheck {
@@ -61,8 +45,8 @@ const topicBad = (code: string, message: string, next: string): TopicCheck => ({
 /**
  * 主题名合法性（**真实约束，不发明**）：
  *   · Windows 目录名限制：非法字符 / 保留设备名 / 结尾的空格或点（Win32 会悄悄去掉）/ `.` `..` / 控制字符；
- *   · 工作台口径：长度 ≤ `TOPIC_MAX`；首尾空白与内部合法（但首尾空白拒绝而不是静默裁掉——
- *     "你看到的目录名必须就是你输的名字"）。
+ *   · 工作台口径：长度 ≤ `TOPIC_MAX`；首尾空白**拒绝**而不是静默裁掉 ——
+ *     "你看到的目录名必须就是你输的名字"。
  * 返回的是**给人看的一句话 + 下一步**（面板原样显示，不另写话术）。
  */
 export function checkTopicName(topic: unknown): TopicCheck {
@@ -85,8 +69,7 @@ export function checkTopicName(topic: unknown): TopicCheck {
 			"换成不含这些字符的名字（用「-」或中文顿号代替即可）。");
 	}
 	if (raw === "." || raw === "..") {
-		return topicBad("dot", "「" + raw + "」是目录名里的保留记号，不能当主题名。",
-			"换一个名字。");
+		return topicBad("dot", "「" + raw + "」是目录名里的保留记号，不能当主题名。", "换一个名字。");
 	}
 	if (/[. ]$/.test(raw)) {
 		return topicBad("padded", "主题名以「" + raw.slice(-1) + "」结尾。",
@@ -103,19 +86,13 @@ export function checkTopicName(topic: unknown): TopicCheck {
 	return topicOk();
 }
 
-/** 新建前要读的**事实**（全部来自只读通道：列目录 + 读身份声明 + 客户端 store 里的工作区表）。 */
+/** 新建前要读的**事实**（全部来自只读通道：列目录 + 客户端 store 里的工作区表）。 */
 export interface NewFeatureFacts {
-	/** `features\` 下**已存在**的目录名（不过滤噪音——目录存在就不能往里建东西） */
+	/** `features\` 下**已存在**的目录名（不过滤噪音 —— 目录存在就不能往里建东西）。 */
 	dirNames: string[];
-	/** 已认出身份的功能（用于"这个名字是不是别人的身份/别名"） */
-	features: IdentityHolder[];
-	/** DSH 已登记的工作区路径（用于"这个路径是不是已经登记过"） */
+	/** DSH 已登记的工作区路径（用于"这个路径是不是已经登记过"）。 */
 	wsPaths: string[];
-	/** 今天：`YYYYMMDD`（进 id） */
-	compact: string;
-	/** 今天：`YYYY-MM-DD`（进 `created`） */
-	created: string;
-	/** sr 工作区根（绝对路径；拿不到就没法算 root） */
+	/** SR 工作区根（绝对路径；拿不到就没法算 root）。 */
 	srWs?: string;
 }
 
@@ -123,307 +100,195 @@ export interface NewFeaturePlan {
 	ok: boolean;
 	code: string;
 	topic: string;
+	/** 功能根（绝对路径，`<SR 工作区>\features\<主题>`）。 */
 	root: string;
-	id: string;
-	created: string;
-	/** 身份声明的**逐字文本**（写盘的那一份） */
-	json: string;
-	/** 要发出去的指令正文（面板上"看将要发出去的指令"展开的就是它，逐字同一份） */
-	instruction: string;
-	/** 不 ok 时的人话 */
+	/** 桶名（**顺序即创建顺序**，取自 `./buckets.ts`）。 */
+	buckets: string[];
+	/** 建不 ok 时的人话。 */
 	message: string;
-	/** 不 ok 时的下一步 */
+	/** 建不 ok 时的下一步。 */
 	next: string;
 }
 
-/** 路径归一（比对用：大小写不敏感、分隔符统一、去尾斜杠） */
-function pathKey(p: unknown): string {
+/** 路径归一（比对用：大小写不敏感、分隔符统一、去尾斜杠）。 */
+export function pathKey(p: unknown): string {
 	return String(p === null || p === undefined ? "" : p)
 		.replace(/[\\/]+/g, "\\")
 		.replace(/\\+$/, "")
 		.toLowerCase();
 }
 
-/** 功能根：`<srWs>\features\<主题>`（与看板/详情同一拼法——`srWs + "/features/" + topic`，Windows 两种分隔符都认） */
+/**
+ * 功能根：`<srWs>\features\<主题>`（与看板 / 详情**同一拼法**）。
+ * ★ 分隔符统一成 `\`：这串路径会显示在卡片、页签、错误话术里，也直接喂给
+ *   `workspace.create` / `session.create`（Windows 两种都认，但**显示出来要是一个样子**）。
+ */
 export function featureRootFor(srWs: unknown, topic: string): string {
 	const base = String(srWs === null || srWs === undefined ? "" : srWs).replace(/[\\/]+$/, "");
-	return base + "/features/" + String(topic);
+	return base + "\\features\\" + String(topic);
 }
 
 /**
- * 校验 + 算身份 + 组装指令（**一次算完**：面板显示的就是这里算出来的，发出去的也是它）。
+ * 校验 + 算路径（**一次算完**：面板显示的就是这里算出来的，建的就是它）。
  *
- * 四种拒绝（工单第 3 条逐条对应）：
+ * 三种拒绝：
  *   `topic-*`         主题名本身不合法（非法字符 / 保留名 / 结尾点号 / 超长 / 空）
- *   `dir-exists`      目录已存在（`features\<主题>\` 已经在了）
- *   `name-taken`      已存在同标识：这个名字已是**另一个功能的 `name` 或 `aliases`**
- *   `workspace-taken` 这个路径上**已经登记过一个工作区**
+ *   `no-anchor`       拿不到 SR 工作区锚点（那就不知道往哪儿建）
+ *   `dir-exists`      目录已存在（`features\<主题>\` 已经在了 —— 改名不改身份，所以直接进它）
+ *   `workspace-taken` 这个路径上**已经登记过一个工作区**（先确认那个目录在不在）
  */
 export function planNewFeature(topic: unknown, facts: NewFeatureFacts, srWs?: string): NewFeaturePlan {
 	const t = String(topic === null || topic === undefined ? "" : topic);
 	const base = String(srWs || (facts && facts.srWs) || "");
 	const root = featureRootFor(base, t);
 	const bad = (code: string, message: string, next: string): NewFeaturePlan => ({
-		ok: false, code: code, topic: t, root: root, id: "", created: (facts && facts.created) || "",
-		json: "", instruction: "", message: message, next: next
+		ok: false, code: code, topic: t, root: root, buckets: BUCKETS.slice(), message: message, next: next
 	});
 
 	const c = checkTopicName(t);
 	if (!c.ok) return bad(c.code, c.message, c.next);
 
 	if (base.trim() === "") {
-		return bad("no-anchor", "没读到 sr 工作区锚点（sr 配置里的 sr_workspace）。",
+		return bad("no-anchor", "没读到 SR 工作区锚点（sr 配置里的 sr_workspace）。",
 			"先确认 sr 配置能读到（`.agents\\skills\\sr-askme\\config.local.json`），再刷新面板重试。");
 	}
 
 	const key = nameKey(t);
 	for (const d of (facts && facts.dirNames) || []) {
 		if (nameKey(d) === key) {
-			return bad("dir-exists", "`features\\" + d + "\\` 已经有这个目录了（目录存在就是功能）。",
-				"要在这个功能上干活，直接在看板上点它的「详情 ›」；要建**新**功能，换个名字。");
+			return bad("dir-exists", "`features\\" + d + "\\` 已经有这个目录了（**目录存在就是功能**）。",
+				"要在这个功能上干活，直接在看板上点它的卡片；要建**新**功能，换个名字。");
 		}
-	}
-
-	const clash = (facts && facts.features) ? identityClash(facts.features, t) : null;
-	if (clash) {
-		const other = clash.identity.name || clash.topic;
-		const aliases = clash.identity.aliases.length ? "（别名：" + clash.identity.aliases.join("、") + "）" : "";
-		return bad("name-taken",
-			"「" + t + "」已经是另一个功能的身份名或别名：" + other + aliases + "，目录 `features\\" + clash.topic + "\\`。",
-			"改名是正常业务，所以工作台**按身份认功能**、不按目录名 —— 确认是同一个功能就直接进它的详情；是另一个功能就换个名字。");
 	}
 
 	const rootKey = pathKey(root);
 	for (const p of (facts && facts.wsPaths) || []) {
 		if (pathKey(p) === rootKey) {
 			return bad("workspace-taken", "已经有一个工作区登记在 `" + root + "` 这个路径上了。",
-				"先确认那个目录在不在：在的话直接用它（刷新面板就会扫到），不在的话在侧边栏把那个工作区删掉再建。");
+				"先确认那个目录在不在：在就用它（刷新面板就会扫到），不在的话在侧边栏把那个工作区删掉再建。");
 		}
 	}
 
-	const takenIds: string[] = [];
-	for (const f of ((facts && facts.features) || [])) {
-		if (f && f.identity && f.identity.present && FEATURE_ID_RE.test(f.identity.feature_id)) takenIds.push(f.identity.feature_id);
-	}
-	const id = nextFeatureId(takenIds, (facts && facts.compact) || "");
-	const created = (facts && facts.created) || "";
-	const json = identityJsonText(id, t, created);
-	return {
-		ok: true, code: "", topic: t, root: root, id: id, created: created, json: json,
-		instruction: buildCreateInstruction({ srWs: base, root: root, topic: t, id: id, created: created, json: json }),
-		message: "", next: ""
-	};
+	return { ok: true, code: "", topic: t, root: root, buckets: BUCKETS.slice(), message: "", next: "" };
 }
 
-/** 按名字找一个"已经是别人身份"的功能 —— 只有一份实现（`featureid.identityClash`）。 */
+/** 目录名比对键（Windows：大小写不敏感、去尾空格与点）。 */
+export function nameKey(p: unknown): string {
+	return String(p === null || p === undefined ? "" : p).replace(/[. ]+$/, "").trim().toLowerCase();
+}
 
-export interface CreateInstructionInput {
-	srWs: string;
-	root: string;
-	topic: string;
-	id: string;
-	created: string;
-	json: string;
+/** 建目录时"这个目录该装什么"的一句话（界面显示；来源只有 `BUCKET_MEANING`）。 */
+export function bucketHint(b: unknown): string {
+	return BUCKET_MEANING[String(b == null ? "" : b)] || "";
+}
+
+/** 会话标题（工作会话的**认领凭据**，与 `sessionpick.workTitleFor` 同口径）。 */
+export function sessionTitleFor(topic: unknown): string {
+	return "策划工作台·工作（" + (String(topic == null ? "" : topic).trim() || "?") + "）";
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 建目录：三条路（2026-10-09 实测缺陷换来的）
+// ════════════════════════════════════════════════════════════════════════════
+/**
+ * ★ 为什么要有这一整块：**`uiWorkspace.createDirectory` 在 Windows 上不存在。**
+ *
+ * DSH 的目录选择器由 `dsh-host-directory-picker-auto` 在**启动时**选后端，规则是：
+ * `bindHost !== "127.0.0.1"` → browse；SSH 启动 → browse；**`platform === "win32"` → native**；
+ * linux 要有 `DISPLAY`/`WAYLAND_DISPLAY` 且有 zenity/kdialog 才 native。
+ * 而 `createDirectory` 在宿主侧被 `requireCapability("browse", "createDirectory")` 挡着 ——
+ * 于是 **Windows 环回部署（桌面版与 `dsh web` 都算）只有 native，没有 createDirectory**，
+ * 报错原文：`directory-picker/unavailable: directoryPicker.createDirectory needs the browse
+ * capability; the composed picker serves "native"`。
+ *
+ * 客户端能碰到的写盘通道只有三条，所以这里按顺序退：
+ *   ① `uiWorkspace.createDirectory`（browse 后端才有的快路）；
+ *   ② **让会话跑一条 PowerShell**（`New-Item -ItemType Directory -Force`，幂等）—— 通用；
+ *   ③ 都不行 ⇒ 把**逐字命令**给用户，让他手工建；面板检测到"只有 4 个桶的空脚手架"会接着往下走。
+ *
+ * 判定"这是不是空脚手架"的判据在 `isBareScaffold`：**只有 4 个桶目录、一个文件都没有**。
+ * 那样才允许"跳过建目录、直接建工作区与会话" —— 有内容就说明是**真功能**，照旧拒绝重名。
+ */
+
+/** 要建的目录（**顺序即创建顺序**：父目录在前）。`features\` 本身也算一个。 */
+export function scaffoldDirsOf(srWs: unknown, topic: unknown): string[] {
+	const base = String(srWs === null || srWs === undefined ? "" : srWs).replace(/[\\/]+$/, "");
+	const t = String(topic === null || topic === undefined ? "" : topic);
+	const root = base + "\\features\\" + t;
+	return [base + "\\features"].concat(BUCKETS.map((b) => root + "\\" + b));
 }
 
 /**
- * 发给 agent 的指令正文。
- *
- * 口径（与 `instruction.ts` 同一套"说到不用再找"）：**建哪儿**（绝对路径）+ **建成什么形状**
- * （六个桶逐条 + 逐字的 `feature.json`）+ **一把做完的脚本** + **规矩**（已存在就停、失败删干净、别动别的）。
- * ★ 未定之数一个都不留：桶名、文件名、JSON 内容、日期、id 全是算好的。
+ * 空脚手架判据：目录里**只有 4 个桶**（都是目录）、**一个文件都没有**、没有别的目录。
+ * 空目录也算（建到一半的真实现状）。
  */
-export function buildCreateInstruction(input: CreateInstructionInput): string {
-	const L: string[] = [];
-	const root = input.root;
-	const featuresDir = String(input.srWs || "").replace(/[\\/]+$/, "") + "\\features";
-	L.push("## 新建功能：" + input.topic);
-	L.push("工作台已经把校验做完了（名字合法、没有重名、没有同标识冲突）。请**一次建全**下面这份形状 —— 别分步、别留半个目录。");
-	L.push("");
-	L.push("① 目录（在 `" + featuresDir + "\\` 下新建这一个功能目录，桶名逐字如下）");
-	L.push("    " + root + "\\");
-	for (const b of BUCKET_ORDER) {
-		L.push("      " + b + "\\" + "　← " + (BUCKET_MEANING[b] || ""));
+export function isBareScaffold(entries: Array<{ name: string; type: string }> | null | undefined): boolean {
+	const list = Array.isArray(entries) ? entries : [];
+	const buckets = BUCKETS.map((b) => b.toLowerCase());
+	for (const e of list) {
+		const n = String((e && e.name) || "").toLowerCase();
+		if (!n) return false;
+		if (String((e && e.type) || "") !== "directory") return false;   // 有文件 ⇒ 不是空脚手架
+		if (buckets.indexOf(n) < 0) return false;                        // 有别的目录 ⇒ 不是
 	}
+	return true;
+}
+
+/**
+ * 让会话建目录的**指令正文**（发给索引会话；正文里不留未定之数）。
+ * 只做一件事：`New-Item -ItemType Directory -Force` 那几行，跑完回报一行。
+ */
+export function buildScaffoldInstruction(srWs: unknown, topic: unknown): string {
+	const t = String(topic === null || topic === undefined ? "" : topic);
+	const dirs = scaffoldDirsOf(srWs, t);
+	const L: string[] = [];
+	L.push("【新建功能 · 只建目录】请**只做这一件事**：建出下面这些目录（已存在的跳过），然后回报一行。");
 	L.push("");
-	L.push("② 身份声明（逐字写进 `" + root + "\\feature.json`，UTF-8 **无 BOM**，末尾留一个换行）");
-	L.push("```json");
-	for (const line of String(input.json || "").replace(/\n$/, "").split("\n")) L.push(line);
-	L.push("```");
+	L.push("要建的目录（逐字，共 " + dirs.length + " 个）：");
+	for (const d of dirs) L.push("  " + d);
 	L.push("");
-	L.push("③ 一把做完（PowerShell 7，照抄执行即可；上面①②的内容都在这段里）");
+	L.push("怎么建（PowerShell，`-Force` 幂等、已存在不报错；只跑这一段，不要写脚本文件）：");
 	L.push("```powershell");
-	for (const line of scaffoldScript(root, input.json).split("\n")) L.push(line);
+	L.push("$dirs = @(");
+	for (const d of dirs) L.push("  '" + d.replace(/'/g, "''") + "'");
+	L.push(")");
+	L.push("New-Item -ItemType Directory -Force -Path $dirs | Out-Null");
 	L.push("```");
 	L.push("");
 	L.push("规矩：");
-	L.push("· `" + root + "\\` **现在不该存在**。若已存在：**别覆盖、别删它**，直接回报 `REFUSED 目录已存在`。");
-	L.push("· 身份声明里的 `feature_id` 若已被别的功能占用，脚本会回报 `REFUSED feature_id 已被占用` —— 这时**别再建**，回报它就行。");
-	L.push("· 任何一步失败：把**这次建的东西**（功能目录 + 六个桶 + `feature.json`）删干净，**别留半个目录**。");
-	L.push("· 别动别的功能目录，别改 sr 工作区里的其它文件。");
-	L.push("· 跑完回报一行：`已建立 " + input.topic + "（feature_id=" + input.id + "，六个桶 + feature.json）`。");
+	L.push("· **不要**往里面写任何文件（决策记录由功能的工作会话在第一次决策时创建）。");
+	L.push("· **不要**动这 " + dirs.length + " 个目录以外的任何东西；这个功能目录现在不该存在内容。");
+	L.push("· 跑完**只回报一行**：`OK " + dirs[dirs.length - 1] + "` 或 `FAILED <原因>`。");
+	L.push("· 面板会自己回读核对，你不用汇报目录树。");
 	return L.join("\n");
 }
 
-/**
- * 一把做完的脚本（**幂等的前提是不存在**：目标已存在就拒绝，而不是往里写）。
- *
- * 四段：① 目标目录已存在 → `REFUSED`，exit 3（**什么都不写**）；
- *       ①' 算好的 `feature_id` 已被**别的功能**占用（例如两个面板同时新建）→ `REFUSED`，exit 3
- *          —— 身份是唯一的，宁可让人重来，也不许两个功能共用一个 id；
- *       ② 建目录 → 六个桶 → 写 `feature.json`；③ 任一步抛错 → 删掉这次建的功能目录 → `FAILED-CLEANED`，exit 1。
- * 退出码是给 agent/人读的信号：0 成功 / 1 失败已清理 / 3 拒绝（已存在或 id 被占）。
- */
-export function scaffoldScript(root: string, jsonText: string, buckets?: string[]): string {
-	const q = (s: unknown) => "'" + String(s === null || s === undefined ? "" : s).replace(/'/g, "''") + "'";
-	const list = (buckets && buckets.length ? buckets : BUCKET_ORDER).map(q).join(", ");
-	const body = String(jsonText || "").replace(/\r\n/g, "\n").replace(/\n$/, "");
+/** 三条路都走不通时给用户的**逐字命令**（复制即用；建完再点一次〔建立〕）。 */
+export function manualScaffoldCommand(srWs: unknown, topic: unknown): string {
+	const dirs = scaffoldDirsOf(srWs, topic);
 	const L: string[] = [];
-	L.push("$root = " + q(root));
-	L.push("$buckets = " + list);
-	L.push("$json = @'");
-	for (const line of body.split("\n")) L.push(line);
-	L.push("'@");
-	L.push("if (Test-Path -LiteralPath $root) { Write-Output ('REFUSED 目录已存在：' + $root); exit 3 }");
-	// ★ id 的唯一性由这里兜住：扫一遍兄弟功能目录的身份声明，撞上就拒绝（不产生两个同 id 的功能）
-	L.push("$fid = ($json | ConvertFrom-Json).feature_id");
-	L.push("$dup = $false");
-	L.push("Get-ChildItem -LiteralPath (Split-Path -Path $root -Parent) -Directory -ErrorAction SilentlyContinue | ForEach-Object {");
-	L.push("  $f = Join-Path $_.FullName 'feature.json'");
-	L.push("  if (Test-Path -LiteralPath $f) { try { if ((Get-Content -LiteralPath $f -Raw | ConvertFrom-Json).feature_id -eq $fid) { $dup = $true } } catch { } }");
-	L.push("}");
-	L.push("if ($dup) { Write-Output ('REFUSED feature_id 已被占用：' + $fid); exit 3 }");
-	L.push("$made = $false");
-	L.push("try {");
-	L.push("  New-Item -ItemType Directory -Path $root -ErrorAction Stop | Out-Null");
-	L.push("  $made = $true");
-	L.push("  foreach ($b in $buckets) { New-Item -ItemType Directory -Path (Join-Path $root $b) -ErrorAction Stop | Out-Null }");
-	L.push("  Set-Content -LiteralPath (Join-Path $root 'feature.json') -Value $json -Encoding utf8NoBOM -ErrorAction Stop");
-	L.push("  Write-Output ('OK ' + $root)");
-	L.push("} catch {");
-	L.push("  if ($made) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }");
-	L.push("  Write-Output ('FAILED-CLEANED ' + $_.Exception.Message)");
-	L.push("  exit 1");
-	L.push("}");
+	L.push("$dirs = @(");
+	for (const d of dirs) L.push("  '" + d.replace(/'/g, "''") + "'");
+	L.push(")");
+	L.push("New-Item -ItemType Directory -Force -Path $dirs | Out-Null");
 	return L.join("\n");
 }
 
-/** 回读一次拿到的东西（面板的**窄轮询**：列一下功能根 + 读一下 `feature.json`，两次调用） */
-export interface CreatedReadBack {
-	/** 功能根里的条目名（`null` = 目录还不存在） */
-	entries: string[] | null;
-	/** `feature.json` 的文本（读不到 = `null`） */
-	identityText: string | null;
-	/** 面板算好的 id（核对"写进去的是不是这一个"） */
-	expectId?: string;
+/** 建之前那一句（面板原样显示）。 */
+export function createPendingNotice(topic: string): string {
+	return "正在建「" + topic + "」：功能目录 → 4 个桶 → 注册专属工作区 → 建工作会话（策划模式）。全程本地完成，不发任何指令。";
 }
 
-export interface CreatedVerdict {
-	state: "absent" | "dir-only" | "partial" | "done" | "identity-mismatch";
-	/** 还缺哪些桶 */
-	missing: string[];
-	identity: IdentityView | null;
-	/** 界面上那一句进度（人话，不含机器口径） */
-	progress: string;
-	note: string;
+/** 建好了那一句（含怎么撤 —— 面板只建不删）。 */
+export function createDoneNotice(topic: string, root: string, sid: string): string {
+	return "建好了：「" + topic + "」· 4 个桶（evidence / analysis / gdd / decisions）都在 · 已登记为它的专属工作区" +
+		(sid ? " · 工作会话已建好（策划模式）" : " · 工作会话没建起来（见下）") +
+		"。要撤掉就删掉这个目录：" + root + "（面板只建不删）。";
 }
 
-/**
- * 建完之后**回读核对**（不装成功）：
- *   桶齐不齐、`feature.json` 认不认得出、id 与面板算好的**逐字是不是同一个**。
- * 五种状态：`absent`（还没出现）/ `dir-only`（只有目录）/ `partial`（缺桶或缺身份）/
- * `done`（都对上了）/ `identity-mismatch`（有身份但 id 不是算好的那个 —— 绝不当作建好）。
- */
-export function verifyCreated(rb: CreatedReadBack): CreatedVerdict {
-	const id = rb && rb.identityText !== null && rb.identityText !== undefined ? rb.identityText : null;
-	if (!rb || rb.entries === null || rb.entries === undefined) {
-		return {
-			state: "absent", missing: BUCKET_ORDER.slice(), identity: null,
-			progress: "已看到：功能目录 —（还在建）", note: "功能目录还没有出现"
-		};
-	}
-	const have: Record<string, true> = {};
-	for (const n of rb.entries) have[String(n).toLowerCase()] = true;
-	const missing = BUCKET_ORDER.filter((b) => !have[b.toLowerCase()]);
-	const hasJson = have["feature.json"] === true;
-	const identity = identityOf(id, "");
-	const progress = "已看到：功能目录 ✓ ／ 六个桶 " + (BUCKET_ORDER.length - missing.length) + "/" + BUCKET_ORDER.length +
-		" ／ 身份声明 " + (identity.present ? "✓" : (hasJson ? "形状不对" : "—"));
-	if (!hasJson || !identity.present) {
-		const onlyDir = missing.length === BUCKET_ORDER.length && !hasJson;
-		const lacks: string[] = [];
-		if (missing.length) lacks.push(missing.join("、") + " 桶");
-		if (!hasJson) lacks.push("feature.json");
-		else if (!identity.present) lacks.push("可用的身份声明");
-		return {
-			state: onlyDir ? "dir-only" : "partial", missing: missing, identity: identity.present ? identity : null,
-			progress: progress,
-			note: onlyDir ? "功能目录已出现，桶与身份声明还在路上" : "还没建全：缺 " + lacks.join("、")
-		};
-	}
-	if (missing.length) {
-		return {
-			state: "partial", missing: missing, identity: identity, progress: progress,
-			note: "身份声明在了，但还缺 " + missing.join("、") + " 桶"
-		};
-	}
-	const expect = String((rb && rb.expectId) || "");
-	if (expect !== "" && identity.feature_id !== expect) {
-		return {
-			state: "identity-mismatch", missing: [], identity: identity, progress: progress,
-			note: "身份声明里的 feature_id 是 " + identity.feature_id + "，面板算好的是 " + expect +
-				" —— 建出来的东西和这条指令不是同一份，别当成建好了"
-		};
-	}
-	return { state: "done", missing: [], identity: identity, progress: progress, note: "六个桶 + 身份声明都在" };
-}
-
-/** 卡片上那一行人话（**"新建、还没有任何产物"要看得出来**） */
-export function cardStateOf(f: any): { line: string; tone: string } {
-	const n = (v: unknown) => (typeof v === "number" ? v : 0);
-	const files = (f && f.files) || {};
-	const bare = n(f && f.finals) + n(f && f.reviews) + n(f && f.speeches) + n(f && f.decisions) +
-		n(f && f.evidence) + n(f && f.sources) + n(f && f.others) +
-		((files.concept || []).length) + ((files.draft || []).length) === 0;
-	const finalActive = !!(f && f.status === "active");
-	if (!f || !f.latestFinal) {
-		return bare
-			? { line: "还没有原料 —— 往 source\\ 放素材，或从「头脑风暴」开始", tone: "new" }
-			: { line: "卡在：尚未出定稿", tone: "muted" };
-	}
-	return finalActive
-		? { line: "已定稿 · 可交程序", tone: "ok" }
-		: { line: "最终版状态：" + ((f && f.status) || "?"), tone: "muted" };
-}
-
-/** 桶缺了就说（只在真缺时说；正常功能一个字都不多说） */
-export function bucketsNote(f: any): string {
-	const missing = (f && f.bucketsMissing) || [];
-	if (!missing.length) return "";
-	return "桶没建全：缺 " + missing.join("、") + " —— 让工作会话补齐，或删掉这个目录重建。";
-}
-
-/** 已交给工作会话那一句（面板原样显示） */
-export function createSentNotice(topic: string): string {
-	return "已交给工作会话建立「" + topic + "」：功能目录 + 六个桶 + 身份声明。建好后面板会自己出现这张卡（不用刷新）。";
-}
-
-/** 建好了那一句（含"怎么删"——面板不写盘，也删不了盘） */
-export function createDoneNotice(topic: string, id: string, root: string): string {
-	return "建好了：「" + topic + "」（feature_id=" + id + "）· 六个桶 + 身份声明都在 · " +
-		"已登记为它的专属工作区、工作会话也建好了。要撤掉就删掉这个目录：" + root + "（面板只读，删不了它）。";
-}
-
-/** 还没建完那一句（如实说看到什么 + 下一步） */
-export function createTimeoutNotice(topic: string, verdict: { progress?: string } | null, sid: string): string {
-	const v = verdict || {};
-	return "还在等「" + topic + "」：" + (v.progress || "已看到：什么都没看到") + "。下一步：① 点「打开工作会话」看它跑到哪了" +
-		(sid ? "（就是刚收到这条指令的那条）" : "") +
-		"；② 让它把缺的补齐（指令原文就在那条会话里）；要重来就先删掉这个目录再建。";
-}
-
-/** 不再等那一句 */
-export function createCancelNotice(topic: string, verdict: { progress?: string } | null): string {
-	return "不再盯着「" + topic + "」了" + (verdict && verdict.progress ? "（" + verdict.progress + "）" : "") +
-		"。它建好了的话，点「刷新看板」就能看到这张卡。";
+/** 只建到一半那一句（如实说建到哪一步、下一步怎么办）。 */
+export function createPartialNotice(topic: string, root: string, done: string[], failed: string, why: string): string {
+	return "「" + topic + "」只建了一半：已经建好 " + (done.length ? done.join("、") : "（无）") +
+		"；卡在 " + failed + "（" + why + "）。下一步：① 去 " + root + " 看看实际建出了什么；" +
+		"② 缺的桶手工补建（或删掉这个目录在面板上重新新建）；③ 面板不会替你把已建的东西删掉。";
 }

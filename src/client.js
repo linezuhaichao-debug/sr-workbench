@@ -1,8175 +1,1687 @@
 /**
- * 策划工作台 · 浏览器半侧（源码入口）
+ * 策划工作台 · 浏览器半侧（源码入口）—— v5 重写版。
  *
  * ★ 本文件是 tsdown 的**打包入口**，产物是 `lib/client.js`——一个形如
  *   `window.__ModuleLoader__.load({ id, factory })` 的单 bundle。
  *   改本文件后必须 `npm run build`（或开着 `npm run watch`），否则 `lib/client.js` 是旧的。
  *
- * ★ 工单 02 是 expand 票：**不改任何产品行为**。这里只做了「能被打包」的最小改造——
- *   把原来的 `window.__ModuleLoader__.load({ … factory … })` 外壳换成 ESM 入口写法
- *   （顶部 `import * as React`、末尾 `export { apply, inject }`），
- *   外壳改由构建预设（`tsdown.config.ts`）重新套上；其余各行**一字未动**
- *   （所以正文仍保留原来嵌在 factory 里的两级缩进，归一化留给后续拆分票）。
+ * ════════════════════════════════════════════════════════════════════════════
+ * v5 的面板**只有两屏**（用户口径：只保留功能卡片和新建功能）：
  *
- * ★ 这里是**唯一源码**。`lib/client.js` 是构建产物，不要手改。
+ *   ① 功能卡片墙 —— `features\` 下每个目录一张卡 + 一个〔＋ 新建功能〕
+ *   ② 功能详情 —— 只有三个模块：**头脑风暴 / 决策记录 / 最终产物**
+ *
+ * v4 的其余一切（一级导航、审计面、设计台账、决策台账、定稿修订工作面、文档生成工作面、
+ * 派生物与过期检测、外部交付包合入、资产索引、收件箱、V 校验清单、界面图……）**全部删除**。
+ *
+ * ── 新建功能做什么（v5 最大的机制变化）──────────────────────────────────────
+ * v4 的面板在 Remote 层没有写能力，所以"新建"只能组装一条指令发给 agent 去建。
+ * v5 用 DSH 的 `ctx.uiWorkspace.createDirectory(parent, name)`（宿主 directoryPicker 的
+ * browse 后端，直接 `mkdir` 一级）**自己建**：
+ *
+ *     ① `features\`（没有就建）        ④ 按路径注册**专属工作区**
+ *     ② `features\<主题>\`             ⑤ 在该工作区建**会话**，默认预设 =「策划模式」
+ *     ③ 4 个桶：evidence / analysis / gdd / decisions
+ *
+ * 全程本地完成：**不发任何指令、不写任何文件内容、不经过 AI**。
+ *
+ * ── 两条会话（所有权凭据只有"标题 + 自己写的缓存"）──────────────────────────
+ *   · 索引会话     cwd = SR 工作区根        标题 `策划工作台·索引（…）`    只读，不接指令
+ *   · 功能工作会话 cwd = `features\<主题>\`  标题 `策划工作台·工作（<主题>）` **接指令**（头脑风暴四入口）
+ *
+ * ── 面板不做什么 ───────────────────────────────────────────────────────────
+ *   · 不写任何**文件内容**（决策记录由会话里的 agent 按契约追加）；不删任何东西。
+ *   · 不替定稿门背书（"最新定稿"只按文件名日期标，措辞里写清楚）。
+ *   · 不假装知道：读不到就说读不到，缺桶就说缺桶。
  */
 
 import * as React from "react";
 
-// ★ 工单 32 · 面板接线：`src/client.js` 不再保留内联副本，改为直接用 `src/pure/` 那份
-//   （测试覆盖的就是它）。接线是**一次一个模块**做的，每步都过 `npm run build:safe`。
-//   已接：path（toAbs）· topic（topicOf / isNoise / dateOf）· sessionpick（索引会话选择，0.2.0 兼容）· ledger（ledgerOf：设计台账派生 + 工单 17 的字段覆盖检查，工单 12 同批接线）
-import { toAbs, featureRootOf } from "./pure/path.ts";
-import { topicOf, isNoise, dateOf } from "./pure/topic.ts";
-// ★ 工单 31：这里原来有一刀「mdspec 接线」（`parseMdSections` / `classifyHeading` / `mdSpecOf`，
-//   工单 32 步骤 2，那一刀带行为修复：模块版认 Windows 反斜杠）。
-//   但它在面板里的**唯一消费者**是 B2 内容阅读器（`SpecMdView`）—— B2 属被砍的「设计资产」模块，
-//   随本票一起删除，于是这个 import 成了悬空引用，一并撤掉，避免"注释说接了、实际没人用"。
-//   `src/pure/mdspec.ts` 与 `test/pure-mdspec.test.ts` **一字未动**（单一出处与那条反斜杠修复都在）；
-//   要把它接回别的渲染路径（成稿 / 定稿正文）属于工单 32「面板接线」—— 那张票现在是**暂停**的。
-// 工单 12：功能详情的产物清单 / 三阶段 / 定稿有效性 / V 校验清单 —— 加载器走 `src/load/`（只吃 port），
-//   桶分组与三阶段在 `src/pure/artifacts.ts`（测试覆盖的就是它，**这里不写副本**）。
-import { loadFeatureDetail } from "./load/feature.ts";
-// ★ 工单 32（接线）：设计台账派生（含工单 17 的**字段覆盖检查** `fieldCheck`）改用模块那一份。
-//   原内联副本与模块版的差异**只有工单 17 加的那几行**（covSources / fieldCheck / notes），
-//   于是面板上的 `fieldCheck` 一直是 undefined —— "悬空即报错"在面板里根本看不见。
-import { ledgerOf } from "./pure/ledger.ts";
+import { decisionEntryTemplate, stampOf } from "./pure/decisions.ts";
 import {
-	ARCHIVED_CACHED_NOTE,
-	FOREIGN_CACHE_NOTE,
-	NO_ARCHIVE_INFO_NOTE,
-	PERMISSION_FULL,
-	WORK_ROOT_TITLE,
-	archivedFromSnapshot,
-	configPathCandidates,
-	containsPath,
-	indexCacheKey,
-	indexCacheOwned,
-	indexCacheParse,
-	indexCacheSerialize,
-	indexTitleFor,
-	isArchivedId,
-	mergeRows,
-	needsFullAccess,
-	noListingSessionNote,
-	normPath,
-	permissionCommandLine,
-	permissionPlanOf,
-	permissionResultNote,
-	pickIndexSession,
-	pickListingSession,
-	pickWorkSession,
-	presetOfRow,
-	rowsFromList,
-	rowsFromStore,
-	staleIndexNote,
-	staleIndexRows,
-	titleOf,
-	workCacheDrop,
-	workCacheGet,
-	workCacheKey,
-	workCachePut,
-	workTitleFor
-} from "./pure/sessionpick.ts";
-// ★ 工单 15 · 就地改这条：失败 → **可读错误 + 下一步**（只有一份判定，面板不自己写一份 grep）
-import { explainSendFailure, isSessionGone } from "./pure/sendfail.ts";
-// ★ 工单 13/14 · 定稿工作面：解析（finalgdd）· 大纲树数据（finaltree）· 引用图与六类边（refgraph）
-//   · 特殊块切分（split）· 三段式指令文本（instruction）。
-//   这一批**全是 import，不再有内联副本** —— 面板跑的就是 `npm test` 覆盖的那份实现
-//   （此前 `parseFinalGdd` / `buildRefGraph` / `impactOf` / `splitSpecial` / `checkFinals` 在下面各有一份副本，
-//    其中 `buildRefGraph` 那份是**旧五类边**版本：第六类契约边在面板上根本看不见）。
-import { checkFinals, parseFinalGdd, topBlockIndex } from "./pure/finalgdd.ts";
-import { buildFinalTree } from "./pure/finaltree.ts";
-import { EDGE_LEGEND, buildRefGraph, edgeLabelOf, impactOf } from "./pure/refgraph.ts";
-import { splitSpecial } from "./pure/split.ts";
-// 三段式（改哪儿 / 现状原文 / 影响范围）只有一份实现：面板上先给用户看，发出去的就是同一段
-import { buildFixInstruction } from "./pure/instruction.ts";
-// ★ 缺陷修复（2026-09-30「侧边栏要按 F5 才看得见」）：建完会话之后要补调**官方那条客户端入口**
-//   （`workspaces.create` 把工作区行并进 store / `sessions.refresh` 重拉会话基线）。
-//   判定（该调哪几刀、哪个做不到）在这个纯函数里，逐条用例在 `test/pure-storemerge.test.ts`；
-//   组合根只负责按 steps 去调（`syncSidebarStores`）。**不要**在这里再造一套 store 写入。
-import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
-// ★ 工单 23 · 头脑风暴工作面：四入口的指令组装（`intake`）+ 分析产物归入口/两种新格式的解析（`analysisdoc`）
-//   + 该工作面的加载器（`load/brainstorm`）。
-//   ★ 这也是**收件箱内联副本的删除**：`INTAKE` 从这一票起就是模块那一份 —— 内联版与模块版逐行相同
-//   （去缩进后 diff 只剩 `export` 一行），留着它只会让"新加四个入口"变成两份实现。
-import { INTAKE } from "./pure/intake.ts";
-import { loadBrainstorm } from "./load/brainstorm.ts";
-// ★ 工单 24 · 文档生成工作面（「文档生成」那一格从"未实现"变成真的）：
-//   · 两大部分 + 左树的数据 —— `drafttree.ts`（复用 `finalgdd.parseFinalGdd` + `finaltree.buildFinalTree`，
-//     **不另写一份解析**，工单 24 第 5 条）；
-//   · 配置支线走到哪 + 三个动作的三段式指令 —— `draftstep.ts`（口径引自 `gdd-pipeline.md` 与 spec.md:212）；
-//   · 这一屏的加载器 —— `load/draft.ts`（读成稿 + 定稿 §6 + 读回回执，只吃 port）。
-//   ★ 指令组装器与动作表**不在 client.js 里再抄一份**：`INTAKE` 暴露 `buildDraftInstruction` /
-//     `DRAFT_ACTIONS`（`src/pure/intake.ts` 从 `draftstep.ts` re-export），与头脑风暴那条路同口径。
-import { loadDraftWorkface } from "./load/draft.ts";
-// ★ 工单 28 · 派生物与过期检测（「定稿修订」工作面上的次级一块）：
-//   · 判定全在 `src/pure/derived.ts`（产物/侧车命名 · 侧车解析 · **过期判定** · 指令组装）；
-//     **过期判定的口径引用工单 25 的实测**：版本指纹 = 宿主 `stat` 的 `version` 原文
-//     （`dev:ino:size:mtimeNs:ctimeNs`），只做等值比对、不解析 —— 见 `src/pure/fsstamp.ts` 的文件头。
-//   · 只读那一侧在 `src/load/derived.ts`（读交付桶里每份产物的侧车 + 当前定稿的指纹）；
-//   · 两个动作（宣讲 HTML / AI 读版）的指令由 `buildDerivedInstruction` 拼（在加载器里，
-//     与界面上那段预览**逐字相同**），发出去仍走 `sendFeatureInstruction`
-//     （工单 15 立的、23 抽出的那条链路，**不开新通道**）。
-//   · 面板**不写盘**：产物与 provenance 侧车都是 agent 按指令写的，面板只读回、只判定。
-import { shortVersion } from "./pure/derived.ts";
-import { loadDerived } from "./load/derived.ts";
-// ★ 工单 26 · 外部输入合入 ①②③（设计 §4.3.5「UE 交互交付物的合入」）：
-//   · 判定全在 `src/pure/ueintake.ts`（包识别 · **基线校验（★）** · 回写清单 · 归档位 · 那句「这会把它改回来」）；
-//   · 只读那一侧在 `src/load/ueintake.ts`（列工作区根的 zip + 归档位、读 manifest / 回写文档 / 当前定稿 / 交付台账）；
-//   · 归档指令由面板组装、**agent 落盘**（面板只读：`CONTEXT.md`「面板只读 / agent 执行」）；
-//   · ★ 线框图替换**与手动入口共用同一处组装**：两边都走 `INTAKE.buildDraftInstruction({action:"wireframe"})`，
-//     本屏用的 `buildWireframeRequest` 就是那个"塞"的唯一实现 —— 不各写一份（工单 26 第 5 条）。
-import { buildWireframeRequest } from "./pure/ueintake.ts";
-// ★ 工单 27 · 外部输入合入 ④⑤：
-//   · ④ 三方映射（截图 ↔ 文档章节 ↔ 设计工具节点）—— 判定与逐行依据全在 `pure/ueintake.buildMap`；
-//   · ⑤ 线框替换计划（**替换前 vs 替换后**的逐组对照 + 替换指令）—— 全在 `pure/ueswap.ts`
-//     （`buildSwapPlan` 算对照、`buildSwapInstruction` 组装指令：先备份 / 落点 gdd\UI / 改完贴回 / 回滚口径 / 结构复核）；
-//   · ★ 与手动入口**共用同一处组装**：`buildSwapPlan` 的那张图源表吃两种输入（交付包 `截图\` / 用户手挑的图），
-//     指令正文只由 `buildSwapInstruction` 出一份 —— 本屏不另写一份线框正文（工单 26 第 5 条、27 第 2 条）。
-import { buildMap } from "./pure/ueintake.ts";
-import { buildSwapInstruction, buildSwapPlan } from "./pure/ueswap.ts";
-import { loadUeIntake } from "./load/ueintake.ts";
-// ★ 工单 22 · 新建功能：**一个动作**（目录 + 六个桶 + 身份声明 + 专属工作区）。
-//   · 判定与组装全在 `src/pure/createfeature.ts`（主题名合法性 / 冲突 / id / 指令 + 脚本 / 回读判定）
-//     与 `src/pure/featureid.ts`（身份声明的形状与解析）—— 面板**不写盘**，它只算、只发、只回读；
-//   · 只读那两侧（建前事实 / 建后窄回读）在 `src/load/create.ts`（只吃 port）；
-//   · 优雅退化（没有 `feature.json` 的已有功能按目录名认 + 如实标注）也走这里。
-import { compactDate, dashedDate, identityLabel, identityOf } from "./pure/featureid.ts";
-import {
-	BUCKET_ORDER,
-	bucketsNote,
-	cardStateOf,
-	createCancelNotice,
-	createDoneNotice,
-	createSentNotice,
-	createTimeoutNotice,
-	planNewFeature
+	bucketHint, buildScaffoldInstruction, checkTopicName, createDoneNotice, createPartialNotice,
+	createPendingNotice, featureRootFor, manualScaffoldCommand, planNewFeature, sessionTitleFor
 } from "./pure/createfeature.ts";
-import { loadCreateFacts, readBackCreated } from "./load/create.ts";
-// ★ 工单 16 · 自动刷新与版本指纹 —— 判定全在 `src/pure/refresh.ts`（`test/pure-refresh.test.ts` 覆盖的就是它）：
-//   帧怎么认（`parseFrame`）· 盯哪些目标（`watchPlan`）· 这一帧要重读哪些部件（`planReload` / `unionParts`）
-//   · 自激防护（`acceptFrame`）· 指纹与"是不是最新"（`fingerprintOf` / `freshnessOf`）· 去抖合批（`shouldFlush`）
-//   · stat 兜底核对（`stalePaths` / `mergeApplied`）。
-//   组合根只做三件事：按 plan 去调官方通道、按 plan 去调加载器、把结果如实显示。
-//   ★ 通道的真实形状（0.2.0 实测）：**目标定向 OS 监视、depth 0、任何写入者都发帧** —— 见该文件头。
+import { INTAKE } from "./pure/intake.ts";
+import { ENTRANCES } from "./pure/analysisdoc.ts";
+import { toAbs } from "./pure/path.ts";
+import { relTimeOf } from "./pure/reltime.ts";
+// ★ 官方 UI 原子库的唯一引入点（守卫式：拿不到就退回自绘控件）—— 见 `src/ui/atoms.js` 的文件头
+import { HAS_PRIMITIVES, PRIMITIVES, primitivesNote } from "./ui/atoms.js";
 import {
-	FLUSH_QUIET_MS,
-	RELOAD_PARTS,
-	acceptFrame,
-	fingerprintOf,
-	freshnessOf,
-	mergeApplied,
-	parseFrame,
-	planReload,
-	shortDigest,
-	shouldFlush,
-	stalePaths,
-	unionParts,
-	watchPlan
-} from "./pure/refresh.ts";
+	ARCHIVED_CACHED_NOTE, FOREIGN_CACHE_NOTE, NO_ARCHIVE_INFO_NOTE,
+	archivedFromSnapshot, configPathCandidates, indexCacheKey, indexCacheOwned, indexCacheParse,
+	indexCacheSerialize, indexTitleFor, isArchivedId, mergeRows, needsFullAccess,
+	normPath, permissionCommandLine, permissionPlanOf, permissionResultNote,
+	pickIndexSession, pickWorkSession, rowsFromList, rowsFromStore, titleOf,
+	workCacheDrop, workCacheGet, workCacheKey, workCachePut, workTitleFor
+} from "./pure/sessionpick.ts";
+import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
+import { inspectFeatureDir, loadCreateFacts } from "./load/create.ts";
+import { loadDashboard } from "./load/dashboard.ts";
+import { loadFeatureDetail } from "./load/feature.ts";
 
-		const h = React.createElement;
+const h = React.createElement;
 
-		/**
-		 * DSH 的静态 UI 库（`@deepseek-ai/dsh-client-ui-primitives`）在外壳播种的**冻结模块表**里，
-		 * 可以直接 require —— 不需要改 package.json、不需要重启。
-		 * ★ 但取不到时**不能让插件挂掉**：整块降级成 <pre> 纯文本渲染。
-		 */
-		let primitives = null;
-		try { primitives = require("@deepseek-ai/dsh-client-ui-primitives"); }
-		catch (e) { primitives = null; }
+// ════════════════════════════════════════════════════════════════════════════
+// 主题令牌：一律用宿主主题变量（浅色 / 深色自动跟随，不写死颜色）
+// ════════════════════════════════════════════════════════════════════════════
+const V = {
+	bg: "var(--dsw-alias-bg-base)",
+	panel: "var(--dsw-alias-bg-layer-1)",
+	panel2: "var(--dsw-alias-bg-layer-2)",
+	line: "var(--dsw-alias-border-l1)",
+	line2: "var(--dsw-alias-border-l2)",
+	ink: "var(--dsw-alias-label-primary)",
+	muted: "var(--dsw-alias-label-secondary)",
+	brand: "var(--dsw-alias-brand-primary)",
+	ok: "var(--dsw-alias-state-success-primary)",
+	warn: "var(--dsw-alias-state-warn-primary)",
+	bad: "var(--dsw-alias-state-error-primary)"
+};
 
-		/**
-		 * 头脑风暴四入口 + 文档生成工作面共用的纯逻辑（素材解析 / 主题派生 / 指令组装）。
-		 *
-		 * ★ 工单 23 起这里是 **import**，不再是内联副本：
-		 *   —— 内联的那一份与 `src/pure/intake.ts` 逐行相同（去缩进后 diff 只剩 export 一行），
-		 *      而工单 23 要往组装器里加四个新入口，留着副本必然长出第二份实现（本仓库反复踩过的坑）。
-		 *   —— 早期"为什么内联"的理由（`/plugins/<pkg>/intake-parse.js` 404）针对的是**运行期再取一个模块**；
-		 *     tsdown 打包后这些都只是同一 bundle 内的静态 import，与其它已接线的 pure 模块没有区别。
-		 * ★ 工单 31：`contract` / `contractErr` 这两个"兼容旧命名"的别名随旧收件箱一起删除 ——
-		 *   今天读 `INTAKE.*` 就只剩头脑风暴与文档生成两条工作面，别名没有第二个消费者了。
-		 */
+const toneColor = (t) => (t === "ok" ? V.ok : t === "warn" ? V.warn : t === "bad" ? V.bad : t === "brand" ? V.brand : V.muted);
 
-		/** 面板 id：main keyed slot 与 sidebar.panellist 用同一个 id 关联 */
-		const PANEL_ID = "sr-workbench";
-		/** sr 工作区与配置表目录，相对会话 workspace 根 */
-		const SR_WS = "GameDesignOS/workspace";
-		const CONFIG_DIR = "planner/策划配置";
+const MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+/**
+ * **可点链接的蓝**（用户口径：能点的超链接就是蓝的）。
+ * 不用 `--dsw-alias-brand-primary`：那支令牌在浅色主题里偏深、看着不像链接。
+ * 这一支在浅色（#fff，约 4.6:1）与深色（#1e1e1e，约 4.4:1）底上都读得出来，且两边的"蓝"是一致的。
+ */
+const LINK = "#1a73e8";
+/**
+ * 主按钮的**填充蓝**（与链接同一支，一个面板只用一支蓝）。
+ *
+ * ★ 为什么不跟宿主走：主题里 `--dsw-alias-brand-primary` = `var(--dsw-static-neutral-bluish-1000)`
+ *   —— 那是**中性墨色（近黑）**，而 `--dsw-alias-button-primary-fill` **就等于** `brand-primary`。
+ *   也就是说宿主的"主按钮"设计上就是黑的，用令牌永远拿不到蓝（5.1.2 那次改动就是空操作）。
+ *   用户口径要蓝 ⇒ 用明确值，白字对比度约 4.6:1（AA）。
+ */
+const ACCENT_FILL = "#1a73e8";
+/** 主按钮 hover：同一支蓝提亮一点（不依赖任何宿主令牌）。 */
+const ACCENT_HOVER = "#2b7ff0";
+const IN = {
+	font: "inherit", fontSize: "12.5px", padding: "5px 8px", borderRadius: "4px",
+	border: "1px solid " + V.line2, background: V.panel, color: V.ink, boxSizing: "border-box", width: "100%"
+};
+const PAGE = {
+	padding: "18px 22px 40px", boxSizing: "border-box", height: "100%", overflow: "auto",
+	background: V.bg, color: V.ink,
+	fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif", fontSize: "13px", lineHeight: 1.6
+};
+const PRE = {
+	fontFamily: MONO, fontSize: "11.5px", whiteSpace: "pre-wrap", wordBreak: "break-word",
+	background: V.panel2, border: "1px solid " + V.line, borderRadius: "6px", padding: "8px", margin: 0,
+	maxHeight: "300px", overflow: "auto"
+};
 
-		// ════════════════════════════════════════════════════════════════
-		// 一、文件名 → 功能主题 —— **工单 32 起改为 import `./pure/topic.ts`**
-		//   （原内联的 PREFIXES / TAIL / topicOf / isNoise / dateOf 与模块那份逐字相同，
-		//     删掉的是纯重复；改主题派生规则请改 `src/pure/topic.ts`，那里有测试）
-		// ════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+// 小部件
+// ════════════════════════════════════════════════════════════════════════════
 
+/**
+ * 状态小标签（10.5px / 1px 描边 / 3px 圆角）。
+ * ★ 卡片改版时把原来那支圆角更大的 `Badge` 删了 —— 全插件只留**这一支**小标签，
+ *   免得同一个东西有两套尺寸（那正是"看着不成体系"的来源）。
+ */
+function chip(text, color) {
+	return h("span", {
+		style: { fontSize: "10.5px", color: color, border: "1px solid " + color, borderRadius: "3px", padding: "0 5px", whiteSpace: "nowrap" }
+	}, text);
+}
 
-		// ── 产物分类（设计 §3.2：**功能 = 目录**）──────────────────────────
-		//   产物落在 `features\<主题>\` 的**子目录**里，所以分类就是"看子目录"——零猜测。
-		//   `artifactBucket()` 是给 `gdd\` 内部用的：那一个子目录里混着成稿/定稿/审查/宣讲 HTML，
-		//   得按文件名再分一次。
-		//   ★ 这一层存在的意义：**别再往兼容层加东西**。
-		//     新结构 `features\<主题>\`：按**子目录**分类，零猜测（目录本身就是答案）；
-		//     旧结构（平铺的 proposals/analysis/decisions/evidence）：按**文件名前缀**分类 +
-		//     `topicOf` 派生主题 —— 这是**兼容层，只减不增**。
-		//   两种结构经这里产出**同一组桶**，下游（阶段条 / 产物页签 / 计数）不用分叉。
-		//
-		//   ⚠️ 2026-09-29 实测缺口：原实现只认 `concept-triage_ / feature-concept_ / sr-gdd-handoff_`
-		//      三个前缀，于是 sr-analysis 的**体验报告 / 问题卡 / 复刻规格被静默丢弃**，
-		//      `evidence\` 目录更是整个没扫 —— 竞品分析只剩"交接 JSON"能被看见。
-		//   ★ `source\` —— **所有发给 agent 的源文件**（2026-09-29 你定义）：
-		//      分析用的截图 / 录屏 / PV、旧文档原件、外部交付包（UE 交互交付物）…
-		//      它是**输入**；`evidence\` 是分析**产出**的证据（抽帧 / 索引 / 时间戳账本 / readback）——
-		//      两者是"喂进去的原料"与"做出来的证据"，不能混。
-		//   ✗ `assets\` 不要：线框图跟着定稿走（`gdd\UI\`），没有独立的素材目录需求。
-		const DIR_BUCKET = {
-			analysis: "analysis", gdd: "gdd", decisions: "decisions",
-			evidence: "evidence", source: "source", delivery: "delivery"
-		};
-		/** 桶 → byTopic 里的数组字段名（没有字段的进 others） */
-		const BUCKET_FIELD = {
-			final: "finals", review: "reviews", speech: "speeches",
-			// ★ analysis 桶落到 `concept` 字段：**沿用旧字段名**，免得阶段条 / 产物页签 / PipelinePanel
-			//   跟着改一遍。含义已从"3 种概念产物"扩为**全部头脑风暴产物**（6 种 analysis 产出）。
-			analysis: "concept",
-			evidence: "evidence", decisions: "decisions", source: "source",
-			draft: "drafts", gdd: "drafts"
-		};
-		/** 旧结构：文件名前缀 → 桶。sr-* 各 skill 的产出全在这里 */
-		const PREFIX_BUCKET = [
-			["concept-triage_", "analysis"], ["feature-concept_", "analysis"],
-			["experience-report_", "analysis"], ["issue-cards_", "analysis"],
-			["replication-spec_", "analysis"], ["sr-gdd-handoff_", "analysis"],
-			["evidence-index_", "evidence"], ["calibration_", "evidence"],
-			["readback_", "evidence"], ["decision_", "decisions"],
-			["smoke_", "others"], ["write_CS-", "others"]
-		];
-		/** 文件名 → 产物桶。**旧结构用**；新结构的 gdd\ 子目录里也要再细分，所以也会用到 */
-		function artifactBucket(name) {
-			const n = String(name || "");
-			if (!n) return "others";
-			if (/_定稿\.md$/i.test(n)) return "final";
-			if (/_定稿_审查\.md$/i.test(n) || /_审查\.md$/i.test(n)) return "review";
-			if (/_宣讲_.*\.html$/i.test(n)) return "speech";
-			if (/_宣讲_.*\.content\.json$/i.test(n)) return "speechSrc";   // 派生件，不单独显示
-			if (/_修订点\.md$/i.test(n)) return "gdd";
-			for (const pk of PREFIX_BUCKET) if (n.indexOf(pk[0]) === 0) return pk[1];
-			if (/\.md$/i.test(n)) return "draft";
-			return "others";
-		}
-
-		/** 解析 md 顶部 frontmatter 的简单标量字段 */
-		function parseFrontmatter(text) {
-			const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text || "");
-			if (!m) return null;
-			const out = {};
-			for (const line of m[1].split(/\r?\n/)) {
-				const kv = /^([A-Za-z_][\w-]*):\s*(.*)$/.exec(line);
-				if (kv) out[kv[1]] = kv[2].trim().replace(/^["']|["']$/g, "");
-			}
-			return out;
-		}
-
-		// ── 定稿有效性校验（V1）· 定稿结构解析（§6.2 大纲树 / §6.3）· 引用图（§6.4.1）· 特殊块切分 ──
-		//   ★ 工单 13/14：这四块的**内联副本已全部删除**，改为 import 文件顶部那几个模块
-		//     （`checkFinals` / `parseFinalGdd` / `buildRefGraph` / `impactOf` / `splitSpecial`）。
-		//     本仓库的规矩：判据只有一份 —— 内联那份 `buildRefGraph` 停在"六类里的五类"，
-		//     于是面板上的影响范围**永远看不到 `[契约]`**（正是本票要修的东西）。
-		//     模块版另有 `refOf` / `fieldRowAt` / `edgeLabelOf` 三个给界面用的纯函数（见 import 处）。
-
-		function errText(r, fallback) {
-			if (!r) return fallback;
-			const e = r.error;
-			return e ? (e.message || e.code || fallback) : fallback;
-		}
-
-		// ════════════════════════════════════════════════════════════════
-		// 二、数据加载
-		// ════════════════════════════════════════════════════════════════
-
-		/**
-		 * 从 sr 本地配置读**绝对路径锚点**。
-		 * ★ 不能硬编码相对路径让面板跟着"当前会话的工作区"走——你切到别的工作区的会话时就会读不到。
-		 *   `read` 允许读工作区外路径（只有目录列举受限），所以这一步任何会话都能做。
-		 * ★ `extraPaths`：**绝对**候选（组合根按"候选根"拼出来的，见 resolveIndexSession）。
-		 *   浏览器半侧收不到插件 config（开发笔记坑 7），所以 `configPath` 在浏览器里是空的，
-		 *   绝对路径只能由调用方补进来；末尾的相对候选留作最后兜底。
-		 */
-		async function loadSrPaths(read, sid, configPath, signal, extraPaths) {
-			const cands = [];
-			if (configPath) cands.push(configPath);
-			for (const extra of (extraPaths || [])) if (extra) cands.push(extra);
-			cands.push(".agents/skills/sr-askme/config.local.json");
-			for (const p of cands) {
-				const text = await readAllText(read, sid, p, signal, 200);
-				if (!text) continue;
-				try {
-					const cfg = JSON.parse(text);
-					if (cfg && cfg.sr_workspace) {
-						return {
-							srWs: String(cfg.sr_workspace).replace(/[\\/]+$/, ""),
-							configRoot: String(cfg.config_root || "").replace(/[\\/]+$/, ""),
-							// 从配置路径反推 skills 根（形状：<X>/.agents/skills || <X>/.agents/skills/sr-askme/config.local.json）
-							skillsRoot: p.replace(/[\\/]sr-askme[\\/]config\.local\.json$/i, ""),
-							configFile: p
-						};
-					}
-				} catch (e) { /* 换下一个候选 */ }
-			}
-			return { srWs: "", configRoot: "", configFile: "(未找到 sr 配置)" };
-		}
-
-		/** 从各种目录列举返回值里取出文件名 */
-		function fileNamesOf(v) {
-			const e = (v && (v.entries || v.children || v.items)) || [];
-			return e
-				.filter((x) => {
-					const k = x && (x.type || x.kind);
-					return k === "file" || k === undefined;
-				})
-				.map((x) => x.name)
-				.filter((n) => typeof n === "string" && n.length > 0);
-		}
-
-		/** 只取**子目录**名（fileNamesOf 只取文件，两者互补） */
-		function dirNamesOf(v) {
-			const e = (v && (v.entries || v.children || v.items)) || [];
-			return e
-				.filter((x) => x && (x.type === "directory" || x.kind === "directory"))
-				.map((x) => x.name)
-				.filter((n) => typeof n === "string" && n.length > 0);
-		}
-
-		/** 列子目录：与 listDir 同两条通道，但取目录 */
-		async function listDirs(ctx, sid, absPath, signal, optional) {
-			const ns = (ctx && ctx.remote) || {};
-			if (ns.workspaceFiles && typeof ns.workspaceFiles.list === "function") {
-				try {
-					const r = await ns.workspaceFiles.list(sid, absPath, signal);
-					if (r && r.ok === true) return dirNamesOf(r.value);
-				} catch (e) { /* 落到通道② */ }
-			}
-			if (ns.workspace && typeof ns.workspace.list === "function") {
-				try {
-					const r = await ns.workspace.list(absPath, signal);
-					if (r && r.ok === true) return dirNamesOf(r.value);
-				} catch (e) { /* 继续 */ }
-			}
-			if (optional) return [];
-			throw new Error("无法列举目录：" + absPath);
-		}
-
-		/**
-		 * 列一层目录的**原始条目**（文件与子目录都要）。
-		 * ★ 工单 12 新增：产物清单必须同时看到"文件"与"子目录"（`gdd\UI\`、`evidence\frames\`），
-		 *   而 listDir / listDirs 各自只取一半。条目形状照 `WorkspacePort` 的 `ListResult`。
-		 */
-		async function listEntries(ctx, sid, absPath, signal) {
-			const ns = (ctx && ctx.remote) || {};
-			const norm = (v) => {
-				const e = (v && (v.entries || v.children || v.items)) || [];
-				return {
-					entries: e.map((x) => {
-						const k = x && (x.type || x.kind);
-						return { name: x && x.name, type: k === "directory" ? "directory" : (k === undefined ? "unknown" : k) };
-					}).filter((x) => typeof x.name === "string" && x.name.length > 0),
-					truncated: !!(v && v.truncated)
-				};
-			};
-			if (ns.workspaceFiles && typeof ns.workspaceFiles.list === "function") {
-				try {
-					const r = await ns.workspaceFiles.list(sid, absPath, signal);
-					if (r && r.ok === true) return norm(r.value);
-				} catch (e) { /* 落到通道② */ }
-			}
-			if (ns.workspace && typeof ns.workspace.list === "function") {
-				try {
-					const r = await ns.workspace.list(absPath, signal);
-					if (r && r.ok === true) return norm(r.value);
-				} catch (e) { /* 继续 */ }
-			}
-			// ★ 不吞错：载入层的 `optional` 列举会自己接住它（功能目录缺桶是常态）
-			throw new Error("无法列举目录：" + absPath);
-		}
-
-		/**
-		 * `workspaceFiles.list` 被 host 圈定在**会话 cwd** 之内（见 `listDir` 的注释），
-		 * 而面板的索引会话 cwd = SR 工作区根 —— 所以 SR 工作区**之外**的目录
-		 * （本机就是 `config_root` = `D:\TimeMachine\planner\策划配置`）要另借一条只读会话来列。
-		 * 这个变量就是那条会话的 id（由 `resolveIndexSession` 每次解析时刷新；空 = 借不到）。
-		 */
-		let LIST_SID = "";
-
-		/**
-		 * 组合根适配：把 ctx 的远程通道包成载入层要的 `WorkspacePort` **文件侧**形状。
-		 * ★ 这是组合根该干的事（`src/client.js` 是唯一知道 ctx 的地方）；载入层因此能
-		 *   与测试用同一个端口跑同一份实现（工单 32 的方向）。
-		 *   指令侧五个方法**不包**：面板的指令出口仍是 `probe` / `remoteOpen`。
-		 */
-		function portOf(ctx, sid, read) {
-			return {
-				// ★ 工单 22：列举先试本会话，失败再试**借来的只读会话**（`LIST_SID`）——
-				//   与 `listDir` 的通道①①' 同口径：新建功能的"回读"要在目录刚出现的那一刻就列得到。
-				listDir: async (absPath, signal) => {
-					try {
-						return await listEntries(ctx, sid, absPath, signal);
-					} catch (e) {
-						if (LIST_SID && LIST_SID !== sid) return await listEntries(ctx, LIST_SID, absPath, signal);
-						throw e;
-					}
-				},
-				readText: async (path, range, signal) => {
-					const r = await read(sid, path, range, signal);
-					if (!r || r.ok !== true) {
-						const e = r && r.error;
-						throw new Error("读不到文件：" + ((e && (e.message || e.code)) || path));
-					}
-					return r.value;
-				},
-				/**
-				 * ★ 工单 25 · `stat` —— 载入层用它拿**文件时间**。
-				 *
-				 * 为什么必须补这一条：`workspaceFiles.stat` 返回的 `version` 是
-				 * `dev:ino:size:mtimeNs:ctimeNs`（实测，见 `src/pure/fsstamp.ts`），
-				 * 第 4 段就是 mtime 纳秒 —— 定稿门靠它判「审查报告是不是比定稿旧」。
-				 * 原先 `portOf` 只给了 `listDir` / `readText`，端口上没有 `stat`，
-				 * 于是载入层那次调用被容错吃掉、时间恒为 0，面板只会一直说"看不到时间"
-				 * （**实测踩出来的**：本票第一版就是这样，真机上定稿门永远不放行）。
-				 *
-				 * ★ 不进版本袋（`readWith`）：袋子是"屏幕上这份**内容**读的是哪一版"，
-				 *   而 stat 不读内容；指纹那一侧照旧由 `statMany` 单独算。
-				 */
-				stat: async (absPath, signal) => {
-					const ns = (ctx && ctx.remote) || {};
-					const wf = ns.workspaceFiles;
-					if (!wf || typeof wf.stat !== "function") throw new Error("remote.workspaceFiles.stat 不可用");
-					const r = await wf.stat(sid, absPath, signal);
-					if (!r || r.ok !== true) {
-						const e = r && r.error;
-						throw new Error("取不到文件版本：" + ((e && (e.message || e.code)) || absPath));
-					}
-					return r.value;
+/**
+ * 按钮。`tone`: "primary" | "plain"。
+ *
+ * ★ **官方组件（P0）**：宿主给了 primitives 就用官方 `Button`。三档用对：
+ *   · 主按钮 → `primary`，但**底色用品牌强调色** `--dsw-alias-brand-primary`（官方给插件用的那支令牌），
+ *     不是 `--dsw-alias-button-primary-fill`（宿主内部那支，在浅色主题里是深色）——
+ *     用户口径：深色主按钮不如品牌蓝好看。底色被内联接管后 `:hover` 类不再生效，
+ *     所以 hover / active 的反馈由这里自己给（`filter: brightness`），不动其它状态。
+ *   · 次按钮 → `outline`（**有可见描边**，像一个按钮；`ghost` 静止时看不出是按钮）。
+ *   · `icon` 槽位传官方图标（16×16，`gap: 4px` 由官方样式负责对齐）。
+ *   · 拿不到 primitives ⇒ 退回下面这套自绘，观感与行为都保持原样。
+ */
+function Btn(props) {
+	const tone = props.tone || "plain";
+	const off = !!props.off;
+	const [hover, setHover] = React.useState(false);
+	if (HAS_PRIMITIVES) {
+		const primary = tone === "primary";
+		return h(PRIMITIVES.Button, {
+			variant: primary ? "primary" : "outline",
+			size: "sm",
+			icon: props.icon ? h(props.icon, { size: 14 }) : void 0,
+			disabled: off,
+			title: props.title || "",
+			onClick: off ? void 0 : props.onPick,
+			onMouseEnter: () => setHover(true),
+			onMouseLeave: () => setHover(false),
+			style: primary
+				? {
+					background: hover && !off ? ACCENT_HOVER : ACCENT_FILL,
+					color: "#fff",
+					transition: "background 120ms ease"
 				}
-			};
+				// 次按钮：官方 `outline` 的描边是 `--dsw-alias-border-l3` 且只有 0.5px，白底上看不见 ——
+				// 换成契约里的 `--dsw-alias-border-l2`（1px），这才是"看得出是按钮"
+				: { border: "1px solid " + V.line2 }
+		}, props.label);
+	}
+	return h("button", {
+		type: "button", disabled: off, title: props.title || "",
+		onClick: off ? void 0 : props.onPick,
+		style: {
+			font: "inherit", fontSize: "12px", padding: "4px 11px", borderRadius: "5px",
+			cursor: off ? "default" : "pointer", whiteSpace: "nowrap",
+			border: "1px solid " + (tone === "primary" ? ACCENT_FILL : V.line2),
+			background: tone === "primary" ? ACCENT_FILL : "transparent",
+			color: tone === "primary" ? "#fff" : V.ink,
+			opacity: off ? 0.45 : 1
 		}
+	}, props.label);
+}
 
-		/**
-		 * 目录列举：三条通道依次试。
-		 *   ① workspaceFiles.list(sessionId, path) —— 会话端口，**仅当该目录在该会话的 cwd 之内**才可列
-		 *      （host：`workspaceRoot = header.cwd ?? sandboxPolicy.workspaceRoot`，
-		 *       `dsh-api-workspace-files/lib/index.js:411` / `:500`；越界报 `workspace-file/outside-workspace`）
-		 *   ①' workspaceFiles.list(LIST_SID, path) —— **借来的只读会话**，只为列 SR 工作区**之外**的目录
-		 *      （`config_root` 就是这种；工单 07 把索引会话的 cwd 收紧到 SR 根之后才需要这一刀，
-		 *       它是**列举**的兜底，不是认领：见 `pickListingSession`）
-		 *   ② workspace.list(path) —— 工作区无关端口（**本机 0.2.0 没有这个方法**：`workspace` 命名空间
-		 *      只有 archiveSession/create/delete/follow/… 没有 list，所以这一条按"有就用"处理）
-		 */
-		async function listDir(ctx, sid, absPath, signal, optional) {
-			const ns = (ctx && ctx.remote) || {};
-			if (ns.workspaceFiles && typeof ns.workspaceFiles.list === "function") {
-				const sids = [sid];
-				if (LIST_SID && LIST_SID !== sid) sids.push(LIST_SID);
-				for (const one of sids) {
-					try {
-						const r = await ns.workspaceFiles.list(one, absPath, signal);
-						if (r && r.ok === true) return fileNamesOf(r.value);
-					} catch (e) { /* 换下一条会话（越界就是这里被拒） */ }
-				}
+/** 折叠区：**收起时里面的字根本不渲染**（不是拿 CSS 藏）。 */
+function Fold(props) {
+	const [open, setOpen] = React.useState(!!props.open);
+	return h("div", { style: { marginTop: props.marginTop || "8px" } }, [
+		h("button", {
+			key: "h", type: "button", onClick: () => setOpen(!open),
+			style: {
+				font: "inherit", fontSize: "11.5px", padding: "2px 0", border: "none",
+				background: "transparent", color: V.muted, cursor: "pointer", textAlign: "left"
 			}
-			if (ns.workspace && typeof ns.workspace.list === "function") {
-				try {
-					const r = await ns.workspace.list(absPath, signal);
-					if (r && r.ok === true) return fileNamesOf(r.value);
-				} catch (e) { /* 继续 */ }
-			}
-			if (optional) return [];
-			throw new Error("无法列举目录：" + absPath);
+		}, (open ? "▾ " : "▸ ") + props.label + (props.note ? "　" + props.note : "")),
+		open ? h("div", { key: "b", style: { marginTop: "5px" } }, props.children) : null
+	]);
+}
+
+/** 一句提示（info / ok / warn / err）。 */
+function Notice(props) {
+	const n = props.notice;
+	if (!n) return null;
+	const t = n.kind || "info";
+	return h("div", {
+		style: {
+			border: "1px solid " + toneColor(t === "err" ? "bad" : t), borderRadius: "6px",
+			padding: "7px 10px", marginBottom: "10px", fontSize: "12.5px",
+			background: V.panel, color: V.ink, whiteSpace: "pre-wrap", wordBreak: "break-word"
 		}
+	}, [
+		h("div", { key: "m" }, n.text || ""),
+		n.next ? h("div", { key: "n", style: { marginTop: "3px", color: V.muted } }, n.next) : null
+	]);
+}
 
-		async function readHead(read, sid, path, signal) {
-			try {
-				const r = await read(sid, path, { offset: 1, limit: 14 }, signal);
-				if (!r || r.ok !== true) return null;
-				return r.value.text;
-			} catch (e) { return null; }
-		}
-
-		/** 分页读完整文本（read 按行分页，maxLines 默认 5000） */
-		async function readAllText(read, sid, path, signal, capLines) {
-			const cap = capLines || 20000;
-			let offset = 1, out = [], guard = 0;
-			while (guard++ < 40) {
-				let r;
-				try { r = await read(sid, path, { offset: offset, limit: 2000 }, signal); }
-				catch (e) { return null; }
-				if (!r || r.ok !== true) return out.length ? out.join("\n") : null;
-				out.push(r.value.text);
-				if (r.value.eof || r.value.lines === 0) break;
-				offset += r.value.lines;
-				if (offset > cap) break;
-			}
-			return out.join("\n");
-		}
-
-		/** 读契约 schema（决策记录以它为准绳；读不到就退化为"只列结构问题"） */
-		async function loadDecisionSchema(read, sid, skillsRoot, signal) {
-			const cands = [];
-			if (skillsRoot) cands.push(skillsRoot + "/sr-askme/references/decision.schema.json");
-			cands.push(".agents/skills/sr-askme/references/decision.schema.json");
-			for (const p of cands) {
-				const text = await readAllText(read, sid, p, signal, 2000);
-				if (!text) continue;
-				try { return JSON.parse(text); } catch (e) { /* 换下一个 */ }
-			}
-			return null;
-		}
-
-		/**
-		 * 按 schema 校验一条决策记录（JSON Schema 的实用子集：
-		 * required / enum / const / pattern / minItems / 数组元素 pattern / additionalProperties）
-		 */
-		function validateDecision(doc, schema) {
-			const issues = [];
-			const push = (field, value, rule) => issues.push({ field: field, value: value, rule: rule });
-			if (!schema) return issues;
-			const P = schema.properties || {};
-			for (const k of (schema.required || [])) {
-				if (doc[k] === undefined) push(k, "(缺失)", "必填字段缺失");
-			}
-			for (const k of Object.keys(P)) {
-				const spec = P[k];
-				const v = doc[k];
-				if (v === undefined) continue;
-				if (spec.const !== undefined && v !== spec.const) push(k, JSON.stringify(v), "必须为 " + JSON.stringify(spec.const));
-				if (spec.enum && spec.enum.indexOf(v) < 0) push(k, JSON.stringify(v), "枚举外 · 合法值：" + spec.enum.join(" / "));
-				if (spec.pattern && typeof v === "string" && !(new RegExp(spec.pattern)).test(v)) push(k, JSON.stringify(v), "不匹配 " + spec.pattern);
-				if (spec.minItems !== undefined && Array.isArray(v) && v.length < spec.minItems) {
-					push(k, v.length + " 条", "少于下限 minItems: " + spec.minItems);
-				}
-				const itemPat = spec.items && spec.items.pattern;
-				if (itemPat && Array.isArray(v)) {
-					for (const item of v) {
-						if (typeof item === "string" && !(new RegExp(itemPat)).test(item)) {
-							push(k, JSON.stringify(item), "元素不匹配 " + itemPat);
-						}
-					}
-				}
-			}
-			if (schema.additionalProperties === false) {
-				for (const k of Object.keys(doc)) {
-					if (!P[k]) push(k, JSON.stringify(doc[k]).slice(0, 40), "schema 未声明的字段（additionalProperties: false）");
-				}
-			}
-			return issues;
-		}
-
-		/** 读某功能的决策记录 + 校验 + 校准流水 */
-		/**
-		 * 决策台账（审计面）：决策记录 + 校准流水。
-		 * ★ 收**功能根目录**而不是 srWs —— 功能 = 目录（§3.2），所以**不再需要 topicOf 过滤**：
-		 *   目录已经天然隔离了。这是"新结构做扎实"的直接收益，少一层猜测、少一类错。
-		 */
-		async function loadLedger(ctx, read, sid, root, skillsRoot, signal) {
-			const dir = root + "/decisions";
-			const names = await listDir(ctx, sid, dir, signal, true);
-			const mine = names.filter((n) => /^decision_.*\.json$/i.test(n));
-
-			const schema = await loadDecisionSchema(read, sid, skillsRoot, signal);
-			const records = [];
-			for (const n of mine.slice().sort().reverse()) {
-				const text = await readAllText(read, sid, dir + "/" + n, signal, 2000);
-				let doc = null, parseErr = null;
-				try { doc = JSON.parse(text); } catch (e) { parseErr = String((e && e.message) || e); }
-				records.push({
-					file: n,
-					doc: doc,
-					parseErr: parseErr,
-					issues: doc ? validateDecision(doc, schema) : []
-				});
-			}
-
-			// 校准流水（evidence\calibration_*.jsonl）
-			const ev = await listDir(ctx, sid, root + "/evidence", signal, true);
-			const calFiles = ev.filter((n) => /^calibration_.*\.jsonl$/i.test(n));
-			const calibration = [];
-			for (const n of calFiles) {
-				const text = await readAllText(read, sid, root + "/evidence/" + n, signal, 2000);
-				if (!text) continue;
-				for (const line of text.split(/\r?\n/)) {
-					const s = line.trim();
-					if (!s) continue;
-					try { calibration.push({ file: n, row: JSON.parse(s) }); } catch (e) { /* 跳过坏行 */ }
-				}
-			}
-
-			// ★ 交接 JSON（analysis\sr-gdd-handoff_*.json）—— 头脑风暴结论的主要载体
-			const an = await listDir(ctx, sid, root + "/analysis", signal, true);
-			const handoffs = [];
-			for (const n of an.filter((x) => /^sr-gdd-handoff_.*\.json$/i.test(x))) {
-				const text = await readAllText(read, sid, root + "/analysis/" + n, signal, 2000);
-				if (text) handoffs.push({ name: n, text: text });
-			}
-
-			// ★ 字段覆盖检查（工单 17）**不在这一层做**：它是**派生期**的事 ——
-			//   `ledgerOf(L)` → `buildLedger(...)` 组装台账时顺手跑（源就在那条链上），
-			//   结论在 `buildLedger(...).fieldCheck`（= `checkFieldCoverage` 的返回值本身）。
-			//   ★ 这里再跑一遍就是第二份实现；工单 32 的方向正相反（面板跑被测试覆盖的那一份）。
-			return {
-				records: records, schema: schema, schemaOk: !!schema,
-				calibration: calibration, calFiles: calFiles,
-				handoffs: handoffs
-			};
-		}
-
-		/** 从 loadLedger 的产物派生设计台账 —— 实现与理由见 `src/pure/ledger.ts` 的 `ledgerOf`（工单 32 接线） */
-
-		/** 扫工作区 → 功能列表 */
-		async function loadDashboard(ctx, read, sid, cwd, configPath, signal, extraPaths) {
-			// ★ 先从 sr 配置拿**绝对路径**，不跟着当前会话的工作区走
-			const P = await loadSrPaths(read, sid, configPath, signal, extraPaths);
-			const srWs = P.srWs || SR_WS;
-			const cfgDir = P.configRoot || CONFIG_DIR;
-			if (!P.srWs) {
-				const rel = await loadDashboardInner(ctx, read, sid, SR_WS, CONFIG_DIR, signal);
-				rel.pathNote = "未读到 sr 配置（试过 " + P.configFile + "），已退回相对路径 " + SR_WS;
-				rel.configFile = P.configFile;
-				rel.cwd = cwd || "";
-				return rel;
-			}
-			const out = await loadDashboardInner(ctx, read, sid, srWs, cfgDir, signal);
-			out.srWs = srWs;
-			out.configRoot = cfgDir;
-			out.skillsRoot = P.skillsRoot || "";
-			out.configFile = P.configFile;
-			out.cwd = cwd || "";
-			return out;
-		}
-
-		async function loadDashboardInner(ctx, read, sid, srWs, cfgDir, signal) {
-			// ★★ 功能 = 目录（设计 §3.2）。**只认 `features\<主题>\`，代码里零兼容。**
-			//    旧结构（平铺的 proposals/analysis/decisions/evidence）是"待清理的素材仓库"：
-			//    素材已由 `migrate-to-features.js` 搬进新结构，面板**不再读它**，
-			//    只统计还剩多少文件 —— 那个数字的唯一用途是提示你"可以删了"。
-			const [featDirs, configNamesRaw] = await Promise.all([
-				listDirs(ctx, sid, srWs + "/features", signal, true),
-				listDir(ctx, sid, cfgDir, signal, true)
-			]);
-			/**
-			 * ★ 2026-10-08（工单 28 顺带修的实测缺口）：Excel 打开工作簿时会在同目录留一个**隐藏锁文件**
-			 *   `~$<原表名>.xlsm`（实测 165 字节 —— 真机上用户当场开着 `A002-货物道具表.xlsm`）。
-			 *   它匹配 `\.xlsx?m?$` ⇒ 看板会报"93 张配置表"、还可能按主题挂到某个功能上。
-			 *   排除它（`~$` 是 Office 的临时/锁文件前缀）。**其余文件一律照列。**
-			 *   ★ 注意：看板逻辑在这里**还有一份内联实现**（工单 32 只把别的模块接了过去）——
-			 *     所以 `src/load/dashboard.ts` 与这一处**同一条改动要一起做**（那一条管测试与 harness）。
-			 */
-			const configNames = configNamesRaw.filter((n) => n.indexOf("~$") !== 0);
-
-			const feats = [];
-			for (const t of featDirs) {
-				if (isNoise(t)) continue;
-				const root = srWs + "/features/" + t;
-				const f = {
-					topic: t, root: root, ledgerFile: null,
-					// concept 沿用旧字段名，含义 = **全部头脑风暴产物**（6 种 analysis 产出）
-					concept: [], drafts: [], finals: [], reviews: [], speeches: [],
-					decisions: [], evidence: [], source: [], evPacks: [], others: 0
-				};
-				// ① 七个标准子目录
-				for (const sub in DIR_BUCKET) {
-					const names = await listDir(ctx, sid, root + "/" + sub, signal, true);
-					for (const n of names) {
-						// gdd\ 里混着成稿/定稿/审查，要再细分；其余子目录直接按目录归桶
-						const bucket = (sub === "gdd") ? artifactBucket(n) : DIR_BUCKET[sub];
-						const field = BUCKET_FIELD[bucket];
-						if (field) f[field].push(n); else f.others += 1;
-					}
-				}
-				// ② 功能根下的设计台账（§7.2：台账在功能根，不在任何子目录）
-				const rootFiles = await listDir(ctx, sid, root, signal, true);
-				f.ledgerFile = rootFiles.filter((n) => /^设计台账.*\.md$/i.test(n))[0] || null;
-				// ★ 工单 22：身份声明 + 六个桶齐不齐（**与 `src/load/dashboard.ts` 同一处改动** ——
-				//   工单 32 把看板接到模块那份之前，这两处必须一起改；判定全在纯函数里，这里只是读）。
-				f.identity = identityOf(await readAllText(read, sid, root + "/feature.json", signal, 60), t);
-				const subdirs = await listDirs(ctx, sid, root, signal, true);
-				const haveSub = new Set(subdirs.map((d) => String(d).toLowerCase()));
-				f.bucketsMissing = BUCKET_ORDER.filter((b) => !haveSub.has(b.toLowerCase()));
-				// ③ 证据包（`evidence\<名字>\` 这种子目录）
-				for (const d of await listDirs(ctx, sid, root + "/evidence", signal, true)) {
-					const inside = await listDir(ctx, sid, root + "/evidence/" + d, signal, true);
-					f.evPacks.push({ dir: d, files: inside.length, sample: inside.slice(0, 6) });
-				}
-				feats.push(f);
-			}
-
-			// 旧结构残留统计 —— **只用于提示，不产出功能**
-			let legacyLeft = 0;
-			for (const d of ["proposals", "analysis", "decisions", "evidence", "inbox"]) {
-				legacyLeft += (await listDir(ctx, sid, srWs + "/" + d, signal, true)).length;
-			}
-
-			// ★ 配置表只按主题**挂到已有功能上**，自己绝不创建功能
-			//   （策划配置目录有 92 张表，它们不是功能，是功能的落地资源）
-			const configByTopic = new Map();
-			for (const n of configNames) {
-				if (!/\.xlsx?m?$/i.test(n)) continue;
-				const t = topicOf(n);
-				if (isNoise(t)) continue;
-				if (!configByTopic.has(t)) configByTopic.set(t, []);
-				configByTopic.get(t).push(n);
-			}
-
-			const features = [];
-			/** 定稿的绝对路径：**只有一种结构** —— `features\<主题>\gdd\` */
-			const finalAbs = (f, name) => f.root + "/gdd/" + name;
-
-			for (const f of feats) {
-				f.finals.sort((a, b) => (dateOf(a) < dateOf(b) ? 1 : -1));
-				f.reviews.sort().reverse();
-				f.decisions.sort().reverse();
-				const latest = f.finals[0] || null;   // finals 已按日期倒序
-				// ★ 定稿以**日期**定最终版（口径不变）；但为了暴露"多份 active 并存"这个真实缺陷，
-				//   这里把**每一份定稿的头部**都读一遍，交给 checkFinals 判（设计 §6.1 / §8 V1）。
-				//   代价：每功能多 N-1 次 readHead；定稿通常 1–3 份，可接受。
-				//   ★ 路径统一走 finalAbs —— 新结构 `features\<主题>\gdd\` 与旧结构 `proposals\` 都能读
-				const finalHeads = await Promise.all(f.finals.map(async (name) => {
-					const h = parseFrontmatter(await readHead(read, sid, finalAbs(f, name), signal));
-					return { name: name, doc_type: h ? h.doc_type : null, status: h ? h.status : null };
-				}));
-				const finalCheck = checkFinals(finalHeads);
-				const head = finalHeads.length ? finalHeads[0] : null;
-
-				features.push({
-					topic: f.topic,
-					root: f.root,                    // ★ 功能的根目录 —— 一切读取都从它出发
-					ledgerFile: f.ledgerFile,        // ★ 功能根下的设计台账（§7.2）
-					// ★ 工单 22：身份（`feature.json`）+ 桶齐不齐
-					identity: f.identity,
-					bucketsMissing: f.bucketsMissing,
-					docType: head ? head.doc_type : null,
-					status: head ? head.status : null,
-					finalCheck: finalCheck,          // ★ 定稿有效性（§6.1 / §8 V1）
-					latestFinal: latest,
-					latestDate: latest ? dateOf(latest) : "",
-					finals: f.finals.length,
-					reviews: f.reviews.length,
-					speeches: f.speeches.length,
-					decisions: f.decisions.length,
-					evidence: f.evidence.length,
-					evPacks: f.evPacks,
-					sources: f.source.length,
-					configs: configByTopic.get(f.topic) || [],
-					others: f.others,
-					historyCount: Math.max(0, f.finals.length - 1),
-					openPath: latest ? finalAbs(f, latest) : null,
-					// ★ A3 产物：留全文件名，按阶段分组
-					files: {
-						concept: f.concept.slice().sort(),
-						draft: f.drafts.slice().sort(),
-						final: f.finals.slice(),                    // 已按日期倒序
-						review: f.reviews.slice().sort().reverse(),
-						speech: f.speeches.slice().sort().reverse(),
-						config: (configByTopic.get(f.topic) || []).slice().sort(),
-						decision: f.decisions.slice().sort().reverse(),
-						evidence: f.evidence.slice().sort(),
-						source: f.source.slice().sort()
-					},
-					stageCounts: {
-						concept: f.concept.length,
-						draft: f.drafts.length,
-						config: (configByTopic.get(f.topic) || []).length,
-						final: f.finals.length,
-						review: f.reviews.length,
-						speech: f.speeches.length
-					},
-					stages: {
-						concept: f.concept.length > 0,
-						draft: f.drafts.length > 0 || f.finals.length > 0,
-						config: (configByTopic.get(f.topic) || []).length > 0,
-						final: f.finals.length > 0,
-						review: f.reviews.length > 0,
-						speech: f.speeches.length > 0
-					}
-				});
-			}
-
-			// ★ 不再过滤：**目录存在就是功能**（哪怕它暂时是空的）—— 这是"功能 = 目录"的直接推论
-			features.sort((a, b) => (a.latestDate < b.latestDate ? 1 : -1));
-
-			return {
-				features: features,
-				legacyLeft: legacyLeft,      // 旧结构还剩多少文件（唯一用途：提示你"可以删了"）
-				counts: { features: features.length, configs: configNames.length },
-				srWs: srWs,
-				configRoot: cfgDir
-			};
-		}
-
-		// ════════════════════════════════════════════════════════════════
-		// 三、样式
-		// ════════════════════════════════════════════════════════════════
-		const C = {
-			ink: "#1a1a1a", soft: "#c8c8c8", faint: "#e8e8e8", panel: "#fff", bg: "#fafafa",
-			warn: "#b45309", bad: "#b91c1c", ok: "#15803d", muted: "#6b6b6b", link: "#2b6cb0"
-		};
-		function badge(text, tone) {
-			const color = tone === "ok" ? C.ok : tone === "warn" ? C.warn : tone === "bad" ? C.bad : C.muted;
-			return h("span", {
-				key: "b:" + text,
+/**
+ * 一行路径。**带按钮的那条直接「打开路径」**（用户口径：想看目录就点开，别让人先复制再粘贴）。
+ * 给了 `onOpen` 才有按钮 —— 没给的场合（如决策记录卡，那里已经有「打开文件」）就只是一行等宽文字，
+ * 需要复制时用鼠标选中即可。
+ */
+function PathLine(props) {
+	return h("div", { style: { display: "flex", gap: "8px", alignItems: "center", fontSize: "11.5px", color: V.muted } }, [
+		h("code", { key: "c", style: { fontFamily: MONO, wordBreak: "break-all" } }, String(props.text || "")),
+		typeof props.onOpen === "function"
+			? h("button", {
+				key: "b", type: "button", onClick: () => props.onOpen(String(props.text || "")), title: "在文件管理器 / 默认程序里打开这个路径",
 				style: {
-					display: "inline-block", fontFamily: "monospace", fontSize: "10px",
-					border: "1px solid " + (tone ? color : C.soft), color: tone ? color : C.muted,
-					borderRadius: "3px", padding: "0 5px", marginRight: "4px", whiteSpace: "nowrap"
+					font: "inherit", fontSize: "11px", border: "1px solid " + V.line2, background: "transparent",
+					color: LINK, borderRadius: "4px", padding: "0 6px", cursor: "pointer", whiteSpace: "nowrap", flex: "0 0 auto"
 				}
-			}, text);
+			}, "打开路径")
+			: null
+	]);
+}
+
+function TabBar(props) {
+	return h("div", {
+		style: {
+			display: "flex", gap: "4px", marginBottom: "14px",
+			borderBottom: "1px solid " + V.line, paddingBottom: "8px", flexWrap: "wrap"
 		}
-		const STAGE_LABELS = [
-			["concept", "概念"], ["draft", "成稿"], ["config", "配置"],
-			["final", "定稿"], ["review", "审查"], ["speech", "宣讲"]
-		];
+	}, props.items.map((it) => {
+		const on = props.view === it.id;
+		return h("button", {
+			key: it.id, type: "button", onClick: () => props.onPick(it.id),
+			style: {
+				font: "inherit", fontSize: "12.5px", padding: "5px 12px", borderRadius: "5px", cursor: "pointer",
+				border: "1px solid " + (on ? V.brand : V.line2),
+				background: on ? V.brand : "transparent", color: on ? "#fff" : V.ink
+			}
+		}, it.label + (it.count === undefined ? "" : "（" + it.count + "）"));
+	}));
+}
 
-		// ════════════════════════════════════════════════════════════════
-		// 四、组件
-		// ════════════════════════════════════════════════════════════════
+/** 一块内容（标题栏 + 正文）。 */
+function Card(props) {
+	return h("div", {
+		style: { border: "1px solid " + V.line, borderRadius: "8px", background: V.panel, padding: "12px 14px", marginBottom: "12px" }
+	}, [
+		props.title === undefined ? null : h("div", {
+			key: "h",
+			style: { display: "flex", alignItems: "baseline", gap: "8px", marginBottom: "8px", flexWrap: "wrap" }
+		}, [
+			h("div", { key: "t", style: { fontSize: "13px", fontWeight: 600 } }, props.title),
+			h("div", { key: "n", style: { fontSize: "11.5px", color: V.muted, flex: 1 } }, props.note || ""),
+			props.actions || null
+		]),
+		props.children
+	]);
+}
 
-		function Glyph({ size }) {
-			return h("span", { style: { fontSize: (size === void 0 ? 16 : size) + "px", lineHeight: 1, fontWeight: 700 } }, "策");
+/**
+ * 一行文件（名字 + 注解 + 打开）。
+ *
+ * ★ 可点的东西一律是**蓝色**（用户口径）：宿主主题的 brand 令牌在浅色主题里偏深、
+ *   看着不像链接，所以这里用一支在浅色/深色底上都读得出来的蓝，hover 加下划线。
+ */
+function FileRow(props) {
+	const [hover, setHover] = React.useState(false);
+	return h("div", {
+		style: {
+			display: "flex", alignItems: "baseline", gap: "8px", padding: "2px 0 2px 2px",
+			fontSize: "12.5px", wordBreak: "break-all", lineHeight: 1.7
 		}
+	}, [
+		h("a", {
+			key: "a", href: "#", title: props.rel,
+			onMouseEnter: () => setHover(true),
+			onMouseLeave: () => setHover(false),
+			onClick: (e) => { e.preventDefault(); props.onOpen(toAbs(props.root, props.rel)); },
+			style: { color: LINK, textDecoration: hover ? "underline" : "none", cursor: "pointer" }
+		}, props.name),
+		props.note ? h("span", {
+			key: "n",
+			style: {
+				fontSize: "10.5px", color: V.muted, whiteSpace: "nowrap",
+				border: "1px solid " + V.line2, borderRadius: "3px", padding: "0 4px"
+			}
+		}, props.note) : null,
+		props.sub ? h("span", { key: "s", style: { fontSize: "10.5px", color: V.idle, fontFamily: MONO } }, props.sub) : null
+	]);
+}
 
-		/** 阶段进度：六段小徽章，完成的实心 */
-		function StageBar(props) {
-			const stages = props.stages || {};
-			return h("div", { style: { display: "flex", gap: "3px", marginBottom: "7px", flexWrap: "wrap" } },
-				STAGE_LABELS.map(([k, label]) => {
-					const on = !!stages[k];
-					return h("span", {
-						key: k,
-						style: {
-							fontSize: "10px", fontFamily: "monospace", borderRadius: "3px", padding: "1px 5px",
-							border: "1px solid " + (on ? C.ink : C.soft),
-							background: on ? C.ink : "transparent",
-							color: on ? "#fff" : "#aaa"
-						}
-					}, label);
-				}));
+// ════════════════════════════════════════════════════════════════════════════
+// ① 功能卡片墙
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 一张功能卡片。
+ *
+ * ── 这次显示优化的三件事（用户口径：卡片太素、右下大片空白没用上）────────────
+ *   ① **去掉三处重复**：徽标「有成稿」、人话「有成稿 1 份 · 还没定稿」、计数「成稿 1」原来各说一遍。
+ *      现在徽标**只在真有状态可说时出现**（已定稿 / 缺桶），进度交给**阶段步进器**（四个点 + 件数），
+ *      计数只显示**非零项**（零的那些在步进器里已经看得见）。
+ *   ② **人话留着**（`cardLineOf` 是唯一出处，界面不另写话术）—— 缺桶那种要能一眼看见。
+ *   ③ **键盘可达**：`role="button"` + `tabIndex` + Enter/Space + 焦点环
+ *      （原来是个纯 `div`，键盘用户根本进不去）。
+ *
+ * 卡片**不自己算数**：拿到什么见 `src/load/dashboard.ts` 的 `FeatureCard` 接口。
+ */
+const STAGES = [
+	{ key: "brainstorm", label: "头脑" },
+	{ key: "draft", label: "成稿" },
+	{ key: "final", label: "定稿" },
+	{ key: "speech", label: "宣讲" }
+];
+
+function FeatureCard(props) {
+	const f = props.feature;
+	const c = f.counts || {};
+	const [hover, setHover] = React.useState(false);
+	const [focus, setFocus] = React.useState(false);
+	const warn = f.tone === "warn";
+	const done = f.tone === "ok";
+	const open = () => props.onOpen();
+
+	return h("div", {
+		key: f.topic,
+		role: "button",
+		tabIndex: 0,
+		title: f.root,
+		onClick: open,
+		onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } },
+		onMouseEnter: () => setHover(true),
+		onMouseLeave: () => setHover(false),
+		onFocus: () => setFocus(true),
+		onBlur: () => setFocus(false),
+		style: {
+			border: "1px solid " + (warn ? V.warn : (hover || focus ? V.brand : V.line)),
+			borderRadius: "9px", background: V.panel, padding: "12px 14px", cursor: "pointer",
+			display: "flex", flexDirection: "column", gap: "4px", minHeight: "132px", boxSizing: "border-box",
+			boxShadow: focus ? "0 0 0 2px " + V.brand + "33" : (hover ? "0 2px 8px #0000000f" : "none"),
+			transition: "border-color 120ms ease, box-shadow 120ms ease",
+			outline: "none"
 		}
-
-		/** 单个功能卡（作为组件渲染，不要当普通函数调用——它内部有 hooks） */
-		function FeatureCard(props) {
-			const f = props.feature;
-			const onOpen = props.onOpen;
-			const [hover, setHover] = React.useState(false);
-			const clickable = !!f.openPath;
-			const finalActive = f.status === "active";
-			const waiting = props.attention === "pending";
-			// ★ 工单 22：卡片那行状态改由**纯函数**给（"新建、还没有任何产物"要说人话；口径只有一份）
-			const card = cardStateOf(f);
-			const bucketNote = bucketsNote(f);
-			const tone = card.tone === "ok" ? C.ok : card.tone === "new" ? C.link : C.muted;
-
-			// ★ 整张卡片**不可点**——只有底部的文件链接可点（对齐 DSH 会话里的文件链接习惯）
-			return h("div", {
-				onMouseEnter: () => setHover(true),
-				onMouseLeave: () => setHover(false),
-				style: {
-					border: "1px solid " + (waiting ? C.warn : C.faint),
-					borderLeft: "3px solid " + (waiting ? C.warn : (finalActive ? C.ok : C.soft)),
-					borderRadius: "4px", padding: "10px 12px",
-					background: C.panel,
-					minWidth: "250px", flex: "1 1 250px"
-				}
-			}, [
-				// ★ 待拍板横幅：放在最上面，一眼能看见，且可直接点进去回答
-				waiting ? h("div", {
-					key: "attn",
-					onClick: (e) => { e.stopPropagation(); props.onAttention(f); },
-					title: "点这里去回答",
-					style: {
-						margin: "-10px -12px 9px", padding: "7px 12px",
-						background: C.warn, color: "#fff", fontSize: "12px", fontWeight: 600,
-						cursor: "pointer", borderRadius: "3px 3px 0 0",
-						display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px"
-					}
+	}, [
+		h("div", { key: "t", style: { display: "flex", alignItems: "baseline", gap: "8px" } }, [
+			h("div", { key: "n", style: { fontSize: "15px", fontWeight: 600, wordBreak: "break-all", flex: 1 } }, f.topic),
+			warn ? chip("缺桶", V.warn) : (done ? chip("已定稿", V.ok) : null)
+		]),
+		// 阶段步进器：走到的实心（带件数），没走到的空心
+		h("div", { key: "st", style: { display: "flex", alignItems: "center", gap: "6px", margin: "3px 0 1px", flexWrap: "wrap" } },
+			STAGES.map((s, i) => {
+				const n = c[s.key] || 0;
+				const on = n > 0;
+				return h("span", {
+					key: s.key, title: s.label + "：" + n + " 件",
+					style: { display: "inline-flex", alignItems: "center", gap: "5px" }
 				}, [
-					h("span", { key: "t" }, "⚠ 等你拍板"),
-					h("span", { key: "g", style: { fontWeight: 400, fontSize: "11px", opacity: 0.9 } }, "去回答 ›")
-				]) : null,
-				h("div", { key: "n", style: { display: "flex", alignItems: "center", gap: "6px", marginBottom: "6px", flexWrap: "wrap" } }, [
-					h("b", { key: "t", style: { fontSize: "13px" } }, f.topic),
-					f.docType
-						? badge(f.docType + " / " + (f.status || "?"), finalActive ? "ok" : null)
-						: badge("无定稿", "warn"),
-					// ★ 工单 22：身份声明 —— 没有就**如实标注**（不假装有 id）；
-					//   有、而且身份名和目录名不一样，就把"当前身份名"说出来（改名是正常业务，目录名只是标签）
-					!f.identity || !f.identity.present
-						? badge("没有身份声明")
-						: (f.identity.name && f.identity.name !== f.topic ? badge("身份名：" + f.identity.name) : null)
-				]),
-				h(StageBar, { key: "s", stages: f.stages }),
-				h("div", { key: "m", style: { fontSize: "11px", color: tone, marginBottom: "5px" } }, card.line),
-				// ★ 工单 22：桶没建全就说（只在真缺时说一句话，正常功能一个字都不多说）
-				bucketNote ? h("div", { key: "bk", style: { fontSize: "11px", color: C.warn, marginBottom: "5px" } }, bucketNote) : null,
-				h("div", { key: "c", style: { fontSize: "11px", color: C.muted } },
-					"定稿 " + f.finals + " · 审查 " + f.reviews + " · 宣讲 " + f.speeches +
-					" · 配置表 " + f.configs.length + " · 决策 " + f.decisions),
-				// 最终版明确标出（按日期，最新即最终版）
-				f.latestFinal ? h("div", {
-					key: "v",
-					style: {
-						fontSize: "11px", color: C.muted, marginTop: "4px",
-						borderTop: "1px solid " + C.faint, paddingTop: "4px"
-					}
-				}, [
-					h("span", { key: "a", style: { fontFamily: "monospace" } },
-						"最终版 " + f.latestDate.slice(0, 4) + "-" + f.latestDate.slice(4, 6) + "-" + f.latestDate.slice(6, 8)),
-					f.historyCount > 0
-						? h("span", { key: "b", style: { color: "#999" } }, " · 另有 " + f.historyCount + " 个历史版本")
-						: null
-				]) : null,
-				// 底部：**可点的文件超链接**（对齐 DSH 会话里的文件链接）+「详情 ›」
-				h("div", {
-					key: "o",
-					style: {
-						display: "flex", justifyContent: "space-between", alignItems: "center",
-						marginTop: "6px", gap: "8px", borderTop: "1px solid " + C.faint, paddingTop: "5px"
-					}
-				}, [
-					clickable ? h("button", {
-						key: "lnk", type: "button",
-						onClick: () => onOpen(f),
-						title: "点击打开：" + f.openPath,
-						style: {
-							font: "inherit", fontSize: "11px", fontFamily: "monospace",
-							padding: 0, border: "none", background: "none",
-							color: hover ? C.link : "#3b6ea5",
-							cursor: "pointer",
-							textDecoration: hover ? "underline" : "none",
-							overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "175px"
-						}
-					}, "📄 " + f.latestFinal) : h("span", { key: "none", style: { fontSize: "11px", color: "#bbb" } }, "（无可打开文件）"),
-					h("button", {
-						key: "d", type: "button",
-						onClick: () => props.onDetail(f),
-						style: {
-							font: "inherit", fontSize: "10px", padding: "1px 7px",
-							border: "1px solid " + C.soft, background: "#fff",
-							borderRadius: "3px", cursor: "pointer", color: C.ink, whiteSpace: "nowrap"
-						}
-					}, "详情 ›")
-				])
-			]);
-		}
-
-		/** 打开结果提示（成功/失败/诊断都显示在面板上，不藏 console） */
-		function NoticeBar(props) {
-			const n = props.notice;
-			if (!n) return null;
-			const isErr = n.kind === "err";
-			return h("div", {
-				style: {
-					border: "1px solid " + (isErr ? C.bad : C.faint),
-					borderLeft: "3px solid " + (isErr ? C.bad : n.kind === "ok" ? C.ok : C.soft),
-					background: "#fff", borderRadius: "4px", padding: "8px 11px",
-					fontSize: "12px", marginBottom: "12px",
-					color: isErr ? C.bad : n.kind === "ok" ? C.ok : C.muted
-				}
-			}, [
-				h("div", { key: "t", style: { wordBreak: "break-all", lineHeight: 1.7 } }, n.text),
-				n.diag ? h("pre", {
-					key: "d",
-					style: {
-						marginTop: "7px", marginBottom: 0, padding: "8px", fontSize: "11px",
-						whiteSpace: "pre-wrap", background: C.bg, border: "1px solid " + C.faint,
-						borderRadius: "3px", color: C.ink, fontFamily: "monospace", lineHeight: 1.65,
-						userSelect: "text"
-					}
-				}, n.diag) : null
-			]);
-		}
-
-		function RiskBar(d) {
-			const noFinal = d.features.filter((f) => !f.latestFinal).length;
-			const multi = d.features.filter((f) => f.historyCount > 0).length;
-			const waiting = (d.features || []).filter((f) => d.attentionOf && d.attentionOf(f.topic) === "pending");
-			// ★ V1 定稿有效性（设计 §6.1 / §8）：多份 active 并存 / 旧定稿未标 archived / 没有 active
-			const hasIssue = (f, code) => !!(f.finalCheck && f.finalCheck.issues.some((i) => i.code === code));
-			const dupActive = (d.features || []).filter((f) => f.finalCheck && f.finalCheck.actives.length > 1);
-			const noActive = (d.features || []).filter((f) => hasIssue(f, "V1b"));
-			const unarchived = (d.features || []).filter((f) => hasIssue(f, "V1c"));
-			const items = [];
-			if (dupActive.length) items.push("⛔ " + dupActive.length + " 个功能有多份 active 定稿：" +
-				dupActive.map((f) => f.topic + "（" + f.finalCheck.actives.length + " 份）").join("、"));
-			if (waiting.length) items.push("⚠ " + waiting.length + " 个功能在等你拍板：" + waiting.map((f) => f.topic).join("、"));
-			if (noActive.length) items.push(noActive.length + " 个功能没有 active 定稿");
-			if (unarchived.length) items.push(unarchived.length + " 个功能的旧定稿未标 archived");
-			if (noFinal) items.push("尚未出定稿 " + noFinal + " 个");
-			if (multi) items.push("有历史版本的 " + multi + " 个（以最新为最终版）");
-			if (!items.length) items.push("未发现待办风险");
-			const bad = dupActive.length > 0;
-			const warn = bad || noFinal > 0 || waiting.length > 0;
-			return h("div", {
-				style: {
-					border: "1px solid " + (bad ? C.bad : waiting.length ? C.warn : C.faint),
-					borderLeft: "3px solid " + (bad ? C.bad : warn ? C.warn : C.ok),
-					background: bad ? "#fef2f2" : waiting.length ? "#fff7ed" : "#fffdf7",
-					borderRadius: "4px", padding: "9px 12px", fontSize: "12px",
-					marginBottom: "12px", fontWeight: (bad || waiting.length) ? 600 : 400
-				}
-			}, items.join(" · "));
-		}
-
-		/**
-		 * ★ 工单 22 · 「新建功能」表单（看板上**唯一的主按钮**就在这一块里）。
-		 *
-		 * 形态纪律（24c / 24b 延续）：首屏只留**人话** ——
-		 *   · 一行说清"建什么"：功能目录 + 六个桶 + 身份声明 + 专属工作区，**一个动作**；
-		 *   · 一个输入框（主题名）+ 一个主按钮〔建立〕+ 一个次按钮〔取消〕；
-		 *   · 机器口径（`feature_id` 的规则、目录全路径、**将要发出去的指令全文**）折在后面，默认收起；
-		 *   · 校验不过：只说那一句人话 + 下一步，并且**主按钮是禁用的**（发不出去 = 一个字节都不写）。
-		 *   · 正在建的那一段只显示**进度人话**（已看到：目录 ✓ ／ 六个桶 n/6 ／ 身份声明 —）。
-		 */
-		function CreateFeatureForm(props) {
-			const plan = props.plan || { ok: false, message: "", next: "", topic: "", root: "", id: "", instruction: "" };
-			const creating = props.creating || null;
-			const [showIns, setShowIns] = React.useState(false);
-			const topic = props.topic || "";
-			const disabled = !plan.ok || !!creating || !!props.busy;
-			const IN = {
-				flex: "1 1 240px", font: "inherit", fontSize: "12px", padding: "5px 8px",
-				border: "1px solid " + C.soft, borderRadius: "4px", boxSizing: "border-box"
-			};
-			const btn = (key, label, kind, onClick, off, send) => h("button", {
-				key: key, type: "button", "data-btn": kind, "data-send": send || null, disabled: !!off,
-				onClick: off ? null : onClick,
-				style: {
-					font: "inherit", fontSize: "12px", padding: kind === "primary" ? "5px 14px" : "5px 10px",
-					border: "1px solid " + (kind === "primary" ? C.ink : (kind === "link" ? "transparent" : C.soft)),
-					background: kind === "primary" ? (off ? C.soft : C.ink) : "#fff",
-					color: kind === "primary" ? "#fff" : (kind === "link" ? C.muted : C.ink),
-					borderRadius: "4px", cursor: off ? "default" : "pointer",
-					textDecoration: kind === "link" ? "underline" : "none"
-				}
-			}, label);
-			// 折叠：**收起时里面的字根本不渲染**（24c 的口径，机器口径不许回首屏）
-			const foldIns = h("div", { key: "fi", style: { marginTop: "8px" } }, [
-				h("button", {
-					key: "s", type: "button", "data-fold": "newfeature-instruction", "data-open": showIns ? "1" : "0",
-					"data-btn": "link", onClick: () => setShowIns(!showIns), "aria-expanded": showIns ? "true" : "false",
-					style: {
-						font: "inherit", fontSize: "12px", border: "1px solid transparent", background: "#fff",
-						padding: 0, color: C.muted, textDecoration: "underline", cursor: "pointer", textAlign: "left"
-					}
-				}, (showIns ? "▾ " : "▸ ") + "看将要发出去的指令（逐字）"),
-				showIns ? h("pre", {
-					key: "b", "data-fold-body": "newfeature-instruction",
-					style: {
-						marginTop: "7px", marginBottom: 0, padding: "9px", fontSize: "11px", whiteSpace: "pre-wrap",
-						background: C.bg, border: "1px solid " + C.faint, borderRadius: "3px",
-						fontFamily: "monospace", lineHeight: 1.6, userSelect: "text", maxHeight: "260px", overflow: "auto"
-					}
-				}, plan.instruction || "(还没算出来：先输一个主题名)") : null
-			]);
-
-			const head = h("div", { key: "h", style: { fontSize: "12.5px", marginBottom: "7px", lineHeight: 1.7 } }, [
-				h("b", { key: "t" }, "新建功能"),
-				h("span", { key: "s", style: { color: C.muted } },
-					"　一个动作：功能目录 + 六个桶 + 身份声明，并登记成它的专属工作区。")
-			]);
-
-			if (creating) {
-				return h("div", {
-					key: "newf", "data-newfeature": "creating", "data-create": creating.state || "sent",
-					style: {
-						border: "1px solid " + C.soft, borderLeft: "3px solid " + C.ink, borderRadius: "4px",
-						padding: "10px 12px", marginBottom: "12px", background: "#fff"
-					}
-				}, [
-					head,
-					h("div", { key: "p", "data-say": "create-progress", style: { fontSize: "12px", lineHeight: 1.8 } },
-						"正在建「" + creating.topic + "」…　" + (creating.progress || "已看到：功能目录 —（还在建）")),
-					h("div", { key: "n", style: { fontSize: "11px", color: C.muted, marginTop: "3px" } },
-						"不用刷新 —— 目录一出现，这张卡就会自己出现在下面，工作区与工作会话也一并建好。"),
-					h("div", { key: "b", style: { marginTop: "8px", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, [
-						creating.sid ? btn("go", "打开工作会话", "ghost", () => props.onOpenSession(), false) : null,
-						btn("stop", "不再等", "link", () => props.onStopWaiting(), false)
-					])
-				]);
-			}
-
-			return h("div", {
-				key: "newf", "data-newfeature": "form",
-				style: {
-					border: "1px solid " + C.soft, borderLeft: "3px solid " + C.ink, borderRadius: "4px",
-					padding: "10px 12px", marginBottom: "12px", background: "#fff"
-				}
-			}, [
-				head,
-				h("div", { key: "row", style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, [
-					h("input", {
-						key: "i", "data-input": "topic", value: topic, placeholder: "主题名（会成为目录名），例如：联盟讨伐",
-						onChange: (e) => props.onTopic(e.target.value), style: IN
+					i === 0 ? null : h("span", {
+						key: "ln", style: { width: "10px", height: "1px", background: (c[STAGES[i - 1].key] || 0) > 0 ? ACCENT_FILL : V.line2 }
 					}),
-					btn("ok", props.busy ? "建立中…" : "建立", "primary", () => props.onSubmit(), disabled, "create"),
-					btn("no", "取消", "link", () => props.onCancel(), false)
-				]),
-				topic.trim() === ""
-					? h("div", { key: "hint", style: { fontSize: "11px", color: C.muted, marginTop: "6px" } },
-						"一个主题名就够了 —— 目录名、六个桶、身份声明、专属工作区都由这一个动作建出来。")
-					: (plan.ok
-						? h("div", {
-							key: "v", "data-create": "ok",
-							style: { fontSize: "11.5px", color: C.ok, marginTop: "7px" }
-						}, "可以建：" + plan.topic + "（" + plan.id + "）")
-						: h("div", {
-							key: "v", "data-create": "bad",
-							style: { fontSize: "11.5px", color: C.bad, marginTop: "7px", lineHeight: 1.8 }
-						}, [
-							h("div", { key: "a" }, "⚠ " + plan.message),
-							h("div", { key: "b", style: { color: C.muted } }, "下一步：" + plan.next)
-						])),
-				h("div", {
-					key: "w", style: { fontSize: "11px", color: C.muted, marginTop: "6px", fontFamily: "monospace", wordBreak: "break-all" }
-				}, "建在哪：" + (plan.root || "(先输主题名)") + "\\　（六个桶：" + BUCKET_ORDER.join(" / ") + "）"),
-				plan.ok && plan.id ? h("div", { key: "id", style: { fontSize: "11px", color: C.muted, marginTop: "2px" } },
-					"将写入 feature_id：" + plan.id + "（可读、ASCII、终身不变 —— 以后改名叫什么都还是它）") : null,
-				plan.instruction ? foldIns : null
-			]);
-		}
-
-		/** 错误边界：任何渲染异常都显示在面板里，而不是白屏 */
-		class PanelErrorBoundary extends React.Component {
-			constructor(props) { super(props); this.state = { err: null }; }
-			static getDerivedStateFromError(err) { return { err: err }; }
-			componentDidCatch(err, info) { console.error("[sr-workbench] 渲染失败", err, info); }
-			render() {
-				const e = this.state.err;
-				if (!e) return this.props.children;
-				return h("div", {
-					style: {
-						padding: "20px 24px", fontFamily: "system-ui, monospace", color: C.bad,
-						height: "100%", overflow: "auto", boxSizing: "border-box", background: C.bg
-					}
-				}, [
-					h("h1", { key: "t", style: { fontSize: "16px", margin: "0 0 10px", color: C.ink } }, "策划工作台 · 渲染失败"),
-					h("div", { key: "m", style: { fontSize: "13px", marginBottom: "10px" } }, String((e && e.message) || e)),
-					h("pre", {
-						key: "s",
-						style: {
-							fontSize: "11px", whiteSpace: "pre-wrap", background: "#fff",
-							border: "1px solid " + C.faint, borderRadius: "4px", padding: "10px", color: C.muted
-						}
-					}, String((e && e.stack) || "").slice(0, 3000))
-				]);
-			}
-		}
-
-		// ── 一级导航 ──────────────────────────────────────────────────
-		/**
-		 * ★ 工单 31：这里原来还有三个**占位项**，一并删掉（设计 §3.4「砍掉的四块，职能去哪了」）：
-		 *   · `设计资产`（B1/B2/B3 + `design-asset-index.json`）⇒ 素材收集/竞品分析/复刻规格并入
-		 *     头脑风暴的四种入口；界面图并入定稿的「线框图替换」；
-		 *   · `配置表与多语言`（C1/C2，一直写着「· 未实现」）⇒ 规则落成配置已并入文档生成阶段的配置支线；
-		 *   · `知识库`（D1/D2/D3，同样没实现）⇒ 设计上直接**删除**（已在用 agent + Basic Memory）。
-		 *   三个都不再有界面，所以"其余一级视图（占位）"那个分支也一并不存在了 —— 一级导航只剩功能看板。
-		 */
-		const NAV = [
-			{ id: "dashboard", label: "功能看板" }
-		];
-		/**
-		 * 功能内部的**工作面**（设计 §4：三阶段）—— 与「资料页签」分两组显示。
-		 *
-		 * ★ 为什么不是"详情页的第七个页签"：规格说得很清楚 —— 点进一个功能，先按生命周期的三个阶段走
-		 *   （头脑风暴 → 文档生成 → 定稿修订），台账 / 产物 / 界面图是**旁挂的资料页**（spec.md:30）。
-		 *   把工作面混进同一排页签，等于把"阶段"与"资料"拉平，用户就看不出"现在该走哪一步"了。
-		 * ★ 头脑风暴是**第一个工作面**（工单 23）；定稿修订则是工单 13/14 已经做出来的那一屏
-		 *   （原来叫「定稿」页签，现在归进工作面组、名字改成「定稿修订」—— 语义没变，页签 label 里仍含「定稿」两字）。
-		 * ★ 文档生成在**工单 24 做成了真的**（不再是「· 未实现」）：读成稿、按两大部分定位、看到配置支线走到哪。
-		 */
-		const DETAIL_STAGES = [
-			{ id: "brainstorm", label: "头脑风暴" },      // ★ 工单 23：功能里的第一个工作面
-			{ id: "draft", label: "文档生成" },           // ★ 工单 24：成稿 + 两大部分 + 配置支线走到哪
-			{ id: "final", label: "定稿修订" }            // ★ 工单 13/14（大纲 + 正文 + 定位卡）
-		];
-		/** 进功能时落在哪一屏 = **第一个工作面**（工单 23：功能内部先走阶段，再看资料） */
-		const ENTRY_TAB = "brainstorm";
-		/** 功能详情的**资料页签**（旁挂：过程 / 产物 / 界面图，不是阶段） */
-		const DETAIL_TABS = [
-			{ id: "design", label: "设计台账" },
-			{ id: "ledger", label: "决策台账" },
-			{ id: "pipeline", label: "流水线" },
-			{ id: "artifacts", label: "产物" },
-			{ id: "ui", label: "界面图" }
-		];
-
-		function TabBar(props) {
-			return h("div", {
-				style: {
-					display: "flex", gap: "4px", marginBottom: "14px",
-					borderBottom: "1px solid " + C.faint, paddingBottom: "8px", flexWrap: "wrap"
-				}
-			}, props.items.map((it) => {
-				const on = props.view === it.id;
-				// ★ 工单 31：这里原来还有一条 `soon`（占位页签：disabled + 灰字 + 尾巴挂「 · 未实现」）。
-				//   它唯一的两个使用者是一级导航里的「配置表与多语言」「知识库」—— 两个占位项随本票删除，
-				//   这个机制就没有消费者了，一并删掉（"点了没反应"的页签从此不可能再被渲染出来）。
-				return h("button", {
-					key: it.id, type: "button",
-					onClick: () => props.onPick(it.id),
-					style: {
-						font: "inherit", fontSize: "12px", padding: "4px 10px",
-						border: "1px solid " + (on ? C.ink : C.faint),
-						background: on ? C.ink : "transparent",
-						color: on ? "#fff" : C.ink,
-						borderRadius: "4px", cursor: "pointer"
-					}
-				}, it.label);
-			}));
-		}
-
-		// ── A4 决策台账 ───────────────────────────────────────────────
-		const TH = { border: "1px solid " + C.faint, background: "#f7f7f7", padding: "5px 7px", textAlign: "left", fontSize: "11px", fontWeight: 600 };
-		const TD = { border: "1px solid " + C.faint, padding: "5px 7px", verticalAlign: "top", fontSize: "11px" };
-
-		function IssueTable(issues) {
-			return h("table", { style: { width: "100%", borderCollapse: "collapse", marginTop: "6px" } }, [
-				h("thead", { key: "h" }, h("tr", null, [
-					h("th", { key: "f", style: Object.assign({}, TH, { width: "22%" }) }, "字段"),
-					h("th", { key: "v", style: Object.assign({}, TH, { width: "26%" }) }, "实际值"),
-					h("th", { key: "r", style: TH }, "违反")
-				])),
-				h("tbody", { key: "b" }, issues.map((it, i) => h("tr", { key: i }, [
-					h("td", { key: "f", style: Object.assign({}, TD, { fontFamily: "monospace" }) }, it.field),
-					h("td", { key: "v", style: Object.assign({}, TD, { fontFamily: "monospace" }) }, String(it.value)),
-					h("td", { key: "r", style: Object.assign({}, TD, { color: C.bad }) }, it.rule)
-				])))
-			]);
-		}
-
-		/** 从可能是字符串/包装对象的返回值里取出 id 文本 */
-		function idText(v) {
-			if (typeof v === "string") return v;
-			if (v && typeof v === "object") {
-				const inner = v.value || v.sessionId || v.id;
-				if (typeof inner === "string") return inner;
-			}
-			return "";
-		}
-
-		/** 小标题 + 内容块 */
-		function blk(title, content) {
-			return h("div", { key: title, style: { marginTop: "12px" } }, [
-				h("div", { key: "t", style: { fontSize: "11px", fontWeight: 600, marginBottom: "5px", color: C.ink } }, title),
-				h("div", { key: "c", style: { fontSize: "12px", lineHeight: 1.75 } }, content)
-			]);
-		}
-
-		/**
-		 * 把 decision_result 渲染成人话 —— **不显示原文 JSON**。
-		 * 只显示：结论 / 条件完成 / 剩余待办 / 涉及文件 / 下一步 / 定稿门之后的修改。
-		 */
-		function ResultView(props) {
-			const r = props.result;
-			const doc = props.doc;
-			if (!r || typeof r !== "object") return null;
-			const out = [];
-
-			// ① 结论（chosen 是选项 ID，回查选项正文）
-			if (r.chosen) {
-				const opts = (doc && Array.isArray(doc.options)) ? doc.options : [];
-				const hit = opts.filter((o) => o && o.option_id === r.chosen)[0];
-				out.push(blk("结论", [
-					h("div", { key: "id", style: { fontFamily: "monospace", color: C.ok, marginBottom: "3px" } }, String(r.chosen)),
-					hit && hit.action ? h("div", { key: "a" }, String(hit.action)) : null,
-					hit && hit.expected_benefit ? h("div", { key: "b", style: { color: C.muted, fontSize: "11px", marginTop: "3px" } }, "预期收益：" + hit.expected_benefit) : null,
-					hit && hit.main_risk ? h("div", { key: "c", style: { color: C.warn, fontSize: "11px" } }, "主要风险：" + hit.main_risk) : null
-				]));
-			}
-
-			// ② 条件完成情况
-			const cond = Array.isArray(r.conditions_completed) ? r.conditions_completed : [];
-			if (cond.length) {
-				const done = cond.filter((c) => c && c.done).length;
-				out.push(blk("条件（已完成 " + done + " / " + cond.length + "）", cond.map((c, i) =>
-					h("div", { key: i, style: { marginBottom: "6px" } }, [
-						h("span", { key: "m", style: { color: c && c.done ? C.ok : C.warn, fontFamily: "monospace" } }, (c && c.done) ? "✓ " : "○ "),
-						h("span", { key: "i" }, String((c && c.item) || "")),
-						c && c.note ? h("div", { key: "n", style: { marginLeft: "17px", color: C.muted, fontSize: "11px" } }, String(c.note)) : null
-					]))));
-			}
-
-			// ③ 剩余待办
-			const rem = Array.isArray(r.remaining_items) ? r.remaining_items : [];
-			if (rem.length) {
-				out.push(blk("剩余待办（" + rem.length + "）", rem.map((x, i) =>
-					h("div", { key: i, style: { marginBottom: "3px" } }, "· " + String((x && x.item) || x)))));
-			}
-
-			// ④ 涉及文件
-			if (r.files && typeof r.files === "object" && !Array.isArray(r.files)) {
-				const LBL = { final_gdd: "定稿", archived_draft: "已归档成稿", final_review: "审查报告", config_changed: "改动配置表" };
-				out.push(blk("涉及文件", Object.keys(r.files).map((k) =>
-					h("div", { key: k, style: { marginBottom: "3px" } }, [
-						h("span", { key: "k", style: { color: C.muted } }, (LBL[k] || k) + "："),
-						h("span", { key: "v", style: { fontFamily: "monospace" } }, Array.isArray(r.files[k]) ? r.files[k].join(" · ") : String(r.files[k]))
-					]))));
-			}
-
-			// ⑤ 下一步
-			if (r.next_step) out.push(blk("下一步", h("div", null, String(r.next_step))));
-
-			// ⑥ 定稿门之后的修改
-			const fixes = Array.isArray(r.post_gate_fixes) ? r.post_gate_fixes : [];
-			if (fixes.length) {
-				out.push(blk("定稿门之后的修改（" + fixes.length + " 条）", fixes.map((x, i) =>
-					h("div", {
-						key: i,
-						style: { marginBottom: "7px", paddingLeft: "8px", borderLeft: "2px solid " + C.faint }
-					}, [
-						h("div", { key: "d", style: { fontFamily: "monospace", fontSize: "11px", color: C.muted } }, String((x && x.date) || "")),
-						h("div", { key: "c" }, String((x && x.change) || "")),
-						x && Array.isArray(x.sections) && x.sections.length
-							? h("div", { key: "s", style: { marginTop: "3px" } }, x.sections.map((s, j) => h("span", {
-								key: j,
-								style: { fontSize: "10px", fontFamily: "monospace", border: "1px solid " + C.faint, borderRadius: "3px", padding: "0 4px", marginRight: "3px", color: C.muted }
-							}, String(s))))
-							: null
-					]))));
-			}
-
-			if (!out.length) return h("div", { style: { fontSize: "12px", color: C.muted } }, "（这条记录的 decision_result 没有可读结论）");
-			return h("div", null, out);
-		}
-
-		/**
-		 * 拼绝对路径 —— **工单 32 起改为 import `./pure/path.ts` 的 `toAbs`**（不再内联副本）。
-		 * 原内联实现与模块那份逐字相同（只差缩进），所以这里删掉的是纯重复。
-		 * 保留这条注释是因为它记着两件容易踩的事：
-		 *   ★ rel 可能**已经是绝对路径**（openPath 现在存的是 srWs 拼出来的绝对路径），
-		 *     无条件前缀 cwd 会拼成 `D:\TimeMachine/D:\TimeMachine\...`。
-		 *   ★ Windows 绝对路径同时把 `/` 归一成 `\`，避免混合分隔符。
-		 */
-
-		/**
-		 * 设计台账（设计 §7）—— 一份"过程叙述"，不是数据列表。
-		 *
-		 * 渲染纪律（§7.4，可读性第一）：
-		 *   ✅ 只有：阶段 → 日期 → 一句话结论
-		 *   ❌ 不加徽章 / 不加记录 ID / 不加来源链接 / 不加搜索高亮
-		 *   唯一允许的交互：点日期折叠当天条目（阅读辅助，不是信息掺杂）
-		 * 来源校验区默认收起，并明确标注"这是校验信息，不是台账内容"。
-		 */
-		function DesignLedger(props) {
-			const led = props.ledger;
-			const [folded, setFolded] = React.useState({});
-			const [showSrc, setShowSrc] = React.useState(false);
-			if (!led) return h("p", { style: { color: C.muted, fontSize: "12px" } }, "正在读设计台账…");
-			if (led.error) {
-				return h("p", { style: { color: C.bad, fontSize: "12px", userSelect: "text" } }, "读台账失败：" + led.error);
-			}
-			if (!led.total) {
-				return h("p", { style: { color: C.muted, fontSize: "12px" } },
-					"台账为空 —— 这个功能还没有决策记录或校准流水。");
-			}
-			const fmtDate = (d) => (d && d.length === 8)
-				? d.slice(0, 4) + "-" + d.slice(4, 6) + "-" + d.slice(6, 8)
-				: (d || "（无日期）");
-
-			const blocks = [];
-			for (const st of led.stages) {
-				if (!st.count) continue;
-				blocks.push(h("div", {
-					key: "s" + st.id,
-					style: {
-						marginTop: blocks.length ? "24px" : "0", fontSize: "13px", fontWeight: 700,
-						color: C.ink, paddingBottom: "6px", borderBottom: "2px solid " + C.faint
-					}
-				}, st.name + "（" + st.count + " 条）"));
-
-				for (const day of st.days) {
-					const dk = st.id + "|" + day.date;
-					const isFolded = !!folded[dk];
-					const kids = [h("div", {
-						key: "dt",
-						onClick: () => { const nx = Object.assign({}, folded); nx[dk] = !isFolded; setFolded(nx); },
-						style: {
-							fontSize: "12px", fontWeight: 600, color: C.muted, marginTop: "12px",
-							marginBottom: isFolded ? "0" : "5px", cursor: "pointer", userSelect: "none"
-						}
-					}, (isFolded ? "▸ " : "▾ ") + fmtDate(day.date) + "（" + day.items.length + " 条）")];
-					if (!isFolded) {
-						for (let i = 0; i < day.items.length; i++) {
-							kids.push(h("div", {
-								key: "i" + i,
-								style: {
-									fontSize: "12.5px", lineHeight: 1.75, color: C.ink,
-									paddingLeft: "15px", marginBottom: "2px", userSelect: "text"
-								}
-							}, "· " + day.items[i].text));
-						}
-					}
-					blocks.push(h("div", { key: "d" + dk }, kids));
-				}
-			}
-
-			// 来源校验：默认收起，措辞明确它是"关于台账的元信息"，不是台账内容
-			const st2 = (led.stats || { fromDecision: 0, fromJsonl: 0 });
-			blocks.push(h("div", {
-				key: "src",
-				style: { marginTop: "28px", paddingTop: "10px", borderTop: "1px dashed " + C.faint }
-			}, [
-				h("div", {
-					key: "t",
-					onClick: () => setShowSrc(!showSrc),
-					style: { fontSize: "11px", color: C.muted, cursor: "pointer", userSelect: "none" }
-				}, (showSrc ? "▾ " : "▸ ") + "来源校验 —— 决策记录汇总 " + st2.fromDecision +
-					" 条 · 校准流水补录 " + st2.fromJsonl + " 条（校验信息，不是台账内容）"),
-				showSrc ? h("div", {
-					key: "b",
-					style: { fontSize: "11px", color: C.muted, marginTop: "6px", lineHeight: 1.75 }
-				}, [
-					"两个源缺一不可：决策记录的 calibrations 是权威汇总，但实测会漏——" +
-					"联盟悬赏的 round 18（把 UI 文案改回）就只在校准 jsonl 里；" +
-					"校准 jsonl 是 Gate 前的实时留痕，收口后归档。",
-					(led.notes && led.notes.length)
-						? h("div", { key: "n", style: { marginTop: "4px", color: C.warn } }, led.notes.join("；"))
-						: null
-				]) : null
-			]));
-
-			return h("div", { style: { maxWidth: "880px" } }, blocks);
-		}
-
-		/**
-		 * 把定稿里的 HTML `<img …>` **抽出来单独渲染**，不交给 markdown 渲染器。
-		 *
-		 * ★ 为什么不用 `![](url)`：实测定稿的图是
-		 *   `<img src="联盟悬赏UI/UI-M1 联盟悬赏主面板 · 常规难度.png" width="420" />`
-		 *   —— URL 里**带空格和间隔号**，塞进 `![]()` 会让 markdown 解析崩掉
-		 *   （实测症状：整个面板报 `Cannot read properties of undefined (reading 'code')`）。
-		 *   抽出来自己渲染，既绕开解析器，也顺带能控制尺寸和做失败降级。
-		 *
-		 * ★ 工单 13：这两段的**内联副本已删**（`splitImgs` / `splitSpecial` 共 55 行），
-		 *   改为 import `src/pure/split.ts` 那一份 —— 它被 `test/pure-split.test.ts` 逐条覆盖
-		 *   （4 段 fenced code + 7 个 `<img>`，路径含空格与中点号）。
-		 */
-
-		/** 等宽代码块：**不经 markdown 渲染器**（实测它对 ``` 围栏会崩） */
-		function CodeBlock(props) {
-			return h("pre", {
-				style: {
-					margin: "6px 0", padding: "9px 11px", background: C.bg,
-					border: "1px solid " + C.faint, borderRadius: "4px",
-					fontSize: "11.5px", lineHeight: 1.65, fontFamily: "monospace",
-					whiteSpace: "pre", overflowX: "auto", color: C.ink, userSelect: "text"
-				}
-			}, props.text);
-		}
-
-		/**
-		 * 单张图：把定稿里的**相对路径**按定稿所在目录解析成绝对路径 → `/api/file` URL。
-		 *
-		 * ★ 失败**不显示破图**，而是退化成「用默认程序打开」——
-		 *   真实定稿的图是 `<img src="UI/UI-M1 联盟悬赏主面板 · 常规难度.png">`：
-		 *   路径含空格与中点号，`/api/file` 也可能因为权限/路径形态取不到。这时候
-		 *   ① 面板里画一个虚线框说明发生了哪种失败；② 给一个按钮走系统默认程序打开（`props.onOpen`）。
-		 *   虚线框上写明**解析出来的绝对路径**，用户能一眼看出是路径没解析对还是文件没读到。
-		 */
-		function ImgTag(props) {
-			const [bad, setBad] = React.useState(false);
-			const abs = (props.pathImages && props.pathImages.abs) ? props.pathImages.abs(props.src) : void 0;
-			const url = abs ? fileUrl(abs) : void 0;
-			const canOpen = !!(abs && typeof props.onOpen === "function");
-			if (!url || bad) {
-				return h("div", {
-					style: {
-						fontSize: "11px", color: C.muted, padding: "7px 10px", margin: "6px 0",
-						border: "1px dashed " + C.soft, borderRadius: "4px", background: C.bg, userSelect: "text"
-					}
-				}, [
-					h("div", { key: "t" }, "🖼 " + (props.alt || props.src) +
-						(url ? "（面板内显示失败）" : "（路径没解析出来）")),
-					abs ? h("div", {
-						key: "p", style: { fontFamily: "monospace", fontSize: "10px", marginTop: "2px", wordBreak: "break-all" }
-					}, abs) : null,
-					canOpen ? h("button", {
-						key: "o", type: "button", "data-open": abs,
-						onClick: () => props.onOpen(abs),
-						style: {
-							font: "inherit", fontSize: "11px", marginTop: "6px", padding: "3px 10px",
-							border: "1px solid " + C.ink, background: "#fff", borderRadius: "3px", cursor: "pointer"
-						}
-					}, "用默认程序打开") : null
-				]);
-			}
-			return h("img", {
-				src: url, alt: props.alt || "", "data-abs": abs,
-				onError: () => setBad(true),
-				style: {
-					maxWidth: "440px", width: "100%", display: "block", margin: "6px 0",
-					border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff"
-				}
-			});
-		}
-
-		/** 块级错误边界：一块崩了不影响其他块，并且**说出是哪一块崩的** */
-		class BlockBoundary extends React.Component {
-			constructor(props) { super(props); this.state = { err: null }; }
-			static getDerivedStateFromError(err) { return { err: err }; }
-			componentDidCatch(err) { console.error("[sr-workbench] 块渲染失败", this.props.label, err); }
-			render() {
-				if (this.state.err) {
-					return h("div", {
-						style: {
-							fontSize: "11px", color: C.bad, padding: "6px 9px", margin: "4px 0",
-							border: "1px solid " + C.bad, borderRadius: "4px", background: "#fef2f2",
-							userSelect: "text", lineHeight: 1.7
-						}
-					}, "⚠ 这一块渲染失败 · " + this.props.label + " —— " +
-						String((this.state.err && this.state.err.message) || this.state.err));
-				}
-				return this.props.children;
-			}
-		}
-
-		/**
-		 * 定稿工作面（设计 §6.2 三栏 / §6.3 条目定位 / §6.4.1 影响范围）。
-		 *
-		 * ★ **左树 / 右正文 + 定位卡**。树的**数据**（章 → 组 → 条目、条目引用、行号、现状原文、
-		 *   默认开合、哪些行不可单独引用）全部来自 `src/pure/finaltree.ts`：引用串就是引用图的键，
-		 *   面板**不自己拼字符串**（拼错一个空格查图就是空集，界面上还看不出为什么）。
-		 * ★ 分块渲染：解析器把定稿切成「章 / 组」块，每块一个带 `data-blk` 的 div，点树 → scrollIntoView
-		 *   定位（**不依赖 markdown 渲染器支持行锚点**）；正文滚动时按 `topBlockIndex`（纯函数）
-		 *   反推"现在在看哪一块"，树上的高亮跟着走。
-		 * ★ 定位卡 = 条目引用 + 原文（带行号）+ 影响范围（**每一处标明属于哪一类边**，六类齐全）
-		 *   + 三段式指令原文（`buildFixInstruction` 拼的，与真正发出去的是同一段）。
-		 */
-		/**
-		 * ═══ 工单 28 · 派生物与过期检测（「定稿修订」工作面上的**次级**一块）═══
-		 *
-		 * 首屏（克制，人话）：
-		 *   一行「派生物 · 基于 <当前有效定稿>」+ 一个〔详情〕折叠入口
-		 *   + **每个类别一行**（宣讲 HTML / AI 读版）：结论人话 + **一个次按钮**（`data-btn="ghost"`）。
-		 *   这里**没有主按钮** —— 「一屏一个主按钮」那条纪律是给「文档生成」的 Y 形首屏定的，
-		 *   这一屏原来一个主按钮都没有，加进来的也只是次按钮（`data-btn=primary` 恒为 0）。
-		 *
-		 * 折起来的东西（机器口径）：指纹原文、侧车文件名与读没读到、每一份产物的明细、
-		 *   如实标注（gdd\ 里放错桶的定稿 HTML、没有侧车的旧派生物…）。**收起时体根本不渲染**。
-		 *
-		 * 动作（两步，与工单 15/23/24 同一条纪律「先看后发」）：点〔出…/重新生成…〕→ 展开
-		 *   **指令预览**（`pre[data-derived-preview=<kind>]`，与发出去的那一段**逐字相同**）
-		 *   → 再点〔发到工作会话〕（`data-send="derived:<kind>"`）才真发。
-		 *   缺前提（没有可派生的定稿 / 拿不到指纹）时**不给预览也不发**，照原样显示 `blocked` + `next`。
-		 */
-		function DerivedBar(props) {
-			const data = props.data;
-			const [openKind, setOpenKind] = React.useState("");
-			const [openDetail, setOpenDetail] = React.useState(false);
-			const [msg, setMsg] = React.useState({});
-
-			const toneOf = (s) => s === "fresh" ? C.ok : (s === "stale" ? C.warn : (s === "unknown" ? C.bad : C.muted));
-			const head = (extra, children) => h("div", Object.assign({
-				"data-derived-bar": "1",
-				style: {
-					border: "1px solid " + C.faint, borderLeft: "3px solid " + (data && !data.error ? C.link : C.soft),
-					background: "#fff", borderRadius: "4px", padding: "7px 11px", marginBottom: "10px"
-				}
-			}, extra || {}), children);
-
-			if (!data) {
-				return h("div", {
-					"data-derived-bar": "none",
-					style: { fontSize: "11.5px", color: C.muted, marginBottom: "10px" }
-				}, "正在读派生物…");
-			}
-			if (data.error) {
-				return h("div", {
-					"data-derived-bar": "error",
-					style: {
-						fontSize: "11.5px", color: C.bad, marginBottom: "10px", padding: "7px 11px",
-						border: "1px solid " + C.faint, borderLeft: "3px solid " + C.bad, background: "#fef2f2", borderRadius: "4px"
-					}
-				}, data.error);
-			}
-
-			const kinds = data.kinds || [];
-			const cur = data.current || { name: "", text: "没有可派生的定稿" };
-			const send = (k) => {
-				if (typeof props.onDerived !== "function") {
-					setMsg((m) => Object.assign({}, m, { [k.kind]: { kind: "err", text: "面板拿不到发送通道（onDerived 没挂上）。" } }));
-					return;
-				}
-				if (k.blocked) return;                    // 缺前提：界面上已经写明，不发
-				setMsg((m) => Object.assign({}, m, { [k.kind]: { kind: "pending", text: "正在发给工作会话…" } }));
-				props.onDerived(k.kind, { text: k.instruction, root: props.root || "" }).then(
-					(r) => setMsg((m) => Object.assign({}, m, {
-						[k.kind]: r && r.ok
-							? {
-								kind: "ok", text: "已交给工作会话。", sid: r.sid || "", target: r.target || null,
-								healed: !!r.healed, queued: !!r.queued
-							}
-							: {
-								kind: "err", text: (r && (r.message || r.blocked)) || "发送失败",
-								next: (r && r.next) || "再按一次；仍失败就把这条错误发给开发者。", sid: (r && r.sid) || ""
-							}
-					})),
-					(e) => setMsg((m) => Object.assign({}, m, { [k.kind]: { kind: "err", text: String((e && e.message) || e) } }))
-				);
-			};
-			const jump = (sid) => {
-				if (typeof props.onOpenSession === "function") props.onOpenSession(sid);
-			};
-
-			// ── 首屏：一行结论 + 每个类别一行 ────────────────────────────────
-			const rows = kinds.map((k) => {
-				const m = msg[k.kind] || null;
-				const open = openKind === k.kind;
-				const artifacts = k.artifacts || [];
-				return h("div", { key: "k" + k.kind, style: { marginTop: "5px" } }, [
-					h("div", {
-						key: "row",
-						style: { display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap", fontSize: "11.5px" }
-					}, [
-						h("b", { key: "l", style: { fontSize: "12px", color: C.ink, flex: "0 0 auto" } }, k.label),
-						h("span", {
-							key: "st", "data-derived-kind": k.kind, "data-derived-state": k.state,
-							style: { color: toneOf(k.state), fontWeight: k.state === "stale" ? 700 : 400 }
-						}, k.text),
-						h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
-						// 已经有产物 ⇒ 按钮说「重新生成…」；还没有 ⇒ 说「出…」。
-						// 两种都**不是**主按钮（`data-btn=ghost`），并且 `data-derived-action` 区分动作。
-						h("button", {
-							key: "b", type: "button",
-							"data-btn": "ghost", "data-derived": k.kind,
-							"data-derived-action": artifacts.length ? "regen" : "generate",
-							onClick: () => { setOpenKind(open ? "" : k.kind); },
-							style: {
-								font: "inherit", fontSize: "11.5px", padding: "3px 10px", borderRadius: "4px",
-								border: "1px solid " + C.soft, background: "#fff", color: C.ink, cursor: "pointer", flex: "0 0 auto"
-							}
-						}, (open ? "收起 " : "") + k.button)
-					]),
-					open ? h("div", { key: "pv", style: { marginTop: "5px" } }, k.blocked
-						? h("div", {
-							key: "bl", "data-derived-blocked": k.kind,
-							style: {
-								fontSize: "11px", color: C.warn, lineHeight: 1.8, background: "#fffbeb",
-								border: "1px solid " + C.faint, borderRadius: "3px", padding: "6px 8px", userSelect: "text"
-							}
-						}, [
-							h("div", { key: "a" }, "不发：" + k.blocked),
-							h("div", { key: "b" }, "下一步：" + k.next)
-						])
-						: h("div", { key: "ok" }, [
-							h("div", {
-								key: "t", style: { fontSize: "10.5px", color: C.muted, marginBottom: "3px" }
-							}, "指令预览（下面这段就是发给该功能专属工作会话的原文 · 含要原样落盘的 provenance 侧车）："),
-							h("pre", {
-								key: "v", "data-derived-preview": k.kind,
-								style: {
-									margin: 0, padding: "6px 8px", background: C.bg, border: "1px solid " + C.faint,
-									borderRadius: "3px", fontFamily: "monospace", fontSize: "10.5px", lineHeight: 1.6,
-									whiteSpace: "pre-wrap", color: C.ink, userSelect: "text", maxHeight: "26vh", overflow: "auto"
-								}
-							}, k.instruction),
-							h("div", {
-								key: "act", style: { display: "flex", gap: "6px", alignItems: "center", marginTop: "5px", flexWrap: "wrap" }
-							}, [
-								h("button", {
-									key: "s", type: "button", "data-send": "derived:" + k.kind,
-									onClick: () => send(k),
-									style: {
-										font: "inherit", fontSize: "11.5px", padding: "4px 12px", borderRadius: "4px",
-										border: "1px solid " + C.link, background: C.link, color: "#fff", cursor: "pointer"
-									}
-								}, "发到工作会话"),
-								h("span", {
-									key: "tg", "data-target": "work-session",
-									style: { fontSize: "10px", color: C.muted, userSelect: "text" }
-								}, "发到：本功能的专属工作会话" +
-									(props.root ? "（cwd " + winPath(props.root) + "）" : "") +
-									"　—— 它产出 " + k.plan.artifact + " 与 " + k.plan.sidecar + "；面板随后只读回、只判定。")
-							])
-						])) : null,
-					m ? h("div", {
-						key: "m",
-						style: {
-							fontSize: "11px", marginTop: "5px", lineHeight: 1.7, userSelect: "text",
-							color: m.kind === "err" ? C.bad : (m.kind === "ok" ? C.ok : C.muted)
-						}
-					}, [
-						h("div", { key: "t" }, (m.kind === "ok" ? "✓ " : (m.kind === "err" ? "✗ " : "")) + m.text),
-						m.kind === "ok" ? h("div", {
-							key: "d", "data-sent": "ok", style: { color: C.muted }
-						}, [
-							"目标：" + ((m.target && m.target.title) || "工作会话") +
-							(m.sid ? "　会话 " + String(m.sid).slice(0, 12) + "…" : "") +
-							(m.target && m.target.root ? "　cwd " + winPath(m.target.root) : ""),
-							m.healed ? h("div", { key: "h", style: { color: C.warn } }, "上一轮记的那条会话已经不在了 —— 已自动重建一条并重发。") : null,
-							m.queued ? h("div", { key: "q", style: { color: C.warn } }, "它正在跑别的活，这条指令排在队列里。") : null,
-							h("div", { key: "n", style: { color: C.muted } },
-								"跑完之后回本屏（或按「刷新」）—— 产物与侧车一落盘，这里就会说它是不是最新。")
-						]) : null,
-						m.kind === "err" ? h("div", { key: "n", style: { color: C.ink } }, "下一步：" + (m.next || "再按一次。")) : null,
-						m.sid && typeof props.onOpenSession === "function" ? h("button", {
-							key: "j", type: "button", "data-jump": m.sid, onClick: () => jump(m.sid),
-							style: {
-								font: "inherit", fontSize: "11px", padding: "2px 9px", marginTop: "3px",
-								border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer"
-							}
-						}, "跳到那个会话 ›") : null
-					]) : null
-				]);
-			});
-
-			// ── 详情（**默认收起**；收起时里面的字根本不渲染）──────────────────
-			const detailRows = [];
-			detailRows.push(h("div", {
-				key: "cur",
-				"data-derived-detail": "current",
-				style: { fontSize: "11px", color: C.ink, lineHeight: 1.8, userSelect: "text" }
-			}, [
-				h("div", { key: "a" }, "比对基准：" + cur.text),
-				cur.name ? h("div", {
-					key: "b", style: { color: C.muted }
-				}, "定稿路径：" + (cur.path || "（拿不到）")) : null,
-				h("div", { key: "c", style: { color: C.muted, fontFamily: "monospace", wordBreak: "break-all" } },
-					"版本指纹（宿主 `stat` 的 `version` 原文）：" + (cur.version || "（面板拿不到）"))
-			]));
-			for (const k of kinds) {
-				for (const a of (k.artifacts || [])) {
-					detailRows.push(h("div", {
-						key: "a" + k.kind + a.name,
-						"data-derived-artifact": a.name,
-						style: { fontSize: "11px", lineHeight: 1.85, marginTop: "5px", userSelect: "text" }
-					}, [
-						h("div", { key: "n", style: { color: toneOf(a.verdict.state), fontWeight: 600 } },
-							a.name + "　→　" + a.verdict.text),
-						h("div", { key: "s", style: { color: C.muted } },
-							"侧车：" + a.sidecar + (a.sidecarFound ? "（读到了）" : "（**读不到**）") +
-							(a.srcName ? "　·　可复跑源：" + a.srcName : "") +
-							(a.generatedAt ? "　·　生成时间：" + a.generatedAt : "　·　生成时间：未标")),
-						h("div", { key: "v", style: { color: C.muted, fontFamily: "monospace", wordBreak: "break-all" } },
-							"记录指纹 " + shortVersion(a.verdict.recorded) + "　/　当前指纹 " + shortVersion(a.verdict.current)),
-						h("div", { key: "w", style: { color: C.muted } }, "判定依据：" + a.verdict.why)
-					]));
-				}
-				detailRows.push(h("div", {
-					key: "t" + k.kind, "data-derived-tool": k.kind,
-					style: { fontSize: "10.5px", color: C.muted, lineHeight: 1.85, marginTop: "5px", userSelect: "text" }
-				}, [
-					h("div", { key: "a" }, "按技能：" + k.tool + " —— " + k.note),
-					h("div", { key: "b", style: { fontFamily: "monospace", wordBreak: "break-all" } }, "skill 正文：" + k.toolPath),
-					h("div", { key: "c" }, "这一次会产出：" + k.plan.artifact + "　+　" + k.plan.sidecar)
-				]));
-			}
-			for (const n of (data.notes || [])) {
-				detailRows.push(h("div", {
-					key: "note" + n.slice(0, 12), "data-derived-note": "1",
-					style: { fontSize: "10.5px", color: C.muted, lineHeight: 1.85, marginTop: "5px", userSelect: "text" }
-				}, "· " + n));
-			}
-
-			return head({}, [
-				h("div", {
-					key: "h1",
-					style: { display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap", fontSize: "11.5px" }
-				}, [
-					h("b", { key: "t", style: { fontSize: "12px", color: C.ink } }, "派生物"),
 					h("span", {
-						key: "c", "data-derived-current": cur.name || "none",
-						style: { color: C.muted, userSelect: "text" }
-					}, "基于 " + cur.text),
-					h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
-					h("button", {
-						key: "d", type: "button", "data-btn": "link", "data-fold": "derived",
-						"data-open": openDetail ? "1" : "0",
-						"aria-expanded": openDetail ? "true" : "false",
-						onClick: () => setOpenDetail(!openDetail),
+						key: "dot",
 						style: {
-							font: "inherit", fontSize: "11px", color: C.link, background: "transparent",
-							border: "none", padding: 0, cursor: "pointer", flex: "0 0 auto"
-						}
-					}, openDetail ? "收起详情" : "详情（依据 · 指纹 · 侧车）")
-				]),
-				h("div", {
-					key: "note",
-					style: { fontSize: "10px", color: C.muted, marginTop: "3px", lineHeight: 1.7, userSelect: "text" }
-				}, "这是**输出工具**，不是设计流程的一环 —— 生成它不产生校准记录、不进设计台账。"),
-				...rows,
-				openDetail ? h("div", {
-					key: "dbody", "data-fold-body": "derived",
-					style: {
-						marginTop: "7px", paddingTop: "6px", borderTop: "1px solid " + C.faint,
-						maxHeight: "34vh", overflow: "auto"
-					}
-				}, detailRows) : null
-			]);
-		}
-
-		/**
-		 * ═══ 工单 26 · 外部输入合入 ①②③（「产物」页签最上面那一块）═══
-		 *
-		 * 为什么落在「产物」页签：设计 §4.3.5 的归档位是 `features\<主题>\source\UE交付_<日期>\`
-		 *   —— 那是**原料桶**，而这一页正是逐个桶列产物的地方（归位之后在这里能看见）。
-		 *
-		 * 首屏（克制，人话；**一个主按钮都没有** —— 24c 的形态纪律：一屏一个主按钮是给 Y 形定的，
-		 *   这一屏本来就没有主按钮，`data-btn="primary"` 恒为 0）：
-		 *   · 一行「外部交付包 · 名称」+ 状态标签（是不是交付包 / 基线 最新·过期·看不到）
-		 *   · 一行**包识别**（对着哪个功能 + 一句依据）
-		 *   · 一行**基线校验（★）**（声明 vs 现在；过期时**拦下**那一句直接显示，不折）
-		 *   · 一行**回写清单**计数 + 若干条行（每条带条目引用 + 行号）
-		 *   · ★ **已删条目**：`status==="danger"` 的那些，逐条显示「这会把它改回来」（不静默接受）
-		 *   · 动作：〔让 agent 归档到 source〕（`data-send="intake:archive"`）/〔按交付包换线框图〕
-		 *     （`data-send="intake:wireframe"`）—— 两步走：点开先看**指令预览**，再发。
-		 *
-		 * 折起来的东西（机器口径）：逐条依据（判据原文）、3 条判据的机器口径、如实标注、包内文件清单。
-		 *   **收起时体根本不渲染**（与 DerivedBar 同一条纪律）。
-		 */
-		function IntakeBar(props) {
-			const data = props.data;
-			const [open, setOpen] = React.useState("");
-			const [openDetail, setOpenDetail] = React.useState(false);
-			const [msg, setMsg] = React.useState({});
-
-			const head = (children) => h("div", {
-				"data-intake-bar": "1",
-				style: {
-					border: "1px solid " + C.faint, borderLeft: "3px solid " + (data && !data.error ? C.link : C.soft),
-					background: "#fff", borderRadius: "4px", padding: "7px 11px", marginBottom: "10px"
-				}
-			}, children);
-
-			if (!data) return head(h("div", { style: { fontSize: "11.5px", color: C.muted } }, "正在读外部交付包…"));
-			if (data.error) {
-				return h("div", {
-					"data-intake-bar": "error",
-					style: {
-						fontSize: "11.5px", color: C.bad, marginBottom: "10px", padding: "7px 11px",
-						border: "1px solid " + C.faint, borderLeft: "3px solid " + C.bad, background: "#fef2f2", borderRadius: "4px"
-					}
-				}, data.error);
-			}
-
-			const id = data.identify || {};
-			const base = data.baseline || null;
-			const rows = data.rows || [];
-			const cur = (base && base.current) || { name: "", version: "", from: "", actives: [] };
-			const tone = (s) => s === "fresh" ? C.ok : (s === "stale" ? C.warn : (s === "unknown" ? C.bad : C.muted));
-			const baseTone = base ? tone(base.state) : C.muted;
-			const baseText = base
-				? (base.state === "fresh" ? "最新" : (base.state === "stale" ? "过期" : "看不到依据"))
-				: "看不到依据";
-			const archived = !!(data.archive && data.archive.archived);
-			/**
-			 * ★ 归档位用**面板自己那一份功能根**拼（`props.root`）——
-			 *   加载器算的 `data.archive.dir` 是它对文件系统说的那个根，两者在真机上相同；
-			 *   但指令正文里写的是 `props.root`，面板上显示的必须与**发出去的那一段**一致
-			 *   （"卡上看到的 = 发出去的"，工单 15/23/24/26 同一条纪律）。
-			 */
-			const archDir = (props.root || "")
-				? winPath(props.root) + "\\source\\" + ((data.archive && data.archive.name) || "UE交付_<日期>")
-				: ((data.archive && data.archive.dir) || "");
-			/**
-			 * ★ 工单 26 第 5 条「两个入口共用同一能力」在这**面板侧**也是同一条：
-			 *   面板不把 `data.wireframe.instruction` 直接发出去，而是拿加载器读好的输入
-			 *   （ASCII 现状 · 包里的截图 · 成稿路径）**再调一次同一个组装器**
-			 *   `buildWireframeRequest` —— 它转手交给 `draftstep.buildDraftInstruction({action:"wireframe"})`，
-			 *   与「文档生成 › 线框图」手动入口用的是**同一处组装**。
-			 *   ★ 三次调用的输入完全相同 ⇒ 结果逐字相同；下面发出去的永远是这一次算出来的那一份
-			 *   （`data.wireframe.instruction` 只用来给断言留痕：两边必须一致）。
-			 */
-			const wireBuilt = (() => {
-				const w = data.wireframe || {};
-				try {
-					return buildWireframeRequest({
-						root: props.root || "",
-						topic: id.topic || "",
-						draftPath: w.draftPath || "",
-						where: w.where || "",
-						images: w.images || [],
-						ascii: w.ascii || []
-					});
-				} catch (e) {
-					return { instruction: "", blocked: "线框图请求组装失败：" + String((e && e.message) || e), next: "" };
-				}
-			})();
-
-			/**
-			 * ★ 工单 27 ④：三方映射的**面板侧重算**（与 ⑤ 的 `wireBuilt` 同一条纪律）。
-			 *
-			 * 为什么不直接把 `data.map` 摆出来：加载器那一份是"它对文件系统说的那个视图"，
-			 * 而面板手里有**自己那一份功能根**（`props.root`）—— 对不上的时候要能看出来。
-			 * 两边吃的是同一批原文（manifest / 图例索引 / 回写文档 / 定稿正文），
-			 * 所以 `buildMap` 是纯函数、**只有一份判定**（本屏不另写一套判据）。
-			 * 重算的结论与加载器那一份**逐字相同**时留痕 `data-map-same="1"`（不同就是某处读的不一样）。
-			 */
-			const mapData = (() => {
-				const m = data.map || null;
-				if (!m) return null;
-				try {
-					return buildMap({
-						manifest: m.manifestText || null,
-						legend: m.legendText || null,
-						doc: m.docText || null,
-						finalText: m.finalText || null,
-						pkgDir: m.pkgDir || ""
-					});
-				} catch (e) {
-					return { rows: [], figma: {}, summary: "④ 三方映射重算失败：" + String((e && e.message) || e), counts: {}, notes: [] };
-				}
-			})();
-
-			/**
-			 * ★ 工单 27 ⑤：替换计划的**面板侧重算** —— 与手动入口**共用同一张图源表、同一份组装**。
-			 *   两个入口的区别只有"图源从哪来"（交付包 `截图\` / 用户手挑的图），
-			 *   正文一律由 `buildSwapInstruction` 出一份（它内部只用 `buildSwapPlan` 的结论，不另写判据）。
-			 */
-			const swapBuilt = (() => {
-				const s = data.swap || null;
-				if (!s) return { instruction: "", blocked: "面板还没拿到替换计划（加载器没跑）。", next: "按「刷新」重读这一屏。" };
-				try {
-					const plan = buildSwapPlan({
-						finalText: s.finalText || "",
-						finalPath: s.finalPath || "",
-						topic: s.topic || "",
-						shots: (s.sources || []).map((x) => x.path).filter((p) => String(p || "").indexOf("截图") >= 0),
-						manual: [],
-						uiDir: s.uiDir || "",
-						present: (s.sources || []).filter((x) => x.exists !== false).map((x) => x.path),
-						draftText: (s.draftText == null ? s.finalText : s.draftText) || "",
-						stamp: s.stamp || ""
-					});
-					return buildSwapInstruction(plan);
-				} catch (e) {
-					return { instruction: "", blocked: "替换指令组装失败：" + String((e && e.message) || e), next: "" };
-				}
-			})();
-			/**
-			 * ★ 上面这一次重算必须与加载器算的**逐字相同**（"同一处组装"的运行期证据）——
-			 *   与 `data-intake-wire-same` 同一条口径，落成 `data-swap-same`。
-			 */
-			const swapSame = swapBuilt.instruction === ((data.swapInstruction) || "") ? "1" : "0";
-
-			/**
-			 * ★ 工单 27 ⑤ 的**手动入口**（第二颗按钮）：
-			 *   它在面板侧用**同一个** `buildSwapPlan` + `buildSwapInstruction` 再算一次，
-			 *   只是图源换成 `gdd\UI\` 里现有的图（用户换过图之后用它更新 §5 的引用）。
-			 *   `swapUiSame` = 这一次算出来的与加载器为手动入口算的那一份**逐字相同**的留痕。
-			 */
-			const swapUiBuilt = (() => {
-				const s = data.swapManual || null;
-				if (!s) return { instruction: "", blocked: "面板还没拿到手动入口的替换计划（加载器没跑）。", next: "按「刷新」重读这一屏。" };
-				try {
-					const plan = buildSwapPlan({
-						finalText: s.finalText || "",
-						finalPath: s.finalPath || "",
-						topic: s.topic || "",
-						shots: [],
-						manual: (s.sources || []).map((x) => x.path),
-						uiDir: s.uiDir || "",
-						present: (s.sources || []).map((x) => x.path),
-						draftText: (s.draftText == null ? s.finalText : s.draftText) || "",
-						stamp: s.stamp || ""
-					});
-					return buildSwapInstruction(plan);
-				} catch (e) {
-					return { instruction: "", blocked: "手动入口的替换指令组装失败：" + String((e && e.message) || e), next: "" };
-				}
-			})();
-			const swapUiSame = swapUiBuilt.instruction === ((data.swapManualInstruction) || "") ? "1" : "0";
-			const uiDirLabel = ((data.swap || {}).uiDir) || "";
-
-			const send = (key, text, blocked, root) => {
-				if (blocked) {
-					setMsg((m) => Object.assign({}, m, { [key]: { kind: "blocked", text: blocked, next: (key === "archive" ? data.archiveNext : (key === "swap" ? ((data.swap || {}).next || "") : (key === "swapui" ? ((data.swapManual || {}).next || "") : data.wireframe.next))) || "" } }));
-					return;
-				}
-				if (typeof props.onSend !== "function") {
-					setMsg((m) => Object.assign({}, m, { [key]: { kind: "err", text: "面板拿不到发送通道（onSend 没挂上）。", next: "刷新页面；仍失败就把这条发给开发者。" } }));
-					return;
-				}
-				setMsg((m) => Object.assign({}, m, { [key]: { kind: "pending", text: "正在发给该功能的专属工作会话…" } }));
-				props.onSend(key, { text: text, root: root || "" }).then(
-					(r) => setMsg((m) => Object.assign({}, m, {
-						[key]: r && r.ok
-							? { kind: "ok", text: "已交给工作会话。", sid: r.sid || "", target: r.target || null, healed: !!r.healed, queued: !!r.queued }
-							: { kind: "err", text: (r && (r.message || r.blocked)) || "发送失败", next: (r && r.next) || "再按一次；仍失败就把这条错误发给开发者。", sid: (r && r.sid) || "" }
-					})),
-					(e) => setMsg((m) => Object.assign({}, m, { [key]: { kind: "err", text: String((e && e.message) || e) } }))
-				);
-			};
-
-			/** 一条动作：按钮（次按钮）→ 展开指令预览 → 再点「发到工作会话」 */
-			const action = (key, label, built, goLabel, hint) => {
-				const isOpen = open === key;
-				const m = msg[key] || null;
-				return h("div", { key: "act-" + key, "data-intake-act": key, style: { marginTop: "6px" } }, [
-					h("div", { key: "r", style: { display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap" } }, [
-						h("button", {
-							key: "b", type: "button", "data-btn": "ghost", "data-intake-toggle": key,
-							onClick: () => setOpen(isOpen ? "" : key),
-							style: {
-								font: "inherit", fontSize: "11.5px", padding: "3px 10px", borderRadius: "4px",
-								border: "1px solid " + C.soft, background: "#fff", color: C.ink, cursor: "pointer"
-							}
-						}, (isOpen ? "收起 " : "") + label),
-						h("span", { key: "h", style: { fontSize: "10.5px", color: C.muted } }, hint)
-					]),
-					isOpen ? h("div", { key: "pv", style: { marginTop: "5px" } }, built.blocked
-						? h("div", {
-							key: "bl", "data-intake-blocked": key,
-							style: { fontSize: "11px", color: C.warn, lineHeight: 1.8, background: "#fffbeb", border: "1px solid " + C.faint, borderRadius: "3px", padding: "6px 8px", userSelect: "text" }
-						}, [
-							h("div", { key: "a" }, "不发：" + built.blocked),
-							h("div", { key: "b" }, "下一步：" + (built.next || "见上面的依据"))
-						])
-						: h("div", { key: "ok" }, [
-							h("div", { key: "t", style: { fontSize: "10.5px", color: C.muted, marginBottom: "3px" } },
-								"指令预览（下面这段就是发给该功能专属工作会话的原文）："),
-							h("pre", {
-								key: "v", "data-intake-preview": key,
-								style: {
-									margin: 0, padding: "6px 8px", background: C.bg, border: "1px solid " + C.faint,
-									borderRadius: "3px", fontFamily: "monospace", fontSize: "10.5px", lineHeight: 1.6,
-									whiteSpace: "pre-wrap", color: C.ink, userSelect: "text", maxHeight: "26vh", overflow: "auto"
-								}
-							}, built.instruction),
-							h("div", { key: "a", style: { display: "flex", gap: "6px", alignItems: "center", marginTop: "5px", flexWrap: "wrap" } }, [
-								h("button", {
-									key: "s", type: "button", "data-send": "intake:" + key,
-									onClick: () => send(key, built.instruction, "", props.root || ""),
-									style: {
-										font: "inherit", fontSize: "11.5px", padding: "4px 12px", borderRadius: "4px",
-										border: "1px solid " + C.link, background: C.link, color: "#fff", cursor: "pointer"
-									}
-								}, goLabel),
-								h("span", { key: "tg", "data-target": "work-session", style: { fontSize: "10px", color: C.muted, userSelect: "text" } },
-									"发到：本功能的专属工作会话" + (props.root ? "（cwd " + winPath(props.root) + "）" : "") + "　—— 面板随后只读回、只判定。")
-							])
-						])) : null,
-					m ? h("div", {
-						key: "m",
-						style: { fontSize: "11px", marginTop: "5px", lineHeight: 1.75, userSelect: "text", color: m.kind === "err" || m.kind === "blocked" ? C.bad : (m.kind === "ok" ? C.ok : C.muted) }
-					}, [
-						h("div", { key: "t" }, (m.kind === "ok" ? "✓ " : (m.kind === "pending" ? "" : "✗ ")) + m.text),
-						m.kind === "ok" ? h("div", { key: "d", "data-sent": "ok", style: { color: C.muted } }, [
-							"目标：" + ((m.target && m.target.title) || "工作会话") +
-							(m.sid ? "　会话 " + String(m.sid).slice(0, 12) + "…" : "") +
-							(m.healed ? "　（上一轮那条会话已不在，已重建）" : "") +
-							(m.queued ? "　（它正在跑别的活，这条排在队列里）" : ""),
-							h("div", { key: "n", style: { color: C.muted } }, "跑完之后按「刷新」回本屏 —— 面板只读回、只判定。")
-						]) : null,
-						m.kind === "err" || m.kind === "blocked" ? h("div", { key: "n", style: { color: C.ink } }, "下一步：" + (m.next || "再按一次。")) : null
-					]) : null
-				]);
-			};
-
-			// ── 回写清单：每条一行（**每条能定位回定稿**：条目引用 + 行号）──────────
-			const rowTone = (s) => s === "danger" ? C.bad : (s === "missing" ? C.warn : (s === "ok" ? C.ink : C.muted));
-			const wbRows = rows.map((r, i) => h("div", {
-				key: "wb" + i, "data-intake-row": r.status, "data-intake-src": String(r.srcLine),
-				style: {
-					fontSize: "11px", lineHeight: 1.8, marginTop: "4px", paddingLeft: "7px",
-					borderLeft: "2px solid " + rowTone(r.status), userSelect: "text"
-				}
-			}, [
-				h("div", { key: "t", style: { color: rowTone(r.status), fontWeight: r.status === "danger" ? 600 : 400 } }, [
-					h("span", { key: "k", style: { color: C.muted, fontFamily: "monospace" } }, "L" + r.srcLine + "　"),
-					h("span", { key: "a" }, r.target),
-					h("span", { key: "b", style: { color: C.muted } }, "　→　" + r.action + (r.basis ? "　（依据 " + r.basis + "）" : ""))
-				]),
-				h("div", { key: "l", style: { color: C.muted } },
-					"定位：" + (r.lines.length
-						? r.lines.map((x) => "`" + x.ref + "` L" + x.line).join("　·　")
-						: (r.refs.length ? r.refs.map((x) => "`" + x + "`").join("　·　") : "（这一条没有可定位的条目编号）")) +
-					(r.foundKeys.length ? "　｜　文本键在定稿 §7：" + r.foundKeys.map((k) => "`" + k + "`").join(" / ") : "") +
-					(r.newKeys.length ? "　｜　待新增（定稿里还没有）：" + r.newKeys.map((k) => "`" + k + "`").join(" / ") : "")),
-				r.warn ? h("div", {
-					key: "w", "data-intake-warn": r.goneKeys[0] || "1",
-					style: { color: C.bad, background: "#fef2f2", border: "1px solid " + C.faint, borderRadius: "3px", padding: "4px 7px", marginTop: "3px" }
-				}, r.warn) : null
-			]));
-
-			// ── ④ 三方映射：逐张一行（截图 → 章节 → 节点 → 定稿 §5）──────────────
-			//   ★ 对不上/推不出的**写在那一行上**（`miss`），不许只显示成功。
-			const mapRows = ((mapData && mapData.rows) || []);
-			const mapTone = (s) => s === "ok" ? C.ok : (s === "agree" ? C.warn : (s === "partial" ? C.warn : C.muted));
-			const mapRowNodes = mapRows.map((r, i) => h("div", {
-				key: "mr" + i, "data-map-row": r.status, "data-map-file": r.file,
-				style: {
-					fontSize: "11px", lineHeight: 1.8, marginTop: "3px", paddingLeft: "7px",
-					borderLeft: "2px solid " + mapTone(r.status), userSelect: "text"
-				}
-			}, [
-				h("div", { key: "a" }, [
-					h("span", { key: "n", style: { color: C.muted, fontFamily: "monospace" } }, (r.no || "-") + "　"),
-					h("span", { key: "f" }, r.file.replace(/^截图[\\/]/, "")),
-					h("span", { key: "s", style: { color: mapTone(r.status), fontWeight: 600 } }, "　［" + r.status + "］")
-				]),
-				h("div", { key: "b", style: { color: C.muted } },
-					"章节：" + (r.doc.matched ? "`" + r.doc.section + " " + r.doc.title + "`" + (r.doc.line ? "（回写文档 L" + r.doc.line + "）" : "") : "**对不上**（回写文档里没有 `" + r.doc.section + "` 这一段）") +
-					"　→　节点：" + (r.node.manifest || "**没读到**") +
-					(r.node.legend ? "（图例索引 `" + r.node.legend + "`" + (r.node.agree ? " 一致" : " **不一致**") + "）" : "（图例索引里没有这一张）") +
-					(r.node.frame ? "　Frame " + r.node.frame : "")),
-				h("div", { key: "c", style: { color: C.muted } },
-					"定稿 §5：" + ((r.docs || []).length
-						? r.docs.map((d) => "`" + d.ref + "`" + (d.has ? "（就是这一张）" : "（该组现有 " + d.images.length + " 张图，**没有这一张**）")).join("　·　")
-						: "**推不出它属于哪个界面组**")),
-				r.miss ? h("div", { key: "d", style: { color: C.warn } }, "缺：" + r.miss) : null
-			]));
-
-			const mapBlock = h("div", {
-				key: "map", "data-intake-map": (mapData && mapData.counts ? mapData.counts.total : 0) + "",
-				style: { marginTop: "7px", paddingTop: "6px", borderTop: "1px dashed " + C.faint, fontSize: "11px", lineHeight: 1.8, color: C.ink, userSelect: "text" }
-			}, [
-				h("div", { key: "h", "data-map-summary": "1" }, "④ 三方映射：" + ((mapData && mapData.summary) || "**读不到 `manifest.json`** —— 这一块做不了").replace(/^④ 三方映射：/, "")),
-				// ★ 面板侧重算与加载器那一份必须**逐字相同**（"同一处判定"的运行期证据）
-				h("div", { key: "same", "data-map-same": (mapData && data.map && mapData.rows.length === (data.map.rows || []).length) ? "1" : "0", style: { display: "none" } }, ""),
-				h("div", { key: "fp", style: { fontSize: "10.5px", color: C.muted } },
-					"源：" + (((mapData || {}).figma || {}).file || "（manifest 没写 Figma 源）") +
-					((((mapData || {}).figma || {}).pageId) ? " · Page " + mapData.figma.pageId + "（" + (mapData.figma.pageName || "") + "）" : "") +
-					((((mapData || {}).figma || {}).ruleNode) ? " · 规则节点 " + mapData.figma.ruleNode : "") +
-					"　（逐行判据见下面「详情」折）"),
-				mapRowNodes.length ? h("div", { key: "rows" }, mapRowNodes) : null
-			]);
-
-			// ── ⑤ 线框替换：替换前 vs 替换后（逐组对照）────────────────────────
-			const swap = data.swap || null;
-			const swTone = (a) => a === "keep" ? C.ok : (a === "replace" ? C.warn : (a === "unmatched" ? C.bad : C.muted));
-			const swRows = swap ? (swap.groups || []).filter((g) => g.kind === "ui").map((g, i) => h("div", {
-				key: "sw" + i, "data-swap-row": g.action, "data-swap-group": g.id || g.no,
-				style: {
-					fontSize: "11px", lineHeight: 1.8, marginTop: "3px", paddingLeft: "7px",
-					borderLeft: "2px solid " + swTone(g.action), userSelect: "text"
-				}
-			}, [
-				h("div", { key: "a" }, [
-					h("span", { key: "g", style: { fontFamily: "monospace" } }, "§" + g.no + " " + g.id + "　"),
-					h("span", { key: "s", style: { color: swTone(g.action), fontWeight: 600 } }, "［" + g.action + "］"),
-					h("span", { key: "w", style: { color: C.muted } }, "　" + (g.why || ""))
-				]),
-				h("div", { key: "b", style: { color: C.muted } },
-					"替换前：" + (g.before.length
-						? g.before.map((x) => "L" + x.line + " `" + x.src + "`").join("　·　")
-						: "**没有图**（§5 里这一组还是 ASCII 占位 / 或者根本没有图）")),
-				h("div", { key: "c", style: { color: C.muted } },
-					"替换后：" + (g.after.length
-						? g.after.map((x) => "`" + x.file + "` → `" + x.rel + "`").join("　·　")
-						: "（面板这一轮算不出要换哪张图 —— 见下面的「缺」）")),
-				g.miss ? h("div", { key: "d", style: { color: C.bad } }, "缺：" + g.miss) : null
-			])) : [];
-
-			const swapBlock = swap ? h("div", {
-				key: "swap", "data-intake-swap": (swap.counts ? (swap.counts.replace + "/" + swap.counts.keep + "/" + swap.counts.unmatched) : "0/0/0"),
-				style: { marginTop: "7px", paddingTop: "6px", borderTop: "1px dashed " + C.faint, fontSize: "11px", lineHeight: 1.8, color: C.ink, userSelect: "text" }
-			}, [
-				h("div", { key: "h", "data-swap-summary": "1" }, (swap.summary || "⑤ 线框图替换：**读不到计划**").replace(/^⑤ 线框图替换：/, "⑤ 线框图替换：")),
-				// ★ "与手动入口共用同一处组装"的运行期证据：面板重算 vs 加载器算的，必须逐字相同
-				h("div", { key: "same", "data-swap-same": swapSame, style: { display: "none" } }, ""),
-				h("div", { key: "uisame", "data-swap-ui-same": swapUiSame, style: { display: "none" } }, ""),
-				h("div", { key: "b", style: { fontSize: "10.5px", color: C.muted } },
-					"目标：" + (swap.finalName || "（拿不到定稿）") + "　｜　图落：" + (swap.uiDir || "（拿不到功能目录）") +
-					"　｜　备份：" + ((swap.backup && swap.backup.path) || "（拿不到）")),
-				swRows.length ? h("div", { key: "rows" }, swRows) : h("div", { key: "none", style: { color: C.muted } }, "§5 里没有可判的界面组（定稿读不到，或 §5 里没有 `UI-M*` 组）。"),
-				swap.blocked ? h("div", { key: "bl", "data-swap-blocked": "1", style: { color: C.warn } }, "这一轮不发指令：" + swap.blocked) : null
-			]) : null;
-
-			// ── 详情折：逐条依据 + 如实标注 ─────────────────────────────────
-			const detail = [];
-			// ★ 工单 27 ④：每一张截图的逐格依据进详情折（首屏只留三条边那一行；收起时体不渲染）
-			for (const r of ((data.map || {}).rows || [])) {
-				detail.push(h("div", {
-					key: "mp" + r.no + r.file, "data-map-evidence": r.status,
-					style: { fontSize: "10.5px", color: C.muted, lineHeight: 1.8, marginTop: "5px", userSelect: "text" }
-				}, [h("div", { key: "h", style: { color: C.ink } }, "④ " + r.file + "　（" + r.status + "）")].
-					concat((r.evidence || []).map((t, i) => h("div", { key: "e" + i }, "· " + t))).
-					concat((r.docs || []).map((d, i) => h("div", { key: "d" + i }, "· " + d.why)))));
-			}
-			for (const g of ((data.swap || {}).groups || [])) {
-				detail.push(h("div", {
-					key: "sw" + g.no + g.id, "data-swap-evidence": g.action,
-					style: { fontSize: "10.5px", color: C.muted, lineHeight: 1.8, marginTop: "5px", userSelect: "text" }
-				}, [
-					h("div", { key: "h", style: { color: C.ink } }, "⑤ §" + g.no + (g.id ? " " + g.id : " " + g.title) + "　（" + g.action + "）"),					h("div", { key: "w" }, "· " + g.why),
-					g.miss ? h("div", { key: "m", style: { color: C.bad } }, "· 对不上：" + g.miss) : null
-				]));
-			}
-			detail.push(h("div", { key: "ev", "data-intake-evidence": "1", style: { fontSize: "11px", lineHeight: 1.85, userSelect: "text" } },
-				(id.evidence || []).map((e, i) => h("div", { key: "e" + i }, [
-					h("b", { key: "l" }, e.label + "："),
-					h("span", { key: "v", style: { color: C.muted } }, e.value)
-				]))));
-			/**
-			 * ★ 对比基准那一栏：**与「派生物」那一块同口径**把当前定稿的**版本指纹原文**摆出来
-			 *   （宿主 `stat` 的 `version`，工单 25 实测的形状）+ 它换算出来的人类时间。
-			 *   ② 的"是不是同一版"就靠这一栏核对 —— 机器口径不许只藏在判定里。
-			 */
-			if (base) {
-				detail.push(h("div", {
-					key: "fp", "data-intake-fingerprint": cur.version || "none",
-					style: { fontSize: "11px", lineHeight: 1.85, marginTop: "6px", userSelect: "text" }
-				}, [
-					h("b", { key: "l" }, "对比基准："),
-					h("span", { key: "a", style: { color: C.muted } },
-						(base.current && base.current.name ? "`" + base.current.name + "`（" +
-							(base.current.from === "active" ? "头部标了 `status: active`" : "没有 active，按日期取最新") + "）" : "（没有有效定稿）")),
-					h("div", { key: "b", style: { color: C.muted, fontFamily: "monospace", wordBreak: "break-all" } },
-						"版本指纹（宿主 `stat` 的 `version` 原文，工单 25 口径）：" + (cur.version || "（面板拿不到）") +
-						(cur.version ? "　⇒ " + shortVersion(cur.version) : ""))
-				]));
-			}
-			if (base) {
-				detail.push(h("div", { key: "be", "data-intake-baseline-evidence": base.state, style: { fontSize: "11px", lineHeight: 1.85, marginTop: "6px", userSelect: "text" } },
-					(base.evidence || []).map((e, i) => h("div", { key: "b" + i }, [
-						h("b", { key: "l" }, e.label + "："),
-						h("span", { key: "v", style: { color: C.muted } }, e.value)
-					]))));
-				detail.push(h("div", { key: "bw", style: { fontSize: "10.5px", color: C.muted, marginTop: "4px", userSelect: "text" } }, "判定依据：" + base.why));
-			}
-			for (const r of rows) {
-				detail.push(h("div", {
-					key: "rw" + r.srcLine, style: { fontSize: "10.5px", color: C.muted, lineHeight: 1.8, marginTop: "4px", userSelect: "text" }
-				}, (r.evidence || []).map((t, i) => h("div", { key: "a" + i }, "· " + t))));
-			}
-			for (const n of (data.notes || [])) {
-				detail.push(h("div", { key: "nt" + n.slice(0, 10), "data-intake-note": "1", style: { fontSize: "10.5px", color: C.muted, lineHeight: 1.85, marginTop: "4px", userSelect: "text" } }, "· " + n));
-			}
-
-			// ── 首屏 ─────────────────────────────────────────────────
-			return head([
-				h("div", { key: "h1", style: { display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap", fontSize: "11.5px" } }, [
-					h("b", { key: "t", style: { fontSize: "12px", color: C.ink } }, "外部交付包"),
-					h("span", {
-						key: "f", "data-intake-zip": id.file || "none",
-						style: { color: C.ink, fontFamily: "monospace", userSelect: "text" }
-					}, id.file || "（工作区根上没有交付包）"),
-					h("span", {
-						key: "k", "data-intake-kind": id.isDelivery ? "delivery" : "unknown",
-						style: { color: id.isDelivery ? C.ok : C.bad, fontWeight: 600 }
-					}, id.isDelivery ? "认成 UE 交互交付包" : "没认成交付包"),
-					h("span", {
-						key: "b", "data-intake-baseline": base ? base.state : "unknown",
-						style: { color: baseTone, fontWeight: base && base.state === "stale" ? 700 : 400 }
-					}, "基线：" + baseText),
-					h("span", { key: "d", "data-intake-archived": archived ? "1" : "0", style: { color: archived ? C.ok : C.warn } },
-						archived ? "已归位" : "还没归位"),
-					h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
-					h("button", {
-						key: "dt", type: "button", "data-btn": "link", "data-fold": "intake",
-						"data-open": openDetail ? "1" : "0", "aria-expanded": openDetail ? "true" : "false",
-						onClick: () => setOpenDetail(!openDetail),
-						style: { font: "inherit", fontSize: "11px", color: C.link, background: "transparent", border: "none", padding: 0, cursor: "pointer" }
-					}, openDetail ? "收起详情" : "详情（逐条依据 · 如实标注）")
-				]),
-				// ① 包识别
-				h("div", { key: "id", "data-intake-identify": id.feature && id.feature.topic ? id.feature.topic : "none",
-					style: { fontSize: "11px", color: C.ink, marginTop: "3px", lineHeight: 1.8, userSelect: "text" } },
-					"① 包识别：" + (id.feature && id.feature.topic
-						? "对着功能 `" + id.feature.topic + "`（" + (id.feature.why || []).join("；") + "）"
-						: "**没定下来对着哪个功能** —— " + ((id.feature && id.feature.need) || id.need || "依据不足")) +
-					(id.dupMark ? "　｜　文件名带 `(" + id.dupMark + ")`：浏览器重复下载的副本（同一包留一份就够）" : "")),
-				// ★ 两个入口共用同一处组装的**运行期证据**：这一次算出来的指令与加载器算的那一份
-				//   必须逐字相同（不同就是"各写了一份"）。`data-intake-wire-same` 供断言读。
-				h("div", {
-					key: "ws", "data-intake-wire-same": (wireBuilt.instruction === ((data.wireframe || {}).instruction || "")) ? "1" : "0",
-					style: { display: "none" }
-				}, ""),
-				// ② 基线校验（★）
-				base ? h("div", { key: "bs", "data-intake-baseline-text": "1", style: { fontSize: "11px", color: baseTone, marginTop: "3px", lineHeight: 1.8, userSelect: "text" } },
-					"② 基线校验：" + base.text + (base.block ? "　" + base.block : "")) : null,
-				// ③ 回写清单
-				h("div", { key: "cl", style: { fontSize: "11px", color: C.ink, marginTop: "3px", lineHeight: 1.8, userSelect: "text" } }, [
-					h("div", { key: "n", "data-intake-counts": rows.length + "/" + (data.counts ? data.counts.danger : 0) }, [
-						"③ 回写清单：" + (rows.length ? rows.length + " 条" : "**读不到**（回写文档没读到，或里面没有那张表）"),
-						data.counts && data.counts.danger ? "　｜　**其中 " + data.counts.danger + " 条是「已删条目」**" : "",
-						data.counts && data.counts.missing ? "　｜　" + data.counts.missing + " 条点名的条目在定稿里找不到" : ""
-					]),
-					wbRows
-				]),
-				// ★ 那条死规矩：合成句（与逐条 warn 同时出现，确保"不静默接受"）
-				data.revertWarning ? h("div", {
-					key: "rv", "data-intake-revert": "1",
-					style: { fontSize: "11.5px", color: C.bad, background: "#fef2f2", border: "1px solid " + C.bad, borderRadius: "4px", padding: "6px 9px", marginTop: "6px", lineHeight: 1.8, userSelect: "text" }
-				}, "⚠ " + data.revertWarning) : null,
-				// ═══ ④ 三方映射（工单 27）：截图 ↔ 文档章节 ↔ 设计工具节点 ═══
-				//   每一行就是一张截图的三条边；对不上/推不出的**写在那一行上**（不许只显示成功）。
-				mapBlock,
-				// ═══ ⑤ 线框图替换（工单 27）：替换前 vs 替换后，逐组对照 ═══
-				swapBlock,
-				// 动作（两个，都是次按钮；两步走：先看预览再发）
-				// ★ 归档那一颗只在**还没归位**时给（已归位就没有这个动作可做）
-				archived ? null : action("archive", "让 agent 归档到 source", { instruction: data.archiveInstruction, blocked: data.archiveBlocked, next: data.archiveNext }, "发到工作会话",
-					"把包解压到 `" + ((data.archive && data.archive.name) || "UE交付_<日期>") + "`（不带外层包名那一层），包本体也留一份"),
-				h("div", { key: "ar", "data-intake-archive": archDir || "none",
-					style: { fontSize: "10.5px", color: C.muted, marginTop: "4px", lineHeight: 1.7, userSelect: "text" } },
-					"归档位：" + (archDir || "（拿不到功能目录）") + "　—— " + ((data.archive && data.archive.why) || "")),
-				action("wireframe", "按交付包换线框图", wireBuilt, "发到工作会话",
-					"与「文档生成 › 线框图」**共用同一处组装**（`draftstep.buildDraftInstruction`）；图源 = 包里的 `截图\\`" +
-					(((data.wireframe || {}).images || []).length ? "（" + data.wireframe.images.length + " 张）" : "") +
-					(((data.wireframe || {}).ascii || []).length ? "，§5 里要换掉 " + data.wireframe.ascii.length + " 处 ASCII 占位" : "")),
-				// ★ 工单 27 ⑤：**落地那一条**（改真定稿 §5；含先备份 + 改完贴回 + 回滚口径）
-				action("swap", "按上面这份对照换（改定稿 §5）", swapBuilt, "发到工作会话",
-					"与手动入口**共用同一处组装**（`ueswap.buildSwapPlan` 那张图源表 / `buildSwapInstruction` 那份正文）；" +
-					"目标 = 当前有效定稿；图落 `gdd\\UI\\`（跟着定稿走）"),
-				// ★ ⑤ 的**另一个入口**：图源 = `gdd\UI\` 里现有的图（用户换过图之后走这条更新 §5 的引用）
-				//   —— 与上面那颗跑的是**同一个** `buildSwapPlan` + `buildSwapInstruction`，只换图源。
-				action("swapui", "用 gdd\\UI\\ 里现有的图更新 §5 引用", swapUiBuilt, "发到工作会话",
-					"手动入口：图源 = " + (uiDirLabel || "`gdd\\UI\\`") + "（" + ((data.uiDirFiles || []).length) + " 张）；" +
-					"与上面那颗是**同一处组装**（只换图源）—— `data-swap-ui-same` 留痕两边正文逐字一致"),
-				openDetail ? h("div", {
-					key: "db", "data-fold-body": "intake",
-					style: { marginTop: "7px", paddingTop: "6px", borderTop: "1px solid " + C.faint, maxHeight: "40vh", overflow: "auto" }
-				}, detail) : null
-			]);
-		}
-
-		function FinalDoc(props) {
-			const d = props.doc;
-			const [sel, setSel] = React.useState(null);
-			const [openGrp, setOpenGrp] = React.useState({});
-			const [item, setItem] = React.useState(null);
-			const [intent, setIntent] = React.useState("");
-			const [sendMsg, setSendMsg] = React.useState(null);
-			const bodyRef = React.useRef(null);
-			const graph = React.useMemo(() => (d && d.blocks ? buildRefGraph(d) : null), [d]);
-			const tree = React.useMemo(() => (d && d.outline ? buildFinalTree(d, graph) : null), [d, graph]);
-
-			/**
-			 * ★ 工单 28：**派生物那块永远在这屏最上面** —— 包括"这个功能还没有定稿"那几种情形
-			 *   （真实数据里就有两个：诸神降临 / 英雄圣物）。降级也要如实说清，而不是整屏只剩一句话。
-			 */
-			const bar = h(DerivedBar, {
-				key: "dv",
-				data: props.derived || null,
-				root: props.featureRoot || "",
-				onDerived: props.onDerived || null,
-				onOpenSession: props.onOpenSession || null
-			});
-			const wrap = (children) => h("div", { key: "wrap" }, [bar, children]);
-
-			if (!d) return wrap(h("p", { key: "p", style: { color: C.muted, fontSize: "12px" } }, "正在读定稿…"));
-			if (d.empty) return wrap(h("p", { key: "p", style: { color: C.muted, fontSize: "12px" } }, d.empty));
-			if (d.error) return wrap(h("p", { key: "p", style: { color: C.bad, fontSize: "12px", userSelect: "text" } }, d.error));
-			if (!d.blocks || !d.blocks.length) {
-				return wrap(h("p", { key: "p", style: { color: C.muted, fontSize: "12px" } }, "定稿里没解析出章节结构。"));
-			}
-			if (!tree || !tree.counts.chapters) {
-				return wrap(h("p", { key: "p", style: { color: C.muted, fontSize: "12px" } }, "定稿里没解析出章节结构。"));
-			}
-
-			/** 相对路径 → **绝对路径**：按定稿所在目录解析（含空格与中点号也照原样拼，不做转义） */
-			const absOf = (v) => {
-				if (!v || typeof v !== "string") return void 0;
-				if (!/\.(png|jpe?g|gif|webp|svg)$/i.test(v)) return void 0;
-				const isAbs = /^[A-Za-z]:[\\/]/.test(v) || v.charAt(0) === "/";
-				return isAbs ? v : String(d.dir).replace(/[\\/]+$/, "") + "/" + v;
-			};
-			const pathImages = {
-				abs: absOf,
-				resolve: (v) => { const a = absOf(v); return a ? fileUrl(a) : void 0; }
-			};
-			const goto = (idx) => {
-				setSel(idx);
-				const box = bodyRef.current;
-				if (!box || !box.querySelector || idx < 0) return;
-				const el = box.querySelector('[data-blk="' + idx + '"]');
-				if (el && el.scrollIntoView) el.scrollIntoView({ block: "start" });
-			};
-			/**
-			 * 正文滚动 → 树高亮跟随。判断只有一句：把每块顶边（相对滚动容器）交给纯函数
-			 * `topBlockIndex` 取"已经越过顶边的最后一个块"。这里只负责取矩形。
-			 */
-			const onBodyScroll = () => {
-				const box = bodyRef.current;
-				if (!box || !box.querySelectorAll || !box.getBoundingClientRect) return;
-				const els = box.querySelectorAll("[data-blk]");
-				const boxTop = box.getBoundingClientRect().top;
-				const tops = [];
-				for (let i = 0; i < els.length; i++) {
-					const r = els[i] && els[i].getBoundingClientRect ? els[i].getBoundingClientRect() : null;
-					tops.push(r ? r.top - boxTop : NaN);
-				}
-				const i = topBlockIndex(tops);
-				if (i >= 0 && i !== sel) setSel(i);
-			};
-			/** 行号 → 它所在的块 idx（影响范围里点一条，跳过去看） */
-			const blockIdxOfLine = (line) => {
-				for (let i = 0; i < d.blocks.length; i++) {
-					const b = d.blocks[i];
-					const n = String(b.text || "").split(/\r?\n/).length;
-					if (line >= b.line && line < b.line + n) return i;
-				}
-				return -1;
-			};
-
-			/**
-			 * 选中一条 → 出定位卡。
-			 * `exclude` = 影响范围里**要排除的自指行**：条目/键/AC 是自己的定义行 ⇒ 排除它
-			 * （"还牵动别处哪些地方"才是要点）；组与 §6 字段行不排除（组的标题行、字段的声明行
-			 * 都是这一条自己的位置，留着并在卡上标明「自身」，这样处数与 14-impact-oracle 对得上）。
-			 */
-			const pick = (o, idx) => { setItem(o); setSendMsg(null); goto(idx); };
-			const pickItem = (it, grpIdx) => pick({
-				ref: it.ref, line: it.line, text: it.text, self: it.line, exclude: it.line,
-				grain: it.grain, note: ""
-			}, grpIdx);
-			const pickGroup = (g) => {
-				const names = g.items.map((x) => x.label);
-				pick({
-					ref: g.ref, line: g.line, text: g.text, self: g.line,
-					exclude: null,                 // 组的标题行不排除（卡上标「（自身）」），处数与 14-impact-oracle 对齐
-					grain: g.grain,
-					note: !g.ref
-						? "这一组不是引用图的实体（§4 到规则组、§5 到界面组、§6 到行）—— 只能定位，没有影响范围。"
-						: "组内 " + g.items.length + " 条：" + names.slice(0, 14).join(" / ") + (names.length > 14 ? " …" : "")
-				}, g.idx);
-			};
-			const pickChapter = (c) => pick({
-				ref: "", line: c.line, text: c.text, self: c.line, exclude: null,
-				grain: c.grain,
-				note: "章不单独引用：改动按条落在组/条目上（§4 到规则组、§5 到界面组+条目、§6 到行、§7 到键、§10 到条目）。"
-			}, c.idx);
-
-			const impact = (item && item.ref && graph) ? impactOf(graph, item.ref, item.exclude) : [];
-			/** 发给工作会话的那一份：**去掉自身那一行**（自指算影响没有意义） */
-			const impactSend = impact.filter((h) => h.line !== (item && item.self));
-			const impactArg = impactSend.map((h) => ({ line: h.line, where: h.where, kind: h.kind || "" }));
-			const preview = (item && item.ref)
-				? buildFixInstruction({
-					path: d.path, ref: item.ref, before: item.text,
-					intent: intent.trim(), impact: impactArg
-				})
-				: "";
-
-			const send = () => {
-				if (!item || !item.ref || !intent.trim() || !props.onFix) return;
-				setSendMsg({ kind: "pending", text: "正在发给工作会话…" });
-				props.onFix({
-					path: d.path, ref: item.ref, before: item.text, intent: intent.trim(), impact: impactArg,
-					// ★ 功能根（= 工作会话的 cwd，工单 15）：详情页给的更权威，缺了则由 fixRunner 从路径反推
-					root: props.featureRoot || ""
-				}).then(
-					(r) => setSendMsg(r && r.ok
-						? {
-							kind: "ok", text: "已交给工作会话。",
-							sid: r.sid || "", target: r.target || null,
-							healed: !!r.healed, queued: !!r.queued, note: r.note || ""
-						}
-						: {
-							kind: "err",
-							text: (r && (r.message || r.note)) || "发送失败",
-							next: (r && r.next) || "再按一次；仍失败就把这条错误发给开发者。",
-							sid: (r && r.sid) || ""
-						}),
-					(e) => setSendMsg({ kind: "err", text: String((e && e.message) || e), next: "再按一次。" })
-				);
-			};
-			/** 跳到某个会话（DSH 自己的 uiWorkspace.openSession）—— 失败也要说话 */
-			const jump = (sid) => {
-				if (!sid || !props.onOpenSession) {
-					setSendMsg((m) => Object.assign({}, m || {}, { jumpErr: "面板拿不到「跳会话」的通道（onOpenSession 没挂上）。" }));
-					return;
-				}
-				const r = props.onOpenSession(sid);
-				if (r && r.ok === false) {
-					setSendMsg((m) => Object.assign({}, m || {}, {
-						jumpErr: "跳转失败：" + ((r.error && (r.error.message || r.error.code)) || "未知原因") +
-							"　—— 你可以在左侧列表里按标题找到它。"
-					}));
-				}
-			};
-
-			// ── 左栏：大纲树（章 → 组 → 条目，逐级带行号）──────────────────
-			//   ★ 默认开合来自数据（`finaltree` 给的 open）：**组级展开、章级收起** —— §7 有 49 个键。
-			//   ★ 三处刻意的设计，都是为了让"能点的东西"一眼可见：
-			//     ① 默认展开（组级）—— 收起状态下看不到条目，用户不知道能点
-			//     ② 整行可点（展开/收起 + 定位一起做）—— 原来只有 10px 宽的 ▸，基本点不到
-			//     ③ 不可单独引用的行**显灰 + 说明原因**（不假装能点）
-			const LNUM = { fontSize: "9.5px", color: C.muted, fontFamily: "monospace", marginLeft: "6px", flex: "0 0 auto" };
-			const lnum = (line) => h("span", { key: "L", style: LNUM }, "L" + line);
-			const toc = [h("div", {
-				key: "head",
-				style: { fontSize: "11px", color: C.muted, marginBottom: "8px", lineHeight: 1.6, userSelect: "text" }
-			}, [
-				h("div", { key: "a" }, d.name + " · " + tree.counts.chapters + " 章 / " + tree.counts.groups + " 组 / " +
-					tree.counts.items + " 个可引用条目"),
-				h("div", { key: "b" }, "点条目 → 出定位卡（条目引用 + 原文 + 影响范围）；组级默认展开、章级默认收起")
-			])];
-
-			const itemRow = (it, grpIdx) => {
-				const on = !!item && !!it.ref && item.ref === it.ref && item.line === it.line;
-				const dead = !it.ref;
-				return h("div", {
-					key: "it" + it.line + "-" + (it.ref || it.label),
-					onClick: dead ? void 0 : () => pickItem(it, grpIdx),
-					title: dead ? (it.why || "这一行不可单独引用") : it.ref,
-					"data-ref": it.ref || "",
-					"data-line": String(it.line),
-					style: {
-						display: "flex", alignItems: "baseline",
-						fontSize: "11px", cursor: dead ? "default" : "pointer", userSelect: "none",
-						padding: "1px 4px 1px 22px", borderRadius: "3px",
-						color: dead ? C.soft : (on ? "#fff" : C.muted),
-						background: on ? C.link : "transparent",
-						fontWeight: on ? 600 : 400,
-						whiteSpace: "nowrap", overflow: "hidden"
-					}
-				}, [
-					h("span", {
-						key: "l", style: { overflow: "hidden", textOverflow: "ellipsis" }
-					}, it.label),
-					it.sub ? h("span", { key: "s", style: { color: dead ? C.soft : C.muted, marginLeft: "5px", fontSize: "10px" } }, it.sub) : null,
-					h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
-					lnum(it.line)
-				]);
-			};
-
-			for (const c of tree.chapters) {
-				const chKey = "ch" + c.no;
-				const chOpen = openGrp[chKey] === undefined ? c.open : !!openGrp[chKey];
-				const cnt = [];
-				if (c.groups.length) cnt.push(c.groups.length + " 组");
-				if (c.items.length) cnt.push(c.items.length + " 条");
-				if (c.skipped) cnt.push(c.skipped + " 行不可引用");
-				toc.push(h("div", {
-					key: "c" + c.no,
-					onClick: () => {
-						if (c.items.length) {
-							const nx = Object.assign({}, openGrp);
-							nx[chKey] = !chOpen;
-							setOpenGrp(nx);
-						}
-						pickChapter(c);
-					},
-					title: c.text,
-					"data-ch": c.no,
-					style: {
-						display: "flex", alignItems: "baseline", cursor: "pointer", userSelect: "none",
-						fontSize: "12px", fontWeight: 600, margin: "8px 0 3px",
-						color: sel === c.idx ? C.link : C.ink
-					}
-				}, [
-					h("span", {
-						key: "t",
-						style: {
-							fontSize: "9px", color: C.muted, marginRight: "4px",
-							width: "9px", flex: "0 0 9px", textAlign: "center"
-						}
-					}, c.items.length ? (chOpen ? "▾" : "▸") : "·"),
-					h("span", { key: "l" },
-						"§" + c.no + " " + c.title + (!chOpen && cnt.length ? "  (" + cnt.join(" · ") + ")" : "")),
-					h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
-					lnum(c.line)
-				]));
-				if (chOpen) {
-					for (const it of c.items) toc.push(itemRow(it, c.idx));
-				}
-
-				// 组
-				for (const g of c.groups) {
-					const tag = g.id || g.no || "";
-					const gkey = "g" + g.idx;
-					const isOpen = openGrp[gkey] === undefined ? g.open : !!openGrp[gkey];
-					const gc = g.items.length ? g.items.length + " 条" : "";
-					const gs = g.skipped ? (gc ? " · " : "") + g.skipped + " 行不可引用" : "";
-					toc.push(h("div", {
-						key: gkey,
-						onClick: () => {
-							if (g.items.length) {
-								const nx = Object.assign({}, openGrp);
-								nx[gkey] = !isOpen;
-								setOpenGrp(nx);
-							}
-							// 有标识的组（R1 / UI-M1 / 6.2…）出卡片；没有标识的组只定位
-							if (tag) pickGroup(g);
-							else goto(g.idx);
-						},
-						title: g.text,
-						"data-group": tag,
-						style: {
-							display: "flex", alignItems: "baseline", cursor: "pointer", userSelect: "none",
-							padding: "2px 0 2px 10px", borderRadius: "3px",
-							borderLeft: "2px solid " + (sel === g.idx ? C.link : "transparent")
-						}
-					}, [
-						h("span", {
-							key: "t",
-							style: {
-								fontSize: "9px", color: C.muted, marginRight: "4px",
-								width: "9px", flex: "0 0 9px", textAlign: "center"
-							}
-						}, g.items.length ? (isOpen ? "▾" : "▸") : "·"),
-						h("span", {
-							key: "l",
-							style: { fontSize: "11.5px", color: sel === g.idx ? C.link : C.muted }
-						}, (tag ? tag + "  " : "") + g.title + (gc || gs ? "  (" + gc + gs + ")" : "")),
-						h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
-						lnum(g.line)
-					]));
-					if (isOpen) {
-						for (const it of g.items) toc.push(itemRow(it, g.idx));
-					}
-				}
-			}
-
-			// ── 右栏：定位卡（选中时）+ 分块正文 ──────────────────────────
-			const labelOf = (b) => {
-				if (b.level === 2) return "§" + b.no + " " + (b.title || "");
-				const id = b.id || b.no || "";
-				const dup = b.no && b.chNo && String(b.no).indexOf(String(b.chNo) + ".") === 0;
-				return (dup ? "" : "§" + (b.chNo || "?") + " ") + id + " " + (b.title || "");
-			};
-			/** 边类别标签的颜色：⑥ 契约单独一个醒目的红，其余各有色调（用户能一眼分辨"这条算不算数"） */
-			const EDGE_TONE = { 引用: C.link, 同族: "#7c3aed", 归属: "#0f766e", 验收: C.ok, 文本: C.warn, 契约: C.bad };
-			const edgeTag = (k, label) => h("span", {
-				key: "k" + k,
-				style: {
-					fontSize: "10px", fontWeight: label === "契约" ? 700 : 400,
-					color: label === "契约" ? "#fff" : (EDGE_TONE[label] || C.muted),
-					background: label === "契约" ? C.bad : "transparent",
-					borderRadius: "3px", padding: label === "契约" ? "0 4px" : 0,
-					marginRight: "4px", flex: "0 0 auto"
-				}
-			}, "[" + label + "]");
-
-			const card = item ? h("div", {
-				key: "card",
-				style: {
-					border: "1px solid " + C.soft, borderLeft: "3px solid " + C.link, background: "#f8fbff",
-					borderRadius: "4px", padding: "9px 11px", marginBottom: "10px",
-					maxHeight: "42vh", overflow: "auto", flex: "0 0 auto"
-				}
-			}, [
-				h("div", {
-					key: "h",
-					style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "3px" }
-				}, [
-					h("b", { key: "r", style: { fontSize: "12.5px", color: C.ink, fontFamily: "monospace" } },
-						item.ref || "（不可单独引用）"),
-					h("span", {
-						key: "x",
-						onClick: () => { setItem(null); setIntent(""); setSendMsg(null); },
-						style: { fontSize: "11px", color: C.muted, cursor: "pointer", userSelect: "none" }
-					}, "✕ 取消选择")
-				]),
-				h("div", { key: "g", style: { fontSize: "10.5px", color: C.muted, marginBottom: "6px" } },
-					"引用粒度：" + item.grain + (item.note ? "　·　" + item.note : "")),
-				h("div", { key: "b", style: { fontSize: "11.5px", marginBottom: "7px", userSelect: "text" } }, [
-					h("div", { key: "t", style: { color: C.muted } }, "原文（L" + item.line + "）"),
-					h("div", {
-						key: "v",
-						style: {
-							color: C.ink, background: "#fff", border: "1px solid " + C.faint,
-							borderRadius: "3px", padding: "5px 7px", marginTop: "3px", lineHeight: 1.7
-						}
-					}, item.text)
-				]),
-				h("div", { key: "i", style: { fontSize: "11.5px", marginBottom: "7px" } }, [
-					h("div", { key: "t", style: { color: C.muted } },
-						item.ref
-							? ("影响范围 —— " + impact.length + " 处" +
-								(item.exclude === null && item.self ? "（含它自己那一行 L" + item.self + "）" : "") +
-								"；面板只扫**结构引用**，语义影响由 sr-gdd-fix 的 D11 负责")
-							: "影响范围 —— 无（章不是引用图的实体）"),
-					item.ref ? h("div", { key: "gz", style: { fontSize: "10px", color: C.muted, marginTop: "2px", lineHeight: 1.7 } },
-						"边类别：" + EDGE_LEGEND.join("　")) : null,
-					impact.length ? h("div", { key: "l", style: { marginTop: "3px" } },
-						impact.map((hh, ii) => {
-							const lab = edgeLabelOf(graph, item.ref, hh);
-							return h("div", {
-								key: ii,
-								onClick: () => goto(blockIdxOfLine(hh.line)),
-								title: "点它跳到正文里这一处",
-								style: {
-									display: "flex", alignItems: "baseline", cursor: "pointer",
-									color: C.link, lineHeight: 1.75, userSelect: "text"
-								}
-							}, [
-								edgeTag(ii, lab),
-								h("span", { key: "L", style: { fontFamily: "monospace", flex: "0 0 auto" } },
-									"L" + hh.line + (item.self === hh.line ? "（自身）" : "") + " "),
-								h("span", { key: "w", style: { flex: "0 0 auto" } }, hh.where),
-								h("span", { key: "x", style: { color: C.muted, marginLeft: "6px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
-									"—— " + String(hh.text || "").slice(0, 64))
-							]);
-						})
-					) : h("div", { key: "n", style: { color: C.muted, marginTop: "3px" } },
-						item.ref ? "· 全文没有其他地方提到它（空集就如实报空，不硬凑关联）" : "· 请选章里的组或条目")
-				]),
-				preview ? h("div", { key: "pv", style: { fontSize: "11px", marginBottom: "7px" } }, [
-					h("div", { key: "t", style: { color: C.muted } },
-						"三段式（改哪儿 / 现状原文 / 影响范围）—— 下面这段就是发给工作会话的原文："),
-					h("pre", {
-						key: "v",
-						style: {
-							margin: "3px 0 0", padding: "6px 8px", background: C.bg, border: "1px solid " + C.faint,
-							borderRadius: "3px", fontFamily: "monospace", fontSize: "10.5px", lineHeight: 1.6,
-							whiteSpace: "pre-wrap", color: C.ink, userSelect: "text", maxHeight: "16vh", overflow: "auto"
-						}
-					}, preview)
-				]) : null,
-				h("div", { key: "act", style: { display: "flex", gap: "6px", alignItems: "center" } }, [
-					h("input", {
-						key: "in", value: intent, placeholder: "要改成什么（一句话）",
-						onChange: (e) => setIntent(e.target.value),
-						style: {
-							flex: "1 1 auto", font: "inherit", fontSize: "11.5px", padding: "5px 8px",
-							border: "1px solid " + C.soft, borderRadius: "4px"
+							width: "7px", height: "7px", borderRadius: "50%", flex: "0 0 auto",
+							background: on ? ACCENT_FILL : "transparent",
+							border: "1px solid " + (on ? ACCENT_FILL : V.line2)
 						}
 					}),
-					h("button", {
-						key: "go", type: "button", disabled: !intent.trim() || !item.ref,
-						onClick: send,
-						style: {
-							font: "inherit", fontSize: "11.5px", padding: "5px 12px", borderRadius: "4px",
-							border: "1px solid " + (intent.trim() && item.ref ? C.link : C.soft),
-							background: intent.trim() && item.ref ? C.link : "#fff",
-							color: intent.trim() && item.ref ? "#fff" : C.muted,
-							cursor: intent.trim() && item.ref ? "pointer" : "default"
-						}
-					}, "发到工作会话")
-				]),
-				// 目标说明：三段式会发给**这个功能的专属工作会话**（cwd = 功能目录，工单 15）
-				item.ref && preview ? h("div", {
-					key: "tg", "data-target": "work-session",
-					style: { fontSize: "10px", color: C.muted, marginTop: "5px", lineHeight: 1.7, userSelect: "text" }
-				}, "发到：本功能的专属工作会话" +
-					(props.featureRoot ? "（cwd " + winPath(props.featureRoot) + "）" : "") +
-					"　—— 不占用你自己的对话；发出去之后这里会给出「跳到那个会话」。") : null,
-				sendMsg ? h("div", {
-					key: "m",
-					style: {
-						fontSize: "11px", marginTop: "6px", lineHeight: 1.7, userSelect: "text",
-						color: sendMsg.kind === "err" ? C.bad : (sendMsg.kind === "ok" ? C.ok : C.muted)
-					}
-				}, [
-					h("div", { key: "t" }, (sendMsg.kind === "ok" ? "✓ " : (sendMsg.kind === "err" ? "✗ " : "")) + sendMsg.text),
-					// 成功：说清发到哪儿了 + 一键跳过去（工单 15 第 5 条）
-					sendMsg.kind === "ok" ? h("div", {
-						key: "d", "data-sent": "ok", style: { color: C.muted, userSelect: "text" }
-					}, [
-						"目标：" + ((sendMsg.target && sendMsg.target.title) || "工作会话") +
-						(sendMsg.sid ? "　会话 " + String(sendMsg.sid).slice(0, 12) + "…" : "") +
-						(sendMsg.target && sendMsg.target.root ? "　cwd " + winPath(sendMsg.target.root) : "") +
-						"　（" + pickSourceText(sendMsg.target && sendMsg.target.source) + "）",
-						sendMsg.healed ? h("div", { key: "h", style: { color: C.warn } },
-							"上一轮记的那条会话已经不在了 —— 已自动重建一条并重发。") : null,
-						sendMsg.queued ? h("div", { key: "q", style: { color: C.warn } },
-							"它正在跑别的活，这条指令排在队列里，等它跑完当前这一轮就会处理。") : null
-					]) : null,
-					// 失败：可读错误 + 下一步（不许静默无反应，工单 15 第 6 条）
-					sendMsg.kind === "err" ? h("div", {
-						key: "n", "data-sent": "fail", style: { color: C.ink }
-					}, "下一步：" + (sendMsg.next || "再按一次。")) : null,
-					// 一键跳到那个会话（成功/失败都能点：失败时去会话里自己发一遍原文）
-					sendMsg.sid && props.onOpenSession ? h("button", {
-						key: "j", type: "button", "data-jump": sendMsg.sid,
-						onClick: () => jump(sendMsg.sid),
-						style: {
-							font: "inherit", fontSize: "11px", padding: "2px 9px", marginTop: "3px",
-							border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer"
-						}
-					}, "跳到那个会话 ›") : null,
-					sendMsg.jumpErr ? h("div", { key: "je", style: { color: C.bad } }, sendMsg.jumpErr) : null
-				]) : null
-			]) : null;
-
-			const body = d.blocks.map((b, i) => h("div", {
-				key: "b" + i,
-				"data-blk": String(i),
-				style: {
-					padding: "2px 8px 4px 10px", marginBottom: "6px", borderRadius: "3px",
-					borderLeft: "3px solid " + (sel === i ? C.link : "transparent"),
-					background: sel === i ? "#f0f7ff" : "transparent"
-				}
-			}, h(BlockBoundary, { key: "bb", label: labelOf(b).trim() + "（L" + b.line + "）" },
-				splitSpecial(b.text).map((p, j) => {
-					if (p.t === "img") {
-						return h(ImgTag, {
-							key: "i" + j, src: p.v, alt: p.alt, pathImages: pathImages,
-							onOpen: props.onOpen || null
-						});
-					}
-					if (p.t === "code") return h(CodeBlock, { key: "c" + j, text: p.v });
-					return h(Md, { key: "m" + j, text: p.v, pathImages: pathImages });
-				})
-			)));
-
-			return wrap(h("div", { key: "cols", "data-workface": "final", style: { display: "flex", gap: "16px", alignItems: "flex-start" } }, [
-				h("div", {
-					key: "toc",
-					style: {
-						flex: "0 0 272px", width: "272px", maxHeight: "68vh", overflow: "auto",
-						borderRight: "1px solid " + C.faint, paddingRight: "10px"
-					}
-				}, toc),
-				h("div", {
-					key: "right",
-					style: { flex: "1 1 auto", minWidth: 0, display: "flex", flexDirection: "column" }
-				}, [
-					card,
-					h("div", {
-						key: "body", ref: bodyRef, onScroll: onBodyScroll,
-						style: { flex: "1 1 auto", minHeight: 0, maxHeight: "68vh", overflow: "auto" }
-					}, body)
-				])
-			]));
-		}
-
-		function DecisionLedger(props) {
-			const L = props.ledger;
-			const [open, setOpen] = React.useState(null);
-			if (!L) return h("p", { style: { color: C.muted, fontSize: "12px" } }, "正在读决策台账…");
-
-			const bad = L.records.filter((r) => r.issues.length > 0 || r.parseErr);
-			const sel = open === null ? null : L.records[open];
-			const d = sel && sel.doc;
-			const cov = props.coverage || null;
-
-			return h("div", null, [
-				// ⓪ ★ 工单 17：字段覆盖检查（"上游新增字段时不会漏掉一类决定"）
-				//   —— 归类表在 `src/pure/fieldclass.ts`（85 行数据），这里只显示它的结论。
-				cov ? h("div", {
-					key: "cov",
-					style: {
-						border: "1px solid " + C.faint,
-						borderLeft: "3px solid " + (cov.ok ? C.ok : C.bad),
-						background: cov.ok ? "#f0fdf4" : "#fef2f2",
-						borderRadius: "4px", padding: "10px 12px", marginBottom: "12px"
-					}
-				}, [
-					h("div", { key: "t", style: { fontSize: "12px" } }, [
-						h("b", { key: "a" }, "字段覆盖检查"),
-						h("span", { key: "b", style: { color: C.muted } },
-							"　" + L.records.length + " 份决策 + " + L.calibration.length + " 行校准 + " + L.handoffs.length + " 份交接" +
-							"　检查 " + cov.checked + " 个键实例 / " + cov.distinct + " 个不同键" +
-							"　悬空 " + cov.dangling.length + " · 待判定 " + cov.pending.length)
-					]),
-					cov.ok
-						? h("div", { key: "ok", style: { fontSize: "11px", color: C.ok, marginTop: "4px" } },
-							"每个键都已显式归类（收 / 不收 / 容器）—— 上游新增字段而没归类时会在这里**报 error**并指出是哪个文件。")
-						: h("div", { key: "bad", style: { marginTop: "6px" } }, cov.issues.map((it, i) => h("div", {
-							key: i, style: { fontSize: "11px", color: C.bad }
-						}, "[" + it.code + "/" + it.level + "] " + it.msg + (it.files && it.files.length ? "　→ " + it.files.join("、") : "")))),
-					h("div", { key: "cls", style: { fontSize: "10px", color: C.muted, fontFamily: "monospace", marginTop: "4px" } },
-						"归类分布 " + Object.keys(cov.classes).sort().map((k) => k + " " + cov.classes[k]).join(" · "))
-				]) : null,
-
-				// ① 契约校验
-				h("div", {
-					key: "v",
-					style: {
-						border: "1px solid " + C.faint,
-						borderLeft: "3px solid " + (bad.length ? C.bad : C.ok),
-						background: "#fff", borderRadius: "4px", padding: "10px 12px", marginBottom: "12px"
-					}
-				}, [
-					h("div", { key: "t", style: { fontSize: "12px", marginBottom: "4px" } }, [
-						h("b", { key: "a" }, "契约校验"),
-						h("span", { key: "b", style: { color: C.muted } },
-							"　对照 " + (L.schemaOk ? "sr-askme/references/decision.schema.json" : "（schema 读不到，仅列结构问题）") +
-							"　共 " + L.records.length + " 条，不合规 " + bad.length + " 条")
-					]),
-					bad.length
-						? h("div", { key: "l" }, bad.map((r) => h("div", { key: r.file, style: { marginTop: "6px" } }, [
-							h("div", { key: "n", style: { fontFamily: "monospace", fontSize: "11px", color: C.bad } }, r.file + (r.parseErr ? "（JSON 解析失败：" + r.parseErr + "）" : "")),
-							r.issues.length ? IssueTable(r.issues) : null
-						])))
-						: h("div", { key: "ok", style: { fontSize: "11px", color: C.ok } }, "全部记录符合契约。")
-				]),
-
-				// ② 已拍板列表
-				h("div", { key: "list", style: { background: "#fff", border: "1px solid " + C.faint, borderRadius: "4px", padding: "10px 12px", marginBottom: "12px" } }, [
-					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, marginBottom: "6px" } }, "已拍板列表（点一行看详情）"),
-					L.records.length ? h("table", { key: "tb", style: { width: "100%", borderCollapse: "collapse" } }, [
-						h("thead", { key: "h" }, h("tr", null, [
-							h("th", { key: "1", style: TH }, "decision_id"),
-							h("th", { key: "2", style: TH }, "标题"),
-							h("th", { key: "3", style: Object.assign({}, TH, { width: "15%" }) }, "type"),
-							h("th", { key: "4", style: Object.assign({}, TH, { width: "12%" }) }, "status"),
-							h("th", { key: "5", style: Object.assign({}, TH, { width: "11%" }) }, "日期")
-						])),
-						h("tbody", { key: "b" }, L.records.map((r, i) => {
-							const dd = r.doc || {};
-							const tOk = L.schemaOk && L.schema.properties && L.schema.properties.decision_type &&
-								L.schema.properties.decision_type.enum.indexOf(dd.decision_type) >= 0;
-							const on = open === i;
-							return h("tr", {
-								key: r.file,
-								onClick: () => setOpen(on ? null : i),
-								style: { cursor: "pointer", background: on ? "#f0f6ff" : "transparent" }
-							}, [
-								h("td", { key: "1", style: Object.assign({}, TD, { fontFamily: "monospace" }) }, String(dd.decision_id || "—")),
-								h("td", { key: "2", style: TD }, String(dd.title || r.file)),
-								h("td", { key: "3", style: Object.assign({}, TD, { fontFamily: "monospace", color: tOk ? C.ink : C.bad }) }, String(dd.decision_type || "—") + (tOk ? "" : " ✗")),
-								h("td", { key: "4", style: Object.assign({}, TD, { fontFamily: "monospace" }) }, String(dd.status || "—")),
-								h("td", { key: "5", style: Object.assign({}, TD, { fontFamily: "monospace" }) }, String(dd.updated_at || dd.created_at || "").slice(0, 10))
-							]);
-						}))
-					]) : h("div", { key: "n", style: { fontSize: "12px", color: C.muted } }, "本功能没有决策记录。")
-				]),
-
-				// ③ 决策详情
-				sel ? h("div", { key: "detail", style: { background: "#fff", border: "1px solid " + C.faint, borderRadius: "4px", padding: "10px 12px", marginBottom: "12px" } }, [
-					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, marginBottom: "6px" } }, "决策详情 · " + sel.file),
-					d ? h("table", { key: "tb", style: { width: "100%", borderCollapse: "collapse" } }, h("tbody", null,
-						[
-							["决策问题", d.decision_question],
-							["当前默认动作", d.current_default_action],
-							["边界状态", d.boundary_status],
-							["stakes", d.stakes],
-							["reversibility", d.reversibility],
-							["owner", d.owner],
-							["rollback_trigger", d.rollback_trigger]
-						].map(([k, v]) => h("tr", { key: k }, [
-							h("th", { key: "k", style: Object.assign({}, TH, { width: "20%" }) }, k),
-							h("td", { key: "v", style: TD }, String(v === undefined || v === null ? "—" : v))
-						]))
-					)) : h("div", { key: "e", style: { fontSize: "12px", color: C.bad } }, "JSON 解析失败：" + sel.parseErr),
-					d && Array.isArray(d.options) ? h("div", { key: "opt", style: { marginTop: "10px" } }, [
-						h("div", { key: "t", style: { fontSize: "11px", fontWeight: 600, marginBottom: "4px" } }, "选项（" + d.options.length + " 条）"),
-						h("table", { key: "tb", style: { width: "100%", borderCollapse: "collapse" } }, [
-							h("thead", { key: "h" }, h("tr", null, [
-								h("th", { key: "1", style: TH }, "option_id"),
-								h("th", { key: "2", style: TH }, "action"),
-								h("th", { key: "3", style: TH }, "expected_benefit"),
-								h("th", { key: "4", style: TH }, "main_risk")
-							])),
-							h("tbody", { key: "b" }, d.options.map((o, i) => h("tr", { key: i }, [
-								h("td", { key: "1", style: Object.assign({}, TD, { fontFamily: "monospace" }) }, String(o.option_id || "")),
-								h("td", { key: "2", style: TD }, String(o.action || "")),
-								h("td", { key: "3", style: TD }, String(o.expected_benefit || "")),
-								h("td", { key: "4", style: TD }, String(o.main_risk || ""))
-							])))
-						])
-					]) : null,
-					d ? h(ResultView, { key: "res", result: d.decision_result, doc: d }) : null
-				]) : null,
-
-				// ④ 校准流水
-				h("div", { key: "cal", style: { background: "#fff", border: "1px solid " + C.faint, borderRadius: "4px", padding: "10px 12px" } }, [
-					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, marginBottom: "6px" } },
-						"校准流水（" + L.calibration.length + " 条 · " + L.calFiles.length + " 个文件）"),
-					L.calibration.length ? h("div", { key: "tb" }, L.calibration.map((c, i) => {
-						const row = c.row || {};
-						return h("div", {
-							key: i,
-							style: { padding: "7px 0", borderTop: i ? "1px solid " + C.faint : "none" }
-						}, [
-							h("div", { key: "h", style: { fontSize: "10px", color: C.muted, fontFamily: "monospace", marginBottom: "3px" } },
-								"第 " + (row.round === undefined ? "?" : row.round) + " 轮 · " + String(row.gate || "") +
-								" · " + String(row.ts || "").slice(0, 16) + " · " + String(row.status || "")),
-							// ★ 改动内容本身（这才是要看的）
-							h("div", { key: "i", style: { fontSize: "12px", lineHeight: 1.7 } }, String(row.input || "(无描述)")),
-							Array.isArray(row.affected) && row.affected.length
-								? h("div", { key: "a", style: { marginTop: "4px" } }, row.affected.map((x, j) => h("span", {
-									key: j,
-									style: {
-										fontSize: "10px", fontFamily: "monospace", border: "1px solid " + C.faint,
-										borderRadius: "3px", padding: "0 5px", marginRight: "3px", color: C.muted
-									}
-								}, String(x))))
-								: null
-						]);
-					})) : h("div", { key: "n", style: { fontSize: "12px", color: C.muted } }, "本功能没有校准流水。"),
-					h("div", {
-						key: "w",
-						style: {
-							marginTop: "8px", padding: "8px 10px", background: "#fff7ed",
-							borderLeft: "3px solid " + C.warn, fontSize: "11px"
-						}
-					}, "⚠️ 校准流水不逐字存原话（sr 的既定口径）。这里能看到「第几轮、哪道门、影响了哪些条目」，看不到当时逐字的答复。")
-				])
-			]);
-		}
-
-		// ── A2 流水线：阶段 → 斜杠命令 ──────────────────────────────
-		const STAGE_ORDER = ["concept", "draft", "config", "final", "review", "speech"];
-		const STAGE_META = {
-			concept: { label: "概念", cmd: "/sr-concept", desc: "创意评估与设计核三角" },
-			draft: { label: "成稿", cmd: "/sr-gdd-human", desc: "写成稿（只有纯规则与设计）" },
-			config: { label: "配置", cmd: "/sr-config", desc: "把规则落成配置表" },
-			final: { label: "定稿", cmd: "/sr-gdd-ai", desc: "整合定稿，交程序" },
-			review: { label: "审查", cmd: "/sr-gdd-review", desc: "只读审查定稿" },
-			speech: { label: "宣讲", cmd: "/sr-gdd-html", desc: "出宣讲 HTML" }
-		};
-
-		/**
-		 * 工作会话缓存：**可响应**，跨组件重挂载保留。
-		 * key = `<预设>|<功能名>`；值 = 会话 id。
-		 * 看板要靠它把「哪个功能在等你拍板」显示出来，所以写入时必须通知订阅者
-		 * （否则在详情页建的会话，看板不知道）。
-		 */
-		const WORK_SESSIONS = new Map();
-		const WORK_LISTENERS = new Set();
-		const workKey = (presetId, topic) => presetId + "|" + (topic || "");
-		const setWorkSession = (key, sid) => {
-			if (!key) return;
-			WORK_SESSIONS.set(key, sid);
-			for (const l of [...WORK_LISTENERS]) { try { l(); } catch (e) { /* ignore */ } }
-		};
-		/** 订阅工作会话缓存（返回 Map；写入时会触发重渲染） */
-		function useWorkSessions() {
-			const [, bump] = React.useState(0);
-			React.useEffect(() => {
-				const l = () => bump((n) => n + 1);
-				WORK_LISTENERS.add(l);
-				return () => { WORK_LISTENERS.delete(l); };
-			}, []);
-			return WORK_SESSIONS;
-		}
-
-		/** 把 Remote 的原始错误翻成人话 */
-		function humanError(r) {
-			const m = String((r && r.error && (r.error.message || r.error.code)) || r || "");
-			if (/without inject/.test(m)) return "工作台缺少必要权限声明，需要更新插件";
-			if (/not found|no entry|不存在/i.test(m)) return "找不到目标（路径或会话可能已变）";
-			if (/timeout|超时/i.test(m)) return "对方没有响应（超时）";
-			if (/cancel|abort/i.test(m)) return "操作被取消";
-			return m || "未知原因";
-		}
-
-		/**
-		 * 工作会话的实时状态。
-		 * 数据全部来自客户端会话模型（hook 订阅，**自动更新，不用轮询**）：
-		 *   useSessions                      → SessionSummary { running, blank, updatedAt, projections }
-		 *   useSessionPendingInteraction     → 该会话是否有待用户回答的交互
-		 * ⚠ 不自己渲染问题正文：SessionPendingInteractionBase 只有 {key, kind, sessionId}，
-		 *   正文由各领域插件声明合并贡献，猜不得。这里只报"有/无"并给跳转。
-		 */
-		function WorkSessionStatus(props) {
-			const sid = props.sessionId;
-			const useSessions = props.useSessions;
-			const usePending = props.useSessionPendingInteraction;
-			const onOpen = props.onOpen;
-
-			// ★ hooks 必须无条件调用：条件放进 selector，不放在调用上
-			const summary = useSessions ? useSessions((s) => (sid ? s.byId[sid] : void 0)) : void 0;
-			const pending = usePending ? usePending((m) => (sid ? m.get(sid) : void 0)) : void 0;
-
-			if (!sid) return null;
-
-			const running = !!(summary && summary.running);
-			const blank = !!(summary && summary.blank);
-			const proj = (summary && summary.projections && summary.projections.values) || {};
-			const title = typeof proj.title === "string" ? proj.title : "";
-			const meta = proj.sessionListMetadata || {};
-			const lastAt = meta.lastPromptAt || (summary && summary.updatedAt) || 0;
-
-			const fmt = (t) => {
-				if (!t) return "—";
-				try {
-					const d = new Date(t);
-					const p = (n) => (n < 10 ? "0" : "") + n;
-					return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) +
-						" " + p(d.getHours()) + ":" + p(d.getMinutes());
-				} catch (e) { return "—"; }
-			};
-
-			const state = running
-				? { text: "运行中", color: C.ok, dot: "●" }
-				: (pending ? { text: "等你回答", color: C.warn, dot: "⚠" }
-					: (blank ? { text: "空白（还没开始）", color: C.muted, dot: "○" }
-						: { text: "空闲", color: C.muted, dot: "○" }));
-
-			const row = (k, v, color) => h("div", { key: k, style: { display: "flex", gap: "8px", fontSize: "12px", lineHeight: 1.95 } }, [
-				h("span", { key: "k", style: { color: C.muted, minWidth: "62px", flex: "0 0 auto" } }, k),
-				h("span", { key: "v", style: { color: color || C.ink, wordBreak: "break-all" } }, v)
-			]);
-
-			return h("div", {
-				style: {
-					border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff",
-					padding: "10px 13px", marginTop: "12px"
-				}
-			}, [
-				h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, marginBottom: "5px" } }, "工作会话"),
-				row("状态", state.dot + " " + state.text, state.color),
-				title ? row("标题", title) : null,
-				pending ? row("待回答", "有 1 项在等你（" + String(pending.kind || "未知类型") + "）", C.warn) : null,
-				row("最近活动", fmt(lastAt)),
-				row("会话 id", h("span", { style: { fontFamily: "monospace", fontSize: "11px" } }, String(sid))),
-				h("div", { key: "act", style: { marginTop: "8px" } }, h("button", {
-					type: "button",
-					onClick: () => onOpen(sid),
-					style: {
-						font: "inherit", fontSize: "12px", padding: "4px 12px",
-						border: "1px solid " + C.ink, background: "#fff", color: C.ink,
-						borderRadius: "4px", cursor: "pointer"
-					}
-				}, "在会话里查看 ›"))
-			]);
-		}
-
-		/**
-		 * 待拍板问题卡片 —— A2 的闭环。
-		 *
-		 * 依据（读 `dsh-client-ui-user-questions` 得到）：注册进 pending 快照的就是
-		 * `PendingQuestion` 实例，它的 `questions` 与 `answer()` 都是**公开成员**：
-		 *   questions: AskUserQuestionItem[]  { id, question, detail?, header?, options?, multiSelect? }
-		 *   answer({ answers: [{ id, selected: [标签], custom? }] })
-		 * 所以面板里能读问题、能回答，不必跳去会话。
-		 */
-		function PendingQuestionCard(props) {
-			const pending = props.pending;
-			const questions = (pending && Array.isArray(pending.questions)) ? pending.questions : [];
-			const [sel, setSel] = React.useState({});      // qid → [标签]
-			const [text, setText] = React.useState({});    // qid → 自定义文本
-			const [busy, setBusy] = React.useState(false);
-			const [err, setErr] = React.useState("");
-			const [done, setDone] = React.useState("");
-
-			if (!questions.length) return null;
-
-			const submit = (answers) => {
-				setBusy(true); setErr(""); setDone("");
-				let r;
-				try { r = pending.answer({ answers: answers }); }
-				catch (e) { setBusy(false); setErr(String((e && e.message) || e)); return; }
-				Promise.resolve(r).then(
-					() => { setBusy(false); setDone("已提交，等 skill 继续"); },
-					(e) => { setBusy(false); setErr(String((e && e.message) || e)); }
-				);
-			};
-
-			const pickSingle = (q, label) => submit([{ id: q.id, selected: [label] }]);
-			const submitMulti = (q) => submit([{
-				id: q.id,
-				selected: sel[q.id] || [],
-				custom: (text[q.id] || "").trim() || void 0
-			}]);
-
-			const toggle = (qid, label) => setSel((s) => {
-				const cur = s[qid] || [];
-				const next = cur.indexOf(label) >= 0 ? cur.filter((x) => x !== label) : cur.concat([label]);
-				const out = {}; for (const k in s) out[k] = s[k]; out[qid] = next; return out;
-			});
-
-			return h("div", {
-				style: {
-					border: "1px solid " + C.warn, borderLeft: "3px solid " + C.warn,
-					background: "#fffdf7", borderRadius: "4px", padding: "11px 13px", marginTop: "12px"
-				}
-			}, [
-				h("div", { key: "h", style: { fontSize: "12px", fontWeight: 600, marginBottom: "7px", color: C.warn } },
-					"⚠ 等你拍板（" + questions.length + " 个问题）"),
-
-				...questions.map((q, qi) => {
-					const opts = Array.isArray(q.options) ? q.options : [];
-					const picked = sel[q.id] || [];
-					return h("div", {
-						key: "q" + qi,
-						style: { borderTop: qi ? "1px solid " + C.faint : "none", paddingTop: qi ? "9px" : "0", marginTop: qi ? "9px" : "0" }
-					}, [
-						q.header ? h("div", { key: "hd", style: { fontSize: "11px", color: C.muted, fontFamily: "monospace", marginBottom: "2px" } }, String(q.header)) : null,
-						h("div", { key: "q", style: { fontSize: "13px", lineHeight: 1.7, marginBottom: q.detail ? "3px" : "7px" } }, String(q.question || "")),
-						q.detail ? h("div", { key: "d", style: { fontSize: "11px", color: C.muted, lineHeight: 1.7, marginBottom: "7px", whiteSpace: "pre-wrap" } }, String(q.detail)) : null,
-
-						// 选项：单选点即答；多选累积后提交
-						opts.length ? h("div", { key: "opts", style: { display: "flex", flexDirection: "column", gap: "5px" } },
-							opts.map((o, oi) => {
-								const label = typeof o === "string" ? o : String((o && (o.label || o.value)) || "");
-								const desc = (o && typeof o === "object" && o.description) ? String(o.description) : "";
-								const on = picked.indexOf(label) >= 0;
-								return h("button", {
-									key: oi, type: "button", disabled: busy,
-									onClick: () => (q.multiSelect ? toggle(q.id, label) : pickSingle(q, label)),
-									style: {
-										font: "inherit", textAlign: "left", padding: "7px 10px",
-										border: "1px solid " + (on ? C.ink : C.soft),
-										background: on ? "#eef4ff" : "#fff",
-										borderRadius: "4px", cursor: busy ? "default" : "pointer",
-										opacity: busy ? 0.6 : 1
-									}
-								}, [
-									h("div", { key: "l", style: { fontSize: "12px", fontWeight: on ? 600 : 400 } },
-										(q.multiSelect ? (on ? "☑ " : "☐ ") : "") + label),
-									desc ? h("div", { key: "dd", style: { fontSize: "11px", color: C.muted, marginTop: "2px", lineHeight: 1.6 } }, desc) : null
-								]);
-							})) : null,
-
-						// 自由文本（"其他"）
-						h("div", { key: "free", style: { display: "flex", gap: "6px", marginTop: "7px", alignItems: "center" } }, [
-							h("input", {
-								key: "i",
-								value: text[q.id] || "",
-								placeholder: opts.length ? "或直接写你的决定…" : "写下你的决定…",
-								onChange: (e) => { const v = e.target.value; setText((t) => { const o = {}; for (const k in t) o[k] = t[k]; o[q.id] = v; return o; }); },
-								style: {
-									flex: "1 1 220px", fontSize: "12px", padding: "5px 8px",
-									border: "1px solid " + C.soft, borderRadius: "4px", outline: "none", background: "#fff"
-								}
-							}),
-							h("button", {
-								key: "s", type: "button", disabled: busy || !(text[q.id] || "").trim(),
-								onClick: () => submit([{ id: q.id, selected: [], custom: (text[q.id] || "").trim() }]),
-								style: {
-									font: "inherit", fontSize: "12px", padding: "5px 12px",
-									border: "1px solid " + C.ink, background: "#fff", color: C.ink,
-									borderRadius: "4px", cursor: busy ? "default" : "pointer"
-								}
-							}, "提交")
-						]),
-
-						q.multiSelect ? h("div", { key: "ms", style: { marginTop: "6px" } }, h("button", {
-							type: "button", disabled: busy || !picked.length,
-							onClick: () => submitMulti(q),
-							style: {
-								font: "inherit", fontSize: "12px", padding: "5px 12px",
-								border: "1px solid " + C.ink, background: C.ink, color: "#fff",
-								borderRadius: "4px", cursor: busy ? "default" : "pointer"
-							}
-						}, "提交所选（" + picked.length + "）")) : null
-					]);
-				}),
-
-				done ? h("div", { key: "ok", style: { marginTop: "8px", fontSize: "12px", color: C.ok } }, done) : null,
-				err ? h("div", { key: "er", style: { marginTop: "8px", fontSize: "12px", color: C.bad } }, "提交失败：" + err) : null
-			]);
-		}
-
-		// ── A3 产物：阶段 → 子目录（用于拼绝对路径）──────────────────
-		//   ★ `sub` 是**功能根目录下**的子目录名（单轨，§9.1.4）—— 打开文件时拼 `f.root + "/" + sub + "/" + name`。
-		//     2026-09-29 修：原来拼的是旧结构 `srWs + "/" + sub`，单轨之后全部指错；
-		//     同时补上 `evidence` / `source` 两组（原先根本没有，证据与源文件在页签里看不见）。
-		const ARTIFACT_GROUPS = [
-			{ key: "concept", label: "概念", sub: "analysis" },
-			{ key: "draft", label: "成稿", sub: "gdd" },
-			{ key: "final", label: "定稿", sub: "gdd" },
-			{ key: "review", label: "审查", sub: "gdd" },
-			{ key: "speech", label: "宣讲", sub: "delivery" },
-			{ key: "evidence", label: "证据", sub: "evidence" },
-			{ key: "source", label: "源文件", sub: "source" },
-			{ key: "config", label: "配置表", sub: null },   // 在 config_root，不在功能目录
-			{ key: "decision", label: "决策", sub: "decisions" }
-		];
-
-		/** 文件名里的日期 → YYYY-MM-DD */
-		function fmtNameDate(name) {
-			const m = /(\d{4})(\d{2})(\d{2})/.exec(String(name || ""));
-			return m ? m[1] + "-" + m[2] + "-" + m[3] : "";
-		}
-
-		/**
-		 * A3 · 功能详情 · 产物
-		 * 按阶段分组列出该功能的全部产物，每行可点开（系统默认程序）。
-		 */
-		function ArtifactList(props) {
-			const f = props.feature;
-			const srWs = props.srWs || "";
-			const configRoot = props.configRoot || "";
-			const onOpen = props.onOpen;
-			const [fold, setFold] = React.useState({});
-
-			if (!f || !f.files) return h("div", { style: { color: C.muted, fontSize: "12px" } }, "没有产物数据。");
-
-			const absOf = (groupKey, name) => {
-				const g = ARTIFACT_GROUPS.filter((x) => x.key === groupKey)[0];
-				if (!g) return "";
-				if (g.sub === null) return (configRoot || srWs) + "/" + name;   // 配置表在 config_root
-				return (f.root || srWs) + "/" + g.sub + "/" + name;            // ★ 从**功能根目录**出发
-			};
-
-			const total = ARTIFACT_GROUPS.reduce((n, g) => n + ((f.files[g.key] || []).length), 0);
-
-			// 一致性提示（能算的都算，不算的不装作算了）
-			const notes = [];
-			if ((f.files.speech || []).length > 1) {
-				notes.push("有 " + f.files.speech.length + " 份宣讲 HTML —— 源一致性需人工确认（工作台不解析 HTML 页脚）");
-			}
-			if ((f.files.final || []).length > 1) {
-				notes.push("有 " + f.files.final.length + " 个定稿版本 —— 按日期，最新的是最终版");
-			}
-
-			return h("div", null, [
-				h("div", { key: "sum", style: { fontSize: "12px", color: C.muted, marginBottom: "10px" } },
-					"共 " + total + " 个产物　" + ARTIFACT_GROUPS
-						.map((g) => g.label + " " + ((f.files[g.key] || []).length))
-						.filter((s) => !/ 0$/.test(s))
-						.join(" · ")),
-
-				...notes.map((t, i) => h("div", {
-					key: "n" + i,
-					style: {
-						border: "1px solid " + C.faint, borderLeft: "3px solid " + C.warn,
-						background: "#fffdf7", borderRadius: "4px", padding: "8px 11px",
-						fontSize: "12px", marginBottom: "8px"
-					}
-				}, "⚠ " + t)),
-
-				...ARTIFACT_GROUPS.map((g) => {
-					const names = f.files[g.key] || [];
-					if (!names.length) return null;
-					const isFinal = g.key === "final";
-					return h("div", {
-						key: g.key,
-						style: {
-							border: "1px solid " + C.faint, borderRadius: "4px",
-							background: "#fff", marginBottom: "9px", overflow: "hidden"
-						}
-					}, [
-						h("div", {
-							key: "h",
-							onClick: () => setFold((s) => { const o = {}; for (const k in s) o[k] = s[k]; o[g.key] = !s[g.key]; return o; }),
-							style: {
-								display: "flex", justifyContent: "space-between", alignItems: "center",
-								padding: "7px 11px", background: C.bg, cursor: "pointer",
-								borderBottom: fold[g.key] ? "none" : "1px solid " + C.faint
-							}
-						}, [
-							h("span", { key: "l", style: { fontSize: "12px", fontWeight: 600 } }, g.label + "（" + names.length + "）"),
-							h("span", { key: "t", style: { fontSize: "10px", color: C.muted } }, fold[g.key] ? "展开 ▸" : "收起 ▾")
-						]),
-						fold[g.key] ? null : h("div", { key: "b", style: { padding: "4px 0" } },
-							names.map((n, i) => {
-							 const abs = absOf(g.key, n);
-							 const st = (isFinal && n === f.latestFinal) ? (f.status || "") : "";
-							 return h("div", {
-								key: i,
-								style: {
-									display: "flex", alignItems: "center", gap: "8px",
-									padding: "5px 11px", borderTop: i ? "1px solid " + C.faint : "none"
-								}
-							 }, [
-								h("span", {
-									key: "b",
-									style: {
-										fontSize: "10px", fontFamily: "monospace", padding: "0 5px",
-										border: "1px solid " + C.soft, borderRadius: "3px",
-										color: (isFinal && n === f.latestFinal) ? C.ok : C.muted,
-										whiteSpace: "nowrap"
-									}
-								}, (isFinal && n === f.latestFinal) ? "最终版" : g.label),
-								h("button", {
-									key: "n", type: "button",
-									onClick: () => onOpen(abs),
-									title: "点击打开：" + abs,
-									style: {
-										font: "inherit", fontSize: "12px", fontFamily: "monospace",
-										padding: 0, border: "none", background: "none",
-										color: "#3b6ea5", cursor: "pointer", textAlign: "left",
-										overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-										flex: "1 1 auto", textDecoration: "none"
-									}
-								}, n),
-								st ? h("span", { key: "s", style: { fontSize: "10px", color: C.ok, fontFamily: "monospace" } }, st) : null,
-								fmtNameDate(n) ? h("span", { key: "d", style: { fontSize: "10px", color: C.muted, fontFamily: "monospace", whiteSpace: "nowrap" } }, fmtNameDate(n)) : null
-							 ]);
-							}))
-					]);
-				}),
-
-				h("div", { key: "foot", style: { marginTop: "12px", fontSize: "11px", color: C.muted, lineHeight: 1.85 } }, [
-					h("div", { key: "a" }, "产物来自工作区实时读取；类型由文件名派生，不另存索引。"),
-					h("div", { key: "b" }, "点文件名用系统默认程序打开。")
-				])
-			]);
-		}
-
-		// ════════════════════════════════════════════════════════════════
-		// 工单 12 · 功能详情：产物按**桶**分组（进 / 出 / 过程留痕）+ 三阶段 + "现在能用吗"
-		//   ★ 分组、gdd 细分、三阶段都由 `src/pure/artifacts.ts` 算好（测试覆盖的就是它）。
-		//     这里只渲染，**不在这里判"什么文件属于哪个桶"**。
-		// ════════════════════════════════════════════════════════════════
-
-		/** 定稿有效性 / V 校验清单的严重程度 → 颜色与词 */
-		const CHECK_TONE = { error: { c: C.bad, t: "error" }, warn: { c: C.warn, t: "warn" }, info: { c: C.muted, t: "info" } };
-
-		/** 定稿有效性的**一句话结论**（"现在能用吗"） */
-		function finalVerdict(finalCheck) {
-			if (!finalCheck) return { text: "（还没读）", tone: null };
-			if (!finalCheck.all || !finalCheck.all.length) return { text: "没有定稿 —— 这个功能还交不了程序", tone: "warn" };
-			if ((finalCheck.issues || []).some((i) => i.level === "error")) {
-				return { text: "有阻断问题：" + finalCheck.issues.filter((i) => i.level === "error").map((i) => i.code).join(" / "), tone: "bad" };
-			}
-			if (finalCheck.currentFrom === "date") return { text: "没有 active 定稿（按日期取最新：" + finalCheck.current + "）", tone: "warn" };
-			return { text: "可用：" + finalCheck.current + "（active）", tone: "ok" };
-		}
-
-		/** 今天（YYYYMMDD）—— 产出文件名里的日期由面板给定，纯函数那头不吃时钟 */
-		function todayYmd() {
-			const d = new Date();
-			const p = (n) => (n < 10 ? "0" : "") + n;
-			return "" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate());
-		}
-
-		/**
-		 * ═══ 阶段一 · 头脑风暴工作面（工单 23 · 设计 §4.1 / §4.2）═══
-		 *
-		 * 四种入口**同一层级平铺、不分主次**（四张动作卡并列，谁也不是谁的前置）；
-		 * 每张卡自己组装自己的指令（`INTAKE.buildBrainstormInstruction`，纯函数、有回归网），
-		 * 产出规范一致地落 `features\<主题>\analysis\`。
-		 *
-		 * ★ 面板**不重画流程**：发起之后界面只说"阶段交给了 skill，进度与提问都在那个会话里"，
-		 *   并给「跳到那个会话」——阶段内部怎么走由 skill 决定（工单 23 第 2 条）。
-		 * ★ 两种新格式就地渲染（设计 §4.2）：旧文档分析=四段固定章节；
-		 *   人工补充=**原话与结论并排** —— 一眼能看出 AI 有没有改动结论（工单 23 第 3 条 / 用户故事 10）。
-		 * ★ 缺前提不静默：`blocked` + `next` 两行都显示（工单 23 第 4 条）。
-		 */
-		function BrainstormWorkface(props) {
-			const data = props.data;
-			const f = props.feature || {};
-			const root = props.root || "";
-			const exits = (data && data.notes) || [];
-			const kinds = (INTAKE && INTAKE.BRAINSTORM_KINDS) || [];
-
-			const [kind, setKind] = React.useState("analysis");
-			const [mats, setMats] = React.useState("");
-			const [goal, setGoal] = React.useState("");
-			const [seed, setSeed] = React.useState("");
-			const [seedMats, setSeedMats] = React.useState("");
-			const [legacyPath, setLegacyPath] = React.useState("");
-			const [legacyName, setLegacyName] = React.useState("");
-			const [legacyNote, setLegacyNote] = React.useState("");
-			const [title, setTitle] = React.useState("");
-			const [quote, setQuote] = React.useState("");
-			const [bounds, setBounds] = React.useState("");
-			const [landing, setLanding] = React.useState("");
-			const [author, setAuthor] = React.useState("");
-			const [confidence, setConfidence] = React.useState("high");
-			const [sendMsg, setSendMsg] = React.useState(null);
-			const [opened, setOpened] = React.useState(null);
-
-			const e = kinds.filter((x) => x.id === kind)[0] || kinds[0] || { id: "", label: "", hint: "", needs: "", output: "", handoff: "" };
-			// ★ 四个入口各自的输入**各存一份**：换卡不会把上一张卡的内容带过去
-			//   （"每种入口各自组装自己的指令"——输入也各自独立，才不会出现"我明明没填却发出去了"）
-			const materials = (kind === "analysis")
-				? INTAKE.parseMaterials(mats)
-				: (kind === "legacy" ? INTAKE.parseMaterials(legacyPath) : (kind === "concept" ? INTAKE.parseMaterials(seedMats) : []));
-			// ★ 卡上显示的就是**要发出去的原文**（组装只有一份实现：`src/pure/intake.ts`）
-			const noteText = (kind === "concept") ? seed : (kind === "legacy" ? legacyNote : goal);
-			const built = (INTAKE && e.id)
-				? INTAKE.buildBrainstormInstruction(e.id, {
-					root: root, date: todayYmd(), topic: f.topic || "",
-					materials: materials, note: noteText,
-					name: legacyName, title: title, quote: quote,
-					bounds: bounds, landing: landing, author: author, confidence: confidence
-				})
-				: { instruction: "", blocked: "头脑风暴的组装器没加载上（intake 模块缺失）。", next: "" };
-
-			const send = () => {
-				if (built.blocked) {
-					// 缺前提：给出可读提示 + 下一步，**不发指令**（也不装成功）
-					setSendMsg({ kind: "blocked", text: built.blocked, next: built.next || "" });
-					return;
-				}
-				if (typeof props.onSend !== "function") {
-					setSendMsg({ kind: "err", text: "发送通道没挂上（onSend 缺失）。", next: "刷新页面；仍失败就把这条发给开发者。" });
-					return;
-				}
-				setSendMsg({ kind: "pending", text: "正在发给该功能的专属工作会话…" });
-				props.onSend(e.id, {
-					text: built.instruction,
-					materials: materials, note: noteText,
-					name: legacyName, title: title, quote: quote,
-					bounds: bounds, landing: landing, author: author, confidence: confidence,
-					root: root
-				}).then(
-					(r) => setSendMsg(r && r.ok
-						? { kind: "ok", text: "已交给工作会话。", sid: r.sid || "", target: r.target || null, healed: !!r.healed, queued: !!r.queued, note: r.note || "" }
-						: {
-							kind: "err",
-							text: (r && (r.message || r.blocked || r.note)) || "发送失败",
-							next: (r && r.next) || "再按一次；仍失败就把这条错误发给开发者。",
-							sid: (r && r.sid) || ""
-						}),
-					(err) => setSendMsg({ kind: "err", text: String((err && err.message) || err), next: "再按一次。" })
-				);
-			};
-			const jump = (sid) => {
-				if (!sid || typeof props.onOpenSession !== "function") {
-					setSendMsg((m) => Object.assign({}, m || {}, { jumpErr: "面板拿不到「跳会话」的通道（onOpenSession 没挂上）。" }));
-					return;
-				}
-				const r = props.onOpenSession(sid);
-				if (r && r.ok === false) {
-					setSendMsg((m) => Object.assign({}, m || {}, {
-						jumpErr: "跳转失败：" + ((r.error && (r.error.message || r.error.code)) || "未知原因") + "　—— 你可以在左侧列表里按标题找到它。"
-					}));
-				}
-			};
-
-			// ── 输入区（按入口不同的表单；四张卡本身是并列的，这个区是"选中那张卡的细节"）──
-			const IN = {
-				flex: "1 1 auto", font: "inherit", fontSize: "11.5px", padding: "5px 8px",
-				border: "1px solid " + C.soft, borderRadius: "4px", boxSizing: "border-box"
-			};
-			const LABEL = { fontSize: "10.5px", color: C.muted, marginBottom: "3px" };
-			const field = (key, label, value, set, placeholder, rows) => h("div", { key: key, style: { marginBottom: "7px" } }, [
-				h("div", { key: "l", style: LABEL }, label),
-				rows
-					? h("textarea", {
-						key: "i", value: value, placeholder: placeholder, rows: rows,
-						onChange: (ev) => set(ev.target.value),
-						style: Object.assign({}, IN, { width: "100%", resize: "vertical", fontFamily: "inherit" })
-					})
-					: h("input", {
-						key: "i", value: value, placeholder: placeholder,
-						onChange: (ev) => set(ev.target.value),
-						style: Object.assign({}, IN, { width: "100%" })
-					})
-			]);
-			const form = () => {
-				if (e.id === "analysis") return [
-					field("m", "素材（目录 / 文件路径 / 链接，可多行）", mats, setMats, "D:\\素材\\竞品_联盟 或 https://…", 2),
-					field("g", "分析目标（选填）", goal, setGoal, "比如：看它的奖池概率与保底怎么配", 2)
-				];
-				if (e.id === "concept") return [
-					field("s", "一句话创意（必填）", seed, setSeed, "比如：联盟成员一起打 BOSS，血量全盟共享", 2),
-					field("m", "参考素材（选填，路径 / 链接）", seedMats, setSeedMats, "D:\\素材\\参考.png", 2)
-				];
-				if (e.id === "legacy") return [
-					field("p", "旧文档路径（必填，目录或单个文件）", legacyPath, setLegacyPath, "D:\\旧案\\英雄改造v0.2.xlsx", 2),
-					field("n", "名称（选填，产出文件名用它）", legacyName, setLegacyName, "英雄改造 v0.2"),
-					field("g", "补充说明（选填）", legacyNote, setLegacyNote, "比如：只看改造消耗与失败返还", 2)
-				];
-				return [
-					field("t", "标题（必填）", title, setTitle, "BOSS 血量按联盟共享"),
-					field("q", "原话（必填 —— 逐字保留，AI 只整理格式）", quote, setQuote, "「BOSS 的血条应该是全盟共享的，一个人打全盟都能看到」", 3),
-					field("b", "边界（选填）", bounds, setBounds, "仅在活动期间成立；活动结束血条重置", 2),
-					field("l", "落点（选填，条目引用）", landing, setLanding, "§4 R2 · §5 UI-M1 UE2"),
-					h("div", { key: "row", style: { display: "flex", gap: "7px" } }, [
-						h("div", { key: "a", style: { flex: "1 1 auto" } }, field("au", "谁说的（选填）", author, setAuthor, "祖海潮")),
-						h("div", { key: "c", style: { flex: "0 0 130px" } }, [
-							h("div", { key: "cc", style: LABEL }, "可信度"),
-							h("select", {
-								key: "cs", value: confidence, onChange: (ev) => setConfidence(ev.target.value),
-								style: Object.assign({}, IN, { width: "100%" })
-							}, [
-								h("option", { key: "h", value: "high" }, "high（可直接当规则口径）"),
-								h("option", { key: "p", value: "pending" }, "pending（需补证据）")
-							])
-						])
-					])
-				];
-			};
-
-			// ── 卡（四张并列：同一层级的兄弟节点，没有主次）──
-			const card = (k) => {
-				const on = k.id === e.id;
-				return h("button", {
-					key: "card-" + k.id, type: "button", "data-card": k.id, "data-active": on ? "1" : "0",
-					onClick: () => { setKind(k.id); setSendMsg(null); },
-					style: {
-						flex: "1 1 168px", minWidth: "168px", textAlign: "left", font: "inherit", cursor: "pointer",
-						border: "1px solid " + (on ? C.ink : C.faint), borderTop: "3px solid " + (on ? C.ink : C.soft),
-						background: on ? "#fff" : C.bg, borderRadius: "4px", padding: "7px 9px"
-					}
-				}, [
-					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, color: C.ink } }, k.label),
-					h("div", { key: "h", style: { fontSize: "10px", color: C.link, fontFamily: "monospace", marginTop: "2px" } }, k.hint),
-					h("div", { key: "n", style: { fontSize: "10px", color: C.muted, marginTop: "4px", lineHeight: 1.65 } }, "前置：" + k.needs),
-					h("div", { key: "o", style: { fontSize: "10px", color: C.muted, marginTop: "3px", lineHeight: 1.65 } }, "产出：" + k.output)
+					h("span", {
+						key: "lb", style: { fontSize: "10.5px", color: on ? V.ink : V.idle, whiteSpace: "nowrap" }
+					}, s.label + (on ? " " + n : ""))
 				]);
-			};
+			})),
+		h("div", { key: "l", style: { fontSize: "11.5px", color: warn ? V.warn : V.muted } }, f.line),
+		["decisions", "evidence", "other"].some((k) => (c[k] || 0) > 0)
+			? h("div", { key: "c", style: { display: "flex", gap: "10px", flexWrap: "wrap", fontSize: "11px", color: V.muted } },
+				["decisions", "evidence", "other"].filter((k) => (c[k] || 0) > 0)
+					.map((k) => h("span", { key: k },
+						(k === "decisions" ? "决策" : k === "evidence" ? "证据" : "其它") + " " + c[k])))
+			: null,
+		h("div", {
+			key: "f",
+			style: { display: "flex", alignItems: "baseline", gap: "8px", fontSize: "11px", color: V.idle, marginTop: "auto", paddingTop: "6px" }
+		}, [
+			// 相对时间（"3 分钟前"）；解析不出来就退回原始时间戳，绝不编
+			h("span", { key: "d", title: f.lastDecisionAt || "", style: { fontFamily: MONO, flex: 1, wordBreak: "break-all" } },
+				f.lastDecisionAt ? "最近决策 " + (relTimeOf(f.lastDecisionAt) || f.lastDecisionAt) : "还没有决策"),
+			hover || focus ? h("span", { key: "o", style: { color: ACCENT_FILL, whiteSpace: "nowrap" } }, "打开 ›") : null
+		])
+	]);
+}
 
-			// ── 两种新格式的渲染（设计 §4.2）──
-			const secTitle = { fontSize: "11px", fontWeight: 600, color: C.ink, marginBottom: "2px" };
-			const secBody = {
-				fontSize: "11px", color: C.ink, whiteSpace: "pre-wrap", userSelect: "text", lineHeight: 1.7,
-				background: "#fff", border: "1px solid " + C.faint, borderRadius: "3px", padding: "5px 7px"
-			};
-			const legacyView = (doc) => h("div", { key: "lv", "data-doc": "legacy", "data-name": doc.name }, [
-				h("div", { key: "meta", style: { fontSize: "10.5px", color: C.muted, marginBottom: "6px", lineHeight: 1.7 } }, [
-					h("div", { key: "a" }, "原件：" + (doc.source || "(frontmatter 里没写 source)") + "　（原件存 source\\ —— 产出文档的身份信息指回原件）"),
-					h("div", { key: "b" }, "topic：" + (doc.topic || "(空)") + "　analyzed_at：" + (doc.analyzedAt || "(空)"))
-				]),
-				doc.missing && doc.missing.length
-					? h("div", { key: "miss", "data-missing": doc.missing.join("|"), style: { fontSize: "11px", color: C.warn, marginBottom: "6px" } },
-						"⚠ 缺 " + doc.missing.length + " 段固定章节：" + doc.missing.join(" / ") + " —— 这份产出不完整（四段一个都不能少）")
-					: null,
-				doc.sections.map((s, i) => h("div", { key: "s" + i, "data-sec": s.key, style: { marginBottom: "6px" } }, [
-					h("div", { key: "t", style: secTitle }, (s.present ? "## " : "##（缺）") + s.label),
-					s.key === "reuse" && s.present
-						? h("table", { key: "tb", style: { width: "100%", borderCollapse: "collapse", fontSize: "10.5px" } }, [
-							h("thead", { key: "h" }, h("tr", null, doc.reuse.header.map((c, j) => h("th", { key: j, style: TH }, c)))),
-							h("tbody", { key: "b" }, doc.reuse.rows.map((r, j) => h("tr", { key: j }, r.map((c, m) => h("td", { key: m, style: TD }, c)))))
-						])
-						: h("div", { key: "b", style: secBody }, s.present ? (s.body || "（空）") : "（这一段没有）")
-				])),
-				doc.extra && doc.extra.length
-					? h("div", { key: "ex", "data-extra": String(doc.extra.length), style: { fontSize: "10.5px", color: C.muted, marginTop: "4px" } },
-						"其他章节（不认识的标题也不丢）：" + doc.extra.map((x) => x.title).join(" / "))
-					: null
-			]);
+/** 〔＋ 新建功能〕表单：输名字 → 建目录 + 4 桶 + 工作区 + 会话（策划模式）。 */
+function CreateForm(props) {
+	const topic = props.topic || "";
+	const check = topic.trim() === "" ? null : checkTopicName(topic);
+	const plan = props.plan || null;
+	const busy = !!props.busy;
+	const off = busy || !!(check && !check.ok) || !!(plan && !plan.ok);
+	return h(Card, {
+		title: "新建功能",
+		note: "建目录 + 4 个桶 + 专属工作区 + 工作会话（策划模式）—— 全部本地完成，不发指令",
+		actions: Btn({ label: "取消", onPick: props.onCancel, off: busy })
+	}, [
+		h("div", { key: "i", style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, [
+			h("input", {
+				key: "t", style: Object.assign({}, IN, { maxWidth: "320px" }), placeholder: "主题名，例如：联盟讨伐",
+				value: topic, disabled: busy, autoFocus: true,
+				onChange: (e) => props.onTopic(e.target.value),
+				onKeyDown: (e) => { if (e.key === "Enter" && !off) props.onSubmit(); }
+			}),
+			Btn({ label: busy ? "正在建…" : "建立", tone: "primary", off: off, onPick: props.onSubmit })
+		]),
+		check && !check.ok ? h("div", { key: "c", style: { marginTop: "7px", fontSize: "12px", color: V.warn } }, [
+			h("div", { key: "m" }, check.message),
+			h("div", { key: "n", style: { color: V.muted } }, check.next)
+		]) : null,
+		plan && !plan.ok ? h("div", { key: "p", style: { marginTop: "7px", fontSize: "12px", color: V.warn } }, [
+			h("div", { key: "m" }, plan.message),
+			h("div", { key: "n", style: { color: V.muted } }, plan.next)
+		]) : null,
+		plan && plan.ok ? h("div", { key: "ok", style: { marginTop: "9px" } }, [
+			h("div", { key: "r", style: { fontSize: "11.5px", color: V.muted } }, "将建立："),
+			h("code", { key: "c", style: { fontFamily: MONO, fontSize: "12px", wordBreak: "break-all" } }, plan.root + "\\"),
+			h("div", { key: "b", style: { marginTop: "5px" } }, plan.buckets.map((b) => h("div", {
+				key: b, style: { fontFamily: MONO, fontSize: "11.5px", color: V.muted }
+			}, b + "\\　—　" + bucketHint(b))))
+		]) : null,
+		h("div", { key: "h", style: { marginTop: "10px", fontSize: "11.5px", color: V.muted } },
+			"面板只建【目录】与【会话】；决策记录.md 由会话里的 agent 在这个功能第一次做决策时按统一格式创建（格式见功能详情 › 决策记录）。")
+	]);
+}
+
+function Dashboard(props) {
+	const d = props.dash || {};
+	const feats = d.features || [];
+	const nothing = feats.length === 0 && props.phase !== "loading";
+	return h("div", null, [
+		h("div", { key: "top", style: { display: "flex", alignItems: "baseline", gap: "10px", marginBottom: "4px", flexWrap: "wrap" } }, [
+			h("div", { key: "t", style: { fontSize: "17px", fontWeight: 700 } }, "策划工作台"),
+			h("div", { key: "n", style: { fontSize: "12px", color: V.muted } }, "功能 " + feats.length + (d.srWs ? "　｜　" + d.srWs : "")),
+			h("div", { key: "s", style: { flex: 1 } }),
+			Btn({ key: "r", label: "刷新", icon: PRIMITIVES && PRIMITIVES.IconRefreshOutlineRegular, onPick: props.onRefresh, off: props.phase === "loading" }),
+			Btn({ key: "n", label: "新建功能", icon: PRIMITIVES && PRIMITIVES.IconPlusOutlineRegular, tone: "primary", onPick: props.onNew, off: props.newOpen })
+		]),
+		/**
+		 * ★ 原来这里有一句「工作台只做三件事：看功能卡片 · 新建功能 · 进去看三个模块…」——
+		 *   用户口径：**去掉**（页签上已经写着三个模块、按钮上已经写着两个动作，再讲一遍是占位置）。
+		 *   那条"它不发指令、不写文件内容、不替你拍板"的边界仍在别处明说：README 与操作文档里各有一份。
+		 */
+		h(Notice, { key: "n", notice: props.notice }),
+		props.newOpen ? h(CreateForm, {
+			key: "new", topic: props.newTopic, plan: props.plan, busy: props.busy,
+			onTopic: props.onTopic, onSubmit: props.onSubmit, onCancel: props.onCancel
+		}) : null,
+		props.phase === "loading" && feats.length === 0
+			? h("div", { key: "l", style: { color: V.muted, fontSize: "12.5px" } }, "正在读工作区…")
+			: null,
+		nothing ? h("div", {
+			key: "e",
+			style: { border: "1px dashed " + V.line2, borderRadius: "9px", padding: "26px", textAlign: "center", color: V.muted }
+		}, [
+			h("div", { key: "a" }, "还没有功能。"),
+			h("div", { key: "b", style: { marginTop: "6px", fontSize: "12px" } }, "点右上角〔新建功能〕建第一个。")
+		]) : null,
+		h("div", {
+			key: "g",
 			/**
-			 * 人工补充：**原话与结论并排**。
-			 * 左列是原话那一行（逐字，`userSelect: text`），右列是 AI 整理的结论 —— 两列是同一个
-			 * flex 行里的兄弟节点，所以"一眼能看出有没有被改动"这件事在界面上是物理成立的。
+			 * ★ `auto-fit` 而不是 `auto-fill`：`auto-fill` 会把面板宽度切成固定条数，
+			 *   功能少时卡片只占左边几条、右边空一大片（用户截图里画箭头指的就是那片）。
+			 *   `auto-fit` 让**空轨道塌掉**、卡片自己长宽；再用 maxWidth 兜住上限，
+			 *   免得只有一两个功能时被拉成一条。
 			 */
-			const noteView = (doc) => h("div", { key: "hn", "data-doc": "humannote", "data-name": doc.name }, [
-				h("div", { key: "meta", style: { fontSize: "10.5px", color: C.muted, marginBottom: "6px", lineHeight: 1.7 } }, [
-					h("div", { key: "a" }, "confidence：" + (doc.confidence || "(空)") + "　date：" + (doc.date || "(空)") + "　author：" + (doc.author || "(空)") +
-						"　（confidence 是唯一的可信度字段：high = 可直接当规则口径；pending = 下游引用要带标记）"),
-					h("div", { key: "b" }, "topic：" + (doc.topic || "(空)") + "　标题：" + (doc.title || "(空)"))
-				]),
-				doc.quote.found
-					? h("div", {
-						key: "pair", "data-pair": "quote|conclusion",
-						style: { display: "flex", gap: "10px", alignItems: "stretch", marginBottom: "7px" }
-					}, [
-						h("div", { key: "q", "data-side": "quote", style: { flex: "1 1 50%", minWidth: 0 } }, [
-							h("div", { key: "t", style: secTitle }, "我说的话（原话 · 逐字）"),
-							h("div", { key: "b", style: Object.assign({}, secBody, { borderLeft: "3px solid " + C.link }) }, doc.quote.raw)
-						]),
-						h("div", { key: "c", "data-side": "conclusion", style: { flex: "1 1 50%", minWidth: 0 } }, [
-							h("div", { key: "t", style: secTitle }, "AI 整理的结论（并排比对：有没有改动我的结论）"),
-							h("div", { key: "b", style: secBody }, doc.conclusion || "（这一段没有）")
-						])
-					])
-					: h("div", { key: "noq", "data-side": "quote-missing", style: { fontSize: "11px", color: C.warn, marginBottom: "6px" } },
-						"⚠ 这份产出里没有 `> 原话：…` 那一行 —— 按格式要求它必须逐字保留，否则看不出 AI 有没有改动结论。"),
-				doc.sections.filter((s) => s.key !== "conclusion").map((s, i) => h("div", { key: "s" + i, "data-sec": s.key, style: { marginBottom: "6px" } }, [
-					h("div", { key: "t", style: secTitle }, (s.present ? "## " : "##（缺）") + s.label),
-					h("div", { key: "b", style: secBody }, s.present ? (s.body || "（空）") : "（这一段没有）")
-				])),
-				doc.extra && doc.extra.length
-					? h("div", { key: "ex", "data-extra": String(doc.extra.length), style: { fontSize: "10.5px", color: C.muted, marginTop: "4px" } },
-						"其他章节（不丢）：" + doc.extra.map((x) => x.title).join(" / "))
-					: null
-			]);
-
-			const groups = (data && data.groups) || { entries: [], other: [], total: 0 };
-			const docById = (id, name) => {
-				const list = id === "legacy" ? ((data && data.legacy) || []) : ((data && data.humannote) || []);
-				return list.filter((x) => x.name === name)[0] || null;
-			};
-			const fileRow = (g, file, i) => {
-				const isNew = g.id === "legacy" || g.id === "humannote";
-				const open = opened && opened.id === g.id && opened.name === file.name;
-				return h("div", {
-					key: "f" + g.id + i, "data-file": file.name,
-					onClick: () => {
-						if (isNew) setOpened(open ? null : { id: g.id, name: file.name });
-						else if (props.onOpen) props.onOpen(root.replace(/\\+$/, "") + "\\" + String(file.rel || file.name).replace(/\//g, "\\"));
-					},
-					style: {
-						fontSize: "11px", padding: "2px 4px", borderRadius: "3px", cursor: "pointer",
-						background: open ? "#f0f7ff" : "transparent", color: C.ink
-					}
-				}, (isNew ? (open ? "▾ " : "▸ ") : "· ") + file.name + (isNew ? "　（新格式：点开看渲染）" : ""));
-			};
-
-			return h("div", { "data-workface": "brainstorm" }, [
-				// ① 出口判据（设计 §4.3）—— analysis 空而 source 有料 ⇒ 建议先跑一次分析
-				exits.length
-					? h("div", {
-						key: "exit", "data-exit": "note",
-						style: { fontSize: "11.5px", color: C.warn, border: "1px solid " + C.faint, borderLeft: "3px solid " + C.warn, background: "#fffdf7", borderRadius: "4px", padding: "7px 10px", marginBottom: "10px" }
-					}, exits.map((x, i) => h("div", { key: i }, "⚠ " + x)))
-					: null,
-
-				// ② 四张并列的动作卡（同一层级、不分主次）
-				h("div", { key: "row", "data-row": "entrances", style: { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px" } },
-					kinds.map(card)),
-
-				// ③ 选中那张卡的输入 + **要发出去的原文**（逐字）
-				h("div", {
-					key: "detail", "data-entrance": e.id,
-					style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "9px 11px", marginBottom: "10px" }
-				}, [
-					h("div", { key: "h", style: { fontSize: "12px", marginBottom: "6px" } }, [
-						h("b", { key: "b" }, e.label + "　"),
-						h("span", { key: "s", style: { color: C.muted, fontSize: "10.5px" } }, e.hint + "　前置：" + e.needs + "　产出：" + e.output)
-					]),
-					h("div", { key: "f" }, form()),
-					built.blocked
-						? h("div", {
-							key: "blk", "data-blocked": e.id,
-							style: { fontSize: "11.5px", color: C.bad, background: "#fef2f2", border: "1px solid " + C.faint, borderRadius: "3px", padding: "6px 8px", marginBottom: "7px", lineHeight: 1.75 }
-						}, [
-							h("div", { key: "a" }, "✗ " + built.blocked),
-							built.next ? h("div", { key: "b", style: { color: C.ink } }, "下一步：" + built.next) : null
-						])
-						: null,
-					built.instruction
-						? h("div", { key: "pv", style: { marginBottom: "7px" } }, [
-							h("div", { key: "t", style: LABEL }, "这条入口组装出来的指令 —— 下面这段就是发给工作会话的原文（卡上看到的 = 发出去的）："),
-							h("pre", {
-								key: "v", "data-kind": e.id,
-								style: {
-									margin: "3px 0 0", padding: "6px 8px", background: C.bg, border: "1px solid " + C.faint,
-									borderRadius: "3px", fontFamily: "monospace", fontSize: "10.5px", lineHeight: 1.6,
-									whiteSpace: "pre-wrap", color: C.ink, userSelect: "text", maxHeight: "26vh", overflow: "auto"
-								}
-							}, built.instruction)
-						])
-						: null,
-					h("div", { key: "act", style: { display: "flex", gap: "8px", alignItems: "center" } }, [
-						h("button", {
-							key: "go", type: "button", "data-send": e.id,
-							onClick: send,
-							style: {
-								font: "inherit", fontSize: "11.5px", padding: "5px 12px", borderRadius: "4px",
-								border: "1px solid " + (built.blocked ? C.soft : C.link),
-								background: built.blocked ? "#fff" : C.link, color: built.blocked ? C.muted : "#fff",
-								cursor: "pointer"
-							}
-						}, "发到工作会话"),
-						h("span", { key: "n", style: { fontSize: "10.5px", color: C.muted } }, "发到：本功能的专属工作会话" + (root ? "（cwd " + winPath(root) + "）" : "") + "　—— 不占用你自己的对话")
-					]),
-					// 发起之后：**面板不重画流程**，只交代"阶段交给了谁"
-					h("div", { key: "ho", "data-handoff": e.id, style: { fontSize: "10.5px", color: C.muted, marginTop: "5px", lineHeight: 1.7 } },
-						"发起后：" + e.handoff + " —— 面板只给「跳到那个会话」。"),
-					sendMsg ? h("div", {
-						key: "m",
-						style: { fontSize: "11px", marginTop: "6px", lineHeight: 1.75, color: sendMsg.kind === "err" || sendMsg.kind === "blocked" ? C.bad : (sendMsg.kind === "ok" ? C.ok : C.muted) }
-					}, [
-						h("div", { key: "t" }, (sendMsg.kind === "ok" ? "✓ " : (sendMsg.kind === "pending" ? "" : "✗ ")) + sendMsg.text),
-						sendMsg.kind === "ok" ? h("div", {
-							key: "d", "data-sent": "ok", style: { color: C.muted, userSelect: "text" }
-						}, [
-							// ★ 工单 23 第 2 条：这句话就是"面板不在会话里重画流程"的表达
-							h("div", { key: "s" }, "阶段交给了 skill，进度与提问都在那个会话里 —— 面板不重画流程，跑完回本页重进就能看到产物。"),
-							h("div", { key: "g" },
-								"目标：" + ((sendMsg.target && sendMsg.target.title) || "工作会话") +
-								(sendMsg.sid ? "　会话 " + String(sendMsg.sid).slice(0, 12) + "…" : "") +
-								(sendMsg.target && sendMsg.target.root ? "　cwd " + winPath(sendMsg.target.root) : "") +
-								"　（" + pickSourceText(sendMsg.target && sendMsg.target.source) + "）"),
-							sendMsg.healed ? h("div", { key: "h", style: { color: C.warn } }, "上一轮记的那条会话已经不在了 —— 已自动重建一条并重发。") : null,
-							sendMsg.queued ? h("div", { key: "q", style: { color: C.warn } }, "它正在跑别的活，这条指令排在队列里，等它跑完当前这一轮就会处理。") : null
-						]) : null,
-						sendMsg.kind === "err" || sendMsg.kind === "blocked"
-							? h("div", { key: "n", "data-sent": "fail", style: { color: C.ink } }, "下一步：" + (sendMsg.next || "再按一次。"))
-							: null,
-						sendMsg.sid && props.onOpenSession ? h("button", {
-							key: "j", type: "button", "data-jump": sendMsg.sid,
-							onClick: () => jump(sendMsg.sid),
-							style: {
-								font: "inherit", fontSize: "11px", padding: "2px 9px", marginTop: "3px",
-								border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer"
-							}
-						}, "跳到那个会话 ›") : null,
-						sendMsg.jumpErr ? h("div", { key: "je", style: { color: C.bad } }, sendMsg.jumpErr) : null
-					]) : null
-				]),
-
-				// ④ 已有的分析结论（按四入口分类 —— 四组恒在，空组 = 这一路还没走过）
-				h("div", { key: "have", style: { border: "1px solid " + C.faint, borderRadius: "4px", background: C.bg, padding: "8px 10px" } }, [
-					h("div", { key: "t", style: { fontSize: "11.5px", fontWeight: 600, marginBottom: "5px" } },
-						"已有的分析结论（" + (groups.total || 0) + " 件，按入口分）" +
-						(f && f.topic ? "　功能：" + f.topic : "")),
-					!data ? h("div", { key: "ld", style: { fontSize: "11px", color: C.muted } }, "正在读 analysis\\ 里的产物…") : null,
-					data && data.error ? h("div", { key: "er", style: { fontSize: "11px", color: C.bad } }, data.error) : null,
-					data && !data.error
-						? h("div", { key: "g" }, (groups.entries || []).map((g) => h("div", {
-							key: "e" + g.id, "data-group": g.id,
-							style: { marginBottom: "5px", borderTop: "1px solid " + C.faint, paddingTop: "5px" }
-						}, [
-							h("div", { key: "h", style: { fontSize: "11px" } }, [
-								h("b", { key: "b" }, g.label),
-								h("span", { key: "c", style: { color: C.muted } }, "　" + g.count + " 件" + (g.count === 0 ? "（这一路还没走过）" : ""))
-							]),
-							h("div", { key: "f" }, (g.files || []).map((file, i) => fileRow(g, file, i)))
-						])).concat((groups.other && groups.other.length) ? [h("div", {
-							key: "eother", "data-group": "other", style: { marginBottom: "5px", borderTop: "1px solid " + C.faint, paddingTop: "5px" }
-						}, [
-							h("div", { key: "h", style: { fontSize: "11px" } }, [h("b", { key: "b" }, "其他 / 来源未知"), h("span", { key: "c", style: { color: C.muted } }, "　" + groups.other.length + " 件（认不出属于哪一路，如实列出）")]),
-							h("div", { key: "f" }, groups.other.map((file, i) => fileRow({ id: "other" }, file, i)))
-						])] : []))
-						: null,
-					data && (data.unreadable || []).length
-						? h("div", { key: "un", style: { fontSize: "10.5px", color: C.warn, marginTop: "4px" } },
-							(data.unreadable || []).map((x, i) => h("div", { key: i }, "⚠ 读不动：" + x.name + "（" + x.why + "）")))
-						: null,
-					// 两种新格式的渲染（点上面的文件名展开）
-					opened && opened.id === "legacy" && docById("legacy", opened.name) ? legacyView(docById("legacy", opened.name)) : null,
-					opened && opened.id === "humannote" && docById("humannote", opened.name) ? noteView(docById("humannote", opened.name)) : null
-				])
-			]);
-		}
-
+			style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "12px" }
+		}, feats.map((f) => h("div", { key: f.topic, style: { display: "flex", maxWidth: "520px", minWidth: 0 } },
+			h(FeatureCard, { feature: f, onOpen: () => props.onOpen(f.topic) })))),
 		/**
-		 * ★ 工单 24 · **文档生成工作面**（「文档生成」这一格从"未实现"变成真的）。
-		 *
-		 * 这一屏自上而下四件事，顺序就是"先看状态、再动手"：
-		 *   ① **配置支线走到哪**（`configBranchState` 的结论原文，不是这里现算的）——
-		 *      `gdd-pipeline.md` §一的四步链路（成稿 → 配置表 → 读回 → 定稿）+ 缺口逐条；
-		 *   ② **三个动作卡**（写成稿 / 改成稿 / 发起整合定稿）—— 一条链，有先后，不是并列四入口；
-		 *   ③ **两大部分**（§4 功能规则 / §5 用户体验与界面流程）—— 后续两条支线的依据，可点即定位；
-		 *   ④ **左树 + 分块正文**（章 / 组 / 条目 + 1-based 行号；正文按块渲染 + **块级错误边界**）。
-		 *
-		 * ★ 数据全部来自 `loadDraftWorkface`（`src/load/draft.ts`）+ `src/pure/drafttree.ts` /
-		 *   `draftstep.ts`：**面板不重新解析、不重新组装**——卡上看到的原文与发出去的是同一段字符串
-		 *   （工单 15 / 23 立下的口径，这里照做）。
-		 * ★ 面板**不重做 Excel**（spec.md:212）：配置表的存在性由看板按主题挂上来的真实文件名给，
-		 *   字段/记录级的一切都在 skill 与配置表工具侧；这一屏只报状态。
+		 * ★ **UI 自我报告**：只在**拿不到宿主组件库**时出现 —— 那时界面用的是自绘控件，
+		 *   观感与宿主不一致，得让你知道为什么。拿得到就一个字都不多（不占位置）。
 		 */
-		function DraftWorkface(props) {
-			const data = props.data;
-			const root = props.root || "";
-			const doc = (data && data.doc) || null;
-			const config = (data && data.config) || null;
-			const notes = (data && data.notes) || [];
-			const actions = (INTAKE && INTAKE.DRAFT_ACTIONS) || [];
-			const phases = (INTAKE && INTAKE.DRAFT_PHASES) || [];
-			const story = (data && data.story) || {};
-			/** Y 形两层的动作 id（`DRAFT_PHASES`；表只有一份，这里只是按阶段取） */
-			const cardIds = ((phases.filter((p) => p.key === "card")[0] || {}).ids) || [];
-			const defOf = (id) => actions.filter((x) => x.id === id)[0] ||
-				{ id: id, label: id, hint: "", needs: "", output: "", handoff: "" };
-			const [act, setAct] = React.useState("create");
-			const [seed, setSeed] = React.useState("");
-			const [mats, setMats] = React.useState("");
-			const [where, setWhere] = React.useState("");
-			const [before, setBefore] = React.useState("§5");
-			const [intent, setIntent] = React.useState("");
-			/** 支线 B 的图路径（粘的 + 从 `gdd\UI\` 里挑的，逐行） */
-			const [wirePaste, setWirePaste] = React.useState("");
-			const [picked, setPicked] = React.useState([]);
-			/** 三个「先展开输入/预览，再发」的入口 + 三个折叠区（两大部分 / 看正文 / 详情） */
-			const [openCfg, setOpenCfg] = React.useState(false);
-			const [openWire, setOpenWire] = React.useState(false);
-			const [openInt, setOpenInt] = React.useState(false);
-			const [openParts, setOpenParts] = React.useState(false);
-			const [openBody, setOpenBody] = React.useState(false);
-			const [openMachine, setOpenMachine] = React.useState(false);
-			/** ★ 工单 25 · 定稿门（合流之后的落点）：首屏只给一行人话，明细折在这里 */
-			const [openGate, setOpenGate] = React.useState(false);
-			const [sendMsg, setSendMsg] = React.useState({});
-			const [openG, setOpenG] = React.useState({});
-			const [sel, setSel] = React.useState(-1);
-			const bodyRef = React.useRef(null);
+		HAS_PRIMITIVES ? null : h("div", {
+			key: "__ui", style: { fontSize: "10.5px", color: V.idle, marginTop: "12px" }
+		}, primitivesNote())
+	]);
+}
 
-			const e = actions.filter((x) => x.id === act)[0] || actions[0] ||
-				{ id: "", label: "", hint: "", needs: "", output: "", handoff: "" };
+// ════════════════════════════════════════════════════════════════════════════
+// ② 模块一 · 头脑风暴（**沿用 v4 的四入口**）
+// ════════════════════════════════════════════════════════════════════════════
 
-			/** 今天，`YYYY-MM-DD`（**只有一处**：指令预览与真正发出去的必须是同一天） */
-			const today = (() => { const s = todayYmd(); return s.slice(0, 4) + "-" + s.slice(4, 6) + "-" + s.slice(6, 8); })();
+const ENT = {};
+for (const e of ENTRANCES) ENT[e.id] = e;
 
-			/** 组标识：有 `id`（R1 / UI-M1）用它，否则退回组号（5.0）——与 `finaltree.groupKey` 同口径 */
-			const gk = (g) => String(g.id || g.no || "");
-			/** 章号 → 它在哪一部分（两大部分高亮 + 组行上的归属标记） */
-			const partOfNo = (no) => {
-				const hit = (((doc && doc.parts) || []).filter((p) => p.no === String(no))[0]) || null;
-				return hit ? hit.key : "";
-			};
-			/** 组行上标 §4 / §5（只标两大部分里的组，别处不标） */
-			const partTag = (no) => {
-				const k = partOfNo(no);
-				return k === "rules" ? "§4 规则" : k === "ux" ? "§5 界面" : "";
-			};
+/** 每个入口的表单字段（**唯一出处**：`ENTRANCES` 的 `prereq` 决定要什么）。 */
+const FIELDS = {
+	analysis: [
+		{ k: "materials", label: "素材（目录 / 文件路径 / 链接，一行一个）", lines: 3, mono: true },
+		{ k: "note", label: "分析目标（可空）", lines: 2 }
+	],
+	concept: [
+		{ k: "seed", label: "一句话创意", lines: 2 },
+		{ k: "materials", label: "参考素材（可空，一行一个路径 / 链接）", lines: 2, mono: true }
+	],
+	legacy: [
+		{ k: "materials", label: "旧文档（目录或文件路径，一行一个）", lines: 3, mono: true },
+		{ k: "note", label: "补充说明（可空）", lines: 2 }
+	],
+	humannote: [
+		{ k: "title", label: "标题", lines: 1 },
+		{ k: "quote", label: "原话（逐字保留）", lines: 3, mono: true },
+		{ k: "bounds", label: "边界（可空）", lines: 2 },
+		{ k: "landing", label: "落点（可空，条目引用，如 §4 R2 / §5 UI-M1 UE2）", lines: 1 }
+	]
+};
 
-			// ★ 卡上显示的就是**要发出去的原文**（组装只有一份实现：`src/pure/draftstep.ts`）
-			//   五个动作的公共入参**只拼一次**（`common`）—— 五个分支各自的差异由 `act` 决定。
-			const common = {
-				root: root, topic: (data && data.topic) || "", date: today,
-				draftPath: (data && data.path) || "",
-				configLabel: (config && config.label) || "",
-				configMissing: (config && config.missing) || [],
-				contract: (config && config.facts && config.facts.contract) || null,
-				parts: (doc && doc.parts) || [],
-				readbacks: (config && config.facts && config.facts.readbacks) || [],
-				ascii: (data && data.ascii) || []
-			};
-			const build = (over) => (INTAKE && INTAKE.buildDraftInstruction)
-				? INTAKE.buildDraftInstruction(Object.assign({}, common, { action: "create" }, over || {}))
-				: { instruction: "", blocked: "文档生成的组装器没加载上（draftstep 模块缺失）。", next: "" };
+/** 表单 → `buildBrainstormInstruction` 的输入（**字段名映射只有这一处**）。 */
+function inputOf(kind, form) {
+	const f = form || {};
+	const mats = INTAKE.parseMaterials(f.materials || "");
+	if (kind === "concept") return { materials: mats, note: f.seed || "" };
+	if (kind === "humannote") return { title: f.title || "", quote: f.quote || "", bounds: f.bounds || "", landing: f.landing || "" };
+	return { materials: mats, note: f.note || "" };
+}
 
-			/** 支线 B 的输入（逐行；粘的 + 挑的，去重保序）—— **路径是唯一可靠输入** */
-			const wirePaths = (() => {
-				const out = [];
-				const seen = {};
-				const push = (s) => {
-					const v = String(s == null ? "" : s).trim().replace(/^file:\/\/\/?/i, "");
-					if (v === "" || seen[v]) return;
-					seen[v] = true;
-					out.push(v);
-				};
-				for (const x of picked) push(x);
-				for (const line of String(wirePaste).split(/\r?\n/)) push(line);
-				return out;
-			})();
+function BrainstormModule(props) {
+	const d = props.detail;
+	/** `loadBrainstorm` 的 `groups` 就是 `groupAnalyses` 的结论：`{ entries, other, counts, total }`。 */
+	const b = props.detail.brainstorm || {};
+	const g = b.groups || { entries: [], other: [], counts: {}, total: 0 };
+	const [pick, setPick] = React.useState("analysis");
+	const [form, setForm] = React.useState({});
+	const setField = (k, v) => setForm(Object.assign({}, form, { [k]: v }));
 
-			/** 五个动作各自的「要发出去的原文」（组装只有一份实现；卡上看到的 = 发出去的） */
-			const builtOf = (id) => {
-				if (id === "create") return build({ action: "create", intent: seed, materials: INTAKE.parseMaterials(mats) });
-				if (id === "revise") return build({ action: "revise", where: where, before: before, intent: intent });
-				if (id === "config") return build({ action: "config", where: where, intent: intent });
-				if (id === "wireframe") return build({ action: "wireframe", where: where, images: wirePaths });
-				return build({ action: "integrate" });
-			};
-			const built = builtOf(e.id);
-			const builtWire = builtOf("wireframe");
-			const builtCfg = builtOf("config");
-			const builtInt = builtOf("integrate");
+	const preview = React.useMemo(() => {
+		try {
+			return INTAKE.buildBrainstormInstruction(pick, Object.assign(
+				{ root: d.root, topic: d.topic, date: todayCompact() }, inputOf(pick, form)));
+		} catch (e) {
+			return { instruction: "", blocked: "指令组装失败：" + String((e && e.message) || e), next: "" };
+		}
+	}, [pick, form, d.root, d.topic]);
 
-			/** 发一条指令（正文由上面的组装器给；`built.blocked` 时**不发**，原样显示提示） */
-			const sendOne = (id, b, tag) => {
-				if (b.blocked) {
-					setSendMsg((m) => Object.assign({}, m || {}, { [id]: { kind: "blocked", text: b.blocked, next: b.next || "" } }));
-					return;
-				}
-				if (typeof props.onSend !== "function") {
-					setSendMsg((m) => Object.assign({}, m || {}, { [id]: { kind: "err", text: "发送通道没挂上（onSend 缺失）。", next: "刷新页面；仍失败就把这条发给开发者。" } }));
-					return;
-				}
-				setSendMsg((m) => Object.assign({}, m || {}, { [id]: { kind: "pending", text: "正在发给该功能的专属工作会话…" } }));
-				props.onSend(id, { text: b.instruction, root: root }).then(
-					(r) => setSendMsg((m) => Object.assign({}, m || {}, {
-						[id]: r && r.ok
-							? { kind: "ok", text: "已交给工作会话。", sid: r.sid || "", target: r.target || null, healed: !!r.healed, queued: !!r.queued, note: r.note || "" }
-							: {
-								kind: "err",
-								text: (r && (r.message || r.blocked || r.note)) || "发送失败",
-								next: (r && r.next) || "再按一次；仍失败就把这条错误发给开发者。",
-								sid: (r && r.sid) || ""
-							}
-					})),
-					(err) => setSendMsg((m) => Object.assign({}, m || {}, { [id]: { kind: "err", text: String((err && err.message) || err), next: "再按一次。" } }))
-				);
-			};
-			const sendWire = () => sendOne("wireframe", builtWire);
-			const sendCfg = () => sendOne("config", builtCfg);
-			const sendInt = () => sendOne("integrate", builtInt);
-
-			const jump = (sid) => {
-				if (!sid || typeof props.onOpenSession !== "function") {
-					setSendMsg((m) => Object.assign({}, m || {}, { jumpErr: "面板拿不到「跳会话」的通道（onOpenSession 没挂上）。" }));
-					return;
-				}
-				const r = props.onOpenSession(sid);
-				if (r && r.ok === false) {
-					setSendMsg((m) => Object.assign({}, m || {}, {
-						jumpErr: "跳转失败：" + ((r.error && (r.error.message || r.error.code)) || "未知原因") + "　—— 你可以在左侧列表里按标题找到它。"
-					}));
-				}
-			};
-
-			/** 点一条 → 正文滚到那一块（不依赖 markdown 渲染器支持行锚点） */
-			const goto = (idx) => {
-				setSel(Number(idx));
-				const box = bodyRef.current;
-				if (!box || !box.querySelector || Number(idx) < 0) return;
-				const el = box.querySelector('[data-blk="' + Number(idx) + '"]');
-				if (el && el.scrollIntoView) el.scrollIntoView({ block: "start" });
-			};
-
-			const IN = {
-				flex: "1 1 auto", font: "inherit", fontSize: "11.5px", padding: "5px 8px",
-				border: "1px solid " + C.soft, borderRadius: "4px", boxSizing: "border-box"
-			};
-			const LABEL = { fontSize: "10.5px", color: C.muted, marginBottom: "3px" };
-			const field = (key, label, value, set, placeholder, rows) => h("div", { key: key, style: { marginBottom: "7px" } }, [
-				h("div", { key: "l", style: LABEL }, label),
-				rows
-					? h("textarea", {
-						key: "i", value: value, placeholder: placeholder, rows: rows,
-						onChange: (ev) => set(ev.target.value),
-						style: Object.assign({}, IN, { width: "100%", resize: "vertical", fontFamily: "inherit" })
-					})
-					: h("input", {
-						key: "i", value: value, placeholder: placeholder,
-						onChange: (ev) => set(ev.target.value),
-						style: Object.assign({}, IN, { width: "100%" })
-					})
-			]);
-
-			// ── 折叠区（**默认收起**：收起时里面的字根本不渲染，不是拿 CSS 藏）──
-			//   `data-fold` = 这是哪一折，`data-open` = 0/1（渲染级 harness 靠它判"在不在首屏"）
-			const fold = (key, title, open, onToggle, kids, extra) => h("div", {
-				key: key, style: Object.assign({ marginTop: "10px" }, (extra && extra.style) || {})
-			}, [
-				h("button", {
-					key: "s", type: "button", "data-fold": key, "data-open": open ? "1" : "0",
-					"data-btn": extra && extra.btn ? extra.btn : "link",
-					onClick: onToggle, "aria-expanded": open ? "true" : "false",
-					style: {
-						font: "inherit", fontSize: "12.5px", textAlign: "left", cursor: "pointer",
-						border: "1px solid " + (extra && extra.solid ? C.soft : "transparent"),
-						background: "#fff", borderRadius: "4px", padding: (extra && extra.solid ? "4px 10px" : "0"),
-						color: (extra && extra.tone) || C.muted, textDecoration: (extra && extra.solid ? "none" : "underline")
-					}
-				}, [
-					h("span", { key: "a", "data-fold-arrow": open ? "1" : "0" }, (open ? "▾ " : "▸ ")),
-					h("span", { key: "b" }, title),
-					open && extra && extra.openHint ? h("span", { key: "c", style: { color: C.muted, marginLeft: "6px" } }, extra.openHint) : null
-				]),
-				open ? h("div", { key: "b", "data-fold-body": key }, kids) : null
-			]);
-
-			/** 一行状态 + 一个小标记（**人话**：不带 `missing-pending` 这种机器口径） */
-			const sayLine = (key, text, tone, chip) => h("div", {
-				key: key, "data-say": key,
-				style: { display: "flex", gap: "8px", alignItems: "baseline", flexWrap: "wrap" }
-			}, [
-				h("span", {
-					key: "t", "data-say-text": key,
-					style: { fontSize: "12.5px", lineHeight: "1.75", color: tone === "warn" ? C.ink : C.ink }
-				}, text),
-				chip ? h("span", {
-					key: "c", "data-chip": key,
-					style: {
-						fontSize: "11.5px", color: tone === "ok" ? C.ok : tone === "warn" ? C.warn : C.muted,
-						border: "1px solid " + (tone === "ok" ? C.ok : tone === "warn" ? C.warn : C.soft),
-						borderRadius: "2px", padding: "0 5px", whiteSpace: "nowrap"
-					}
-				}, chip) : null
-			]);
-
-			/** 次按钮（首屏上除主按钮之外的一切动作都必须是它或链接） */
-			const ghost = (key, label, onClick, title, dis) => h("button", {
-				key: key, type: "button", "data-btn": "ghost", onClick: onClick, title: title || "",
-				style: {
-					font: "inherit", fontSize: "11.5px", padding: "4px 11px", borderRadius: "4px",
-					border: "1px solid " + (dis ? C.faint : C.soft), background: "#fff",
-					color: dis ? C.muted : C.ink, cursor: "pointer"
-				}
-			}, label);
-
-			/** 指令预览 + 发送 + 回报（**预览就是发出去的原文**；卡上看到的 = 发出去的） */
-			const actBlock = (key, id, b, goLabel, hint) => {
-				// ★ 每个动作各记一份回报状态（`sendMsg[id]`）；**没发过时是 undefined** —— 这里必须
-				//   先取到局部变量再判空（第一版写成 `sendMsg[id] ? … : sendMsg[id].kind` 是自相矛盾的，
-				//   渲染层写成了"有才渲染、没发过却又要读 kind" ⇒ 渲染期 TypeError，实测踩到）。
-				const m = (sendMsg || {})[id];
-				return h("div", {
-				key: key, "data-actbox": id,
-				style: { marginTop: "8px", borderTop: "1px solid " + C.faint, paddingTop: "7px" }
-			}, [
-				b.blocked
-					? h("div", {
-						key: "blk", "data-blocked": id,
-						style: { fontSize: "11.5px", color: C.bad, background: "#fef2f2", border: "1px solid " + C.faint, borderRadius: "3px", padding: "6px 8px", marginBottom: "7px", lineHeight: 1.75 }
-					}, [
-						h("div", { key: "a" }, "✗ " + b.blocked),
-						b.next ? h("div", { key: "b", style: { color: C.ink } }, "下一步：" + b.next) : null
-					])
-					: null,
-				b.instruction
-					? h("div", { key: "pv", style: { marginBottom: "7px" } }, [
-						h("div", { key: "t", style: LABEL }, "组出来的指令 —— 下面这段就是发给工作会话的原文（卡上看到的 = 发出去的）："),
-						h("pre", {
-							key: "v", "data-kind": id,
-							style: {
-								margin: "3px 0 0", padding: "6px 8px", background: C.bg, border: "1px solid " + C.faint,
-								borderRadius: "3px", fontFamily: "monospace", fontSize: "10.5px", lineHeight: 1.6,
-								whiteSpace: "pre-wrap", color: C.ink, userSelect: "text", maxHeight: "26vh", overflow: "auto"
-							}
-						}, b.instruction)
-					])
-					: null,
-				h("div", { key: "act", style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, [
-					h("button", {
-						key: "go", type: "button", "data-send": id, onClick: b === builtWire ? sendWire : (b === builtCfg ? sendCfg : (b === builtInt ? sendInt : sendOne.bind(null, id, b))),
-						style: {
-							font: "inherit", fontSize: "11.5px", padding: "5px 12px", borderRadius: "4px",
-							border: "1px solid " + (b.blocked ? C.soft : C.link),
-							background: b.blocked ? "#fff" : C.link, color: b.blocked ? C.muted : "#fff", cursor: "pointer"
-						}
-					}, goLabel),
-					h("span", { key: "n", style: { fontSize: "10.5px", color: C.muted } },
-						hint || ("发到：本功能的专属工作会话" + (root ? "（cwd " + winPath(root) + "）" : "") + "　—— 不占用你自己的对话"))
-				]),
-				m ? h("div", {
-					key: "m",
-					style: { fontSize: "11px", marginTop: "6px", lineHeight: 1.75, color: m.kind === "err" || m.kind === "blocked" ? C.bad : (m.kind === "ok" ? C.ok : C.muted) }
-				}, [
-					h("div", { key: "t" }, (m.kind === "ok" ? "✓ " : (m.kind === "pending" ? "" : "✗ ")) + m.text),
-					m.kind === "ok" ? h("div", { key: "d", "data-sent": "ok", style: { color: C.muted, userSelect: "text" } }, [
-						h("div", { key: "s" }, "阶段交给了 skill，进度与提问都在那个会话里 —— 面板不重画流程，跑完回本页重进就能看到产物。"),
-						h("div", { key: "g" },
-							"目标：" + ((m.target && m.target.title) || "工作会话") +
-							(m.sid ? "　会话 " + String(m.sid).slice(0, 12) + "…" : "") +
-							(m.target && m.target.root ? "　cwd " + winPath(m.target.root) : "") +
-							"　（" + pickSourceText(m.target && m.target.source) + "）"),
-						m.healed ? h("div", { key: "h", style: { color: C.warn } }, "上一轮记的那条会话已经不在了 —— 已自动重建一条并重发。") : null,
-						m.queued ? h("div", { key: "q", style: { color: C.warn } }, "它正在跑别的活，这条指令排在队列里，等它跑完当前这一轮就会处理。") : null
-					]) : null,
-					m.kind === "err" || m.kind === "blocked"
-						? h("div", { key: "n", "data-sent": "fail", style: { color: C.ink } }, "下一步：" + (m.next || "再按一次。"))
-						: null,
-					m.sid && props.onOpenSession ? h("button", {
-						key: "j", type: "button", "data-jump": m.sid,
-						onClick: () => jump(m.sid),
-						style: {
-							font: "inherit", fontSize: "11px", padding: "2px 9px", marginTop: "3px",
-							border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer"
-						}
-					}, "跳到那个会话 ›") : null
-				]) : null
-			]);
-			};
-
-			// ── 选中那张卡的输入（纸面动作各自的表单）──
-			const form = () => {
-				if (e.id === "create") return [
-					field("s", "要写成什么（我的意图；选填 —— 空着就按上游材料与 VOI 门现场确认）", seed, setSeed,
-						"比如：把 sr-analysis 的复刻规格落成成稿，重点写清出刀时机与难度推进", 2),
-					field("m", "上游材料（选填，目录 / 文件路径 / 链接，可多行）", mats, setMats,
-						"D:\\TimeMachine\\GameDesignOS\\workspace\\features\\联盟悬赏\\analysis\\feature-concept_联盟悬赏_20260918.md", 2)
-				];
-				if (e.id === "revise") return [
-					field("w", "改哪儿（条目引用 / 章组号）", where, setWhere, "§4 R6 奖励　或　§5 UI-M1", 1),
-					field("b", "现状原文（逐字 —— 行号会漂，原文不会）", before, setBefore,
-						"| 终结奖励 | 击杀 BOSS（打出终结一击）的玩家获得… |", 3),
-					field("t", "要改成什么（一句话）", intent, setIntent, "终结奖励与通关奖励合并为一个宝箱入口", 1)
-				];
-				return [];
-			};
-
-			// ── 动作卡（三张，**有先后**：写成稿 → 改成稿 → 发起整合定稿）──
-			const card = (a) => {
-				const on = a.id === e.id;
-				return h("button", {
-					key: "card-" + a.id, type: "button", "data-dcard": a.id, "data-active": on ? "1" : "0",
-					onClick: () => { setAct(a.id); setSendMsg(null); },
-					style: {
-						flex: "1 1 200px", minWidth: "200px", textAlign: "left", font: "inherit", cursor: "pointer",
-						border: "1px solid " + (on ? C.ink : C.faint), borderTop: "3px solid " + (on ? C.ink : C.soft),
-						background: on ? "#fff" : C.bg, borderRadius: "4px", padding: "7px 9px"
-					}
-				}, [
-					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, color: C.ink } }, a.label),
-					h("div", { key: "h", style: { fontSize: "10px", color: C.link, fontFamily: "monospace", marginTop: "2px" } }, a.hint),
-					h("div", { key: "n", style: { fontSize: "10px", color: C.muted, marginTop: "4px", lineHeight: 1.65 } }, "前置：" + a.needs),
-					h("div", { key: "o", style: { fontSize: "10px", color: C.muted, marginTop: "3px", lineHeight: 1.65 } }, "产出：" + a.output)
-				]);
-			};
-
-			// ── ① 配置支线走到哪（**只进「详情」**：四步勾 / 字段行数 / 缺口清单 / 依据）──
-			//   ★ 首屏上只留一句人话（`data.story.config`）——机器口径 `config.stage` / `config.label`
-			//     原样留在这一块里，供"到底卡在哪"时核对（线框 A 第 2 条）。
-			const STAGE_TONE = {
-				"before-draft": C.muted, "rules-ready": C.link, "integrating": C.warn,
-				"missing-pending": C.warn, "missing-nofields": C.warn, landed: C.ok
-			};
-			const tone = (config && STAGE_TONE[config.stage]) || C.muted;
-			const cfgBox = config ? h("div", {
-				key: "cfg", "data-config-stage": config.stage, "data-config-label": config.label,
-				style: {
-					border: "1px solid " + C.faint, borderLeft: "3px solid " + tone, background: "#fff",
-					borderRadius: "4px", padding: "8px 11px", marginBottom: "10px"
-				}
-			}, [
-				h("div", { key: "h", style: { display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap" } }, [
-					h("b", { key: "t", style: { fontSize: "12px" } }, "配置支线走到哪"),
-					h("span", { key: "v", style: { fontSize: "12px", color: tone, fontWeight: 600 } }, config.label),
-					h("span", { key: "m", style: { fontSize: "10.5px", color: C.muted, fontFamily: "monospace" } },
-						"（机器口径 " + String((data && data.configMis && data.configMis.stage) || config.stage) + "）")
-				]),
-				h("div", { key: "r", "data-config-reason": config.reason, style: { fontSize: "10.5px", color: C.muted, marginTop: "4px", lineHeight: 1.75, userSelect: "text" } },
-					"依据：" + config.reason),
-				// 四步链路（成稿 → 配置表 → 读回 → 定稿），每步一个勾
-				h("div", { key: "s", "data-config-steps": config.steps.map((x) => (x.done ? "✔" : "○") + x.key).join(","), style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "6px" } },
-					config.steps.map((x, i) => h("div", {
-						key: i, "data-step": x.key, "data-done": x.done ? "1" : "0",
-						style: {
-							flex: "1 1 190px", minWidth: "190px", border: "1px solid " + (x.done ? C.ok : C.soft),
-							borderLeft: "3px solid " + (x.done ? C.ok : C.soft), background: x.done ? "#f0fdf4" : "#fff",
-							borderRadius: "4px", padding: "4px 8px"
-						}
-					}, [
-						h("div", { key: "l", style: { fontSize: "10.5px", fontWeight: 600, color: x.done ? C.ok : C.muted } }, (x.done ? "✔ " : "○ ") + x.label),
-						h("div", { key: "e", style: { fontSize: "10px", color: C.muted, fontFamily: "monospace", lineHeight: 1.6, wordBreak: "break-all" } }, x.evidence)
-					]))),
-				// 缺口 —— 缺什么写什么
-				(config.missing || []).length
-					? h("div", {
-						key: "m", "data-config-missing": String(config.missing.length),
-						style: { marginTop: "6px", borderTop: "1px solid " + C.faint, paddingTop: "5px" }
-					}, [
-						h("div", { key: "t", style: { fontSize: "11px", color: C.warn } }, "⚠ 缺口 / 缺件 " + config.missing.length + " 条（逐条）"),
-						h("div", { key: "l", style: { marginTop: "3px" } },
-							config.missing.map((m, i) => h("div", {
-								key: i, "data-missing": String(i),
-								style: { fontSize: "10.5px", color: C.ink, lineHeight: 1.75, userSelect: "text" }
-							}, "· " + m)))
-					])
-					: h("div", { key: "nm", style: { fontSize: "11px", color: C.ok, marginTop: "5px" } }, "✔ 没有待配表缺口、没有缺件"),
-				// 面板**不做**的事，写在脸上
-				h("div", { key: "n", style: { fontSize: "10px", color: C.muted, marginTop: "5px", lineHeight: 1.7 } },
-					"面板只显示配置支线走到哪（读定稿 §6 + `evidence\\readback_*` + 配置表文件名的存在性）—— " +
-					"**配置表的读写仍在 /sr-config 与配置表工具侧**，这里不解析工作簿、不改表。"),
-				h("div", { key: "p", style: { fontSize: "10px", color: C.muted, marginTop: "4px", lineHeight: 1.7 } },
-					"措辞上的两种缺口（别混）：①「**是缺口**」= §6 / §6.5 里状态列确实写着「待配表」（上面缺口清单第 1 条那种）；" +
-					"②「**面板看不到读回回执**」= `evidence\\readback_*` 一份都没有 —— **不等于**没验收过（回执可能还没落盘）。")
-			]) : null;
-
-			// ── ③ 两大部分 ──
-			const partCard = (p) => h("button", {
-				key: "part-" + p.key, type: "button", "data-part": p.key,
-				onClick: () => goto(p.idx),
-				title: "点它跳到正文里的这一部分",
-				style: {
-					flex: "1 1 320px", minWidth: "300px", textAlign: "left", font: "inherit", cursor: "pointer",
-					border: "1px solid " + C.faint, borderLeft: "3px solid " + C.link, background: "#fff",
-					borderRadius: "4px", padding: "7px 10px"
-				}
-			}, [
-				h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, color: C.ink } },
-					"§" + p.no + " " + p.label + "　"),
-				h("div", { key: "n", style: { fontSize: "10.5px", color: C.muted, fontFamily: "monospace", marginTop: "2px" } },
-					"L" + p.line + "–L" + p.endLine + "　" + p.groups + " 组 / " + p.items + " 条" + (p.skipped ? " / " + p.skipped + " 行不可引用" : "")),
-				h("div", { key: "d", style: { fontSize: "10px", color: C.muted, marginTop: "3px", lineHeight: 1.65 } }, p.note)
-			]);
-
-			// ── ④ 左树（章 → 组 → 条目，逐级带行号）──
-			const LNUM = { fontSize: "9.5px", color: C.muted, fontFamily: "monospace", marginLeft: "6px", flex: "0 0 auto" };
-			const lnum = (line) => h("span", { key: "L", style: LNUM }, "L" + line);
-			const toc = [];
-			if (doc && doc.tree) {
-				toc.push(h("div", {
-					key: "head", style: { fontSize: "11px", color: C.muted, marginBottom: "8px", lineHeight: 1.6, userSelect: "text" }
-				}, [
-					h("div", { key: "a" }, (data && data.name) + " · " + doc.counts.chapters + " 章 / " + doc.counts.groups + " 组 / " +
-						(doc.counts.rules + doc.counts.ues) + " 条（两大部分）"),
-					h("div", { key: "b" }, "点任一行 → 右边正文滚到那一块；§4 / §5 是后面两条支线的依据")
-				]));
-				for (const c of doc.tree.chapters) {
-					const ck = "ch" + c.no;
-					const cOpen = openG[ck] === undefined ? c.open : !!openG[ck];
-					const pk = partOfNo(c.no);
-					const cnt = [];
-					if (c.groups.length) cnt.push(c.groups.length + " 组");
-					if (c.items.length) cnt.push(c.items.length + " 条");
-					if (c.skipped) cnt.push(c.skipped + " 行不可引用");
-					toc.push(h("div", {
-						key: ck, "data-ch": c.no, "data-part": pk, title: c.text,
-						onClick: () => {
-							if (c.items.length) {
-								const nx = Object.assign({}, openG);
-								nx[ck] = !cOpen;
-								setOpenG(nx);
-							}
-							goto(c.idx);
-						},
-						style: {
-							display: "flex", alignItems: "baseline", cursor: "pointer", userSelect: "none",
-							fontSize: "12px", fontWeight: 600, margin: "8px 0 3px",
-							color: sel === c.idx ? C.link : (pk ? C.ink : C.muted)
-						}
-					}, [
-						h("span", { key: "t", style: { fontSize: "9px", color: C.muted, marginRight: "4px", width: "9px", flex: "0 0 9px", textAlign: "center" } },
-							c.items.length ? (cOpen ? "▾" : "▸") : "·"),
-						h("span", { key: "l" },
-							"§" + c.no + " " + c.title + (pk ? "  ★" : "") + (!cOpen && cnt.length ? "  (" + cnt.join(" · ") + ")" : "")),
-						h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
-						lnum(c.line)
-					]));
-					if (cOpen) for (const it of c.items) toc.push(tocItem(it, c.idx, c.no));
-
-					for (const g of c.groups) {
-						const tag = gk(g);
-						const gkey = "g" + g.idx;
-						const isOpen = openG[gkey] === undefined ? g.open : !!openG[gkey];
-						const gc = g.items.length ? g.items.length + " 条" : "";
-						const gs = g.skipped ? (gc ? " · " : "") + g.skipped + " 行不可引用" : "";
-						toc.push(h("div", {
-							key: gkey, "data-group": tag, "data-ch": c.no, title: g.text,
-							onClick: () => {
-								if (g.items.length) {
-									const nx = Object.assign({}, openG);
-									nx[gkey] = !isOpen;
-									setOpenG(nx);
-								}
-								goto(g.idx);
-							},
-							style: {
-								display: "flex", alignItems: "baseline", cursor: "pointer", userSelect: "none",
-								padding: "2px 0 2px 10px", borderRadius: "3px",
-								borderLeft: "2px solid " + (sel === g.idx ? C.link : "transparent")
-							}
-						}, [
-							h("span", { key: "t", style: { fontSize: "9px", color: C.muted, marginRight: "4px", width: "9px", flex: "0 0 9px", textAlign: "center" } },
-								g.items.length ? (isOpen ? "▾" : "▸") : "·"),
-							h("span", { key: "l", style: { fontSize: "11.5px", color: sel === g.idx ? C.link : C.muted } },
-								(tag ? tag + "  " : "") + g.title + (gc || gs ? "  (" + gc + gs + ")" : "")),
-							h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
-							lnum(g.line)
-						]));
-						if (isOpen) for (const it of g.items) toc.push(tocItem(it, g.idx, c.no));
-					}
-				}
-			}
-
-			function tocItem(it, idx, chNo) {
-				// 条目级不高亮整块（同一个块里有好几条）—— 高亮留给章 / 组行与正文的块边框
-				const on = false;
-				const tag = partTag(chNo);
-				return h("div", {
-					key: "it" + chNo + "-" + it.line + "-" + it.label,
-					"data-line": String(it.line), "data-label": String(it.label),
-					"data-part": partOfNo(chNo),
-					title: "L" + it.line + "　" + it.text,
-					onClick: () => goto(idx),
-					style: {
-						display: "flex", alignItems: "baseline", fontSize: "11px", cursor: "pointer", userSelect: "none",
-						padding: "1px 4px 1px 22px", borderRadius: "3px", color: on ? "#fff" : C.muted,
-						background: on ? C.link : "transparent", whiteSpace: "nowrap", overflow: "hidden"
-					}
-				}, [
-					h("span", { key: "l", style: { overflow: "hidden", textOverflow: "ellipsis" } }, it.label),
-					tag ? h("span", { key: "p", style: { color: C.muted, marginLeft: "5px", fontSize: "9.5px" } }, tag) : null,
-					h("span", { key: "sp", style: { flex: "1 1 auto" } }, ""),
-					lnum(it.line)
-				]);
-			}
-
-			// ── 右栏：分块正文（代码块与图片单独渲染 + 每块一个错误边界）──
-			const labelOf = (b) => {
-				if (b.level === 2) return "§" + b.no + " " + (b.title || "");
-				const id = b.id || b.no || "";
-				const dup = b.no && b.chNo && String(b.no).indexOf(String(b.chNo) + ".") === 0;
-				return (dup ? "" : "§" + (b.chNo || "?") + " ") + id + " " + (b.title || "");
-			};
-			const absOf = (v) => {
-				if (!v || typeof v !== "string") return void 0;
-				if (!/\.(png|jpe?g|gif|webp|svg)$/i.test(v)) return void 0;
-				const isAbs = /^[A-Za-z]:[\\/]/.test(v) || v.charAt(0) === "/";
-				const dir = String((data && data.path) || "").replace(/[\\/][^\\/]*$/, "");
-				return isAbs ? v : dir + "/" + v;
-			};
-			const pathImages = { abs: absOf, resolve: (v) => { const a = absOf(v); return a ? fileUrl(a) : void 0; } };
-			const body = (doc && doc.doc && (doc.doc.blocks || []).length)
-				? doc.doc.blocks.map((b, i) => h("div", {
-					key: "b" + i, "data-blk": String(i),
-					style: {
-						padding: "2px 8px 4px 10px", marginBottom: "6px", borderRadius: "3px",
-						borderLeft: "3px solid " + (sel === i ? C.link : "transparent"),
-						background: sel === i ? "#f0f7ff" : "transparent"
-					}
-				}, h(BlockBoundary, { key: "bb", label: labelOf(b).trim() + "（L" + b.line + "）" },
-					splitSpecial(b.text).map((p, j) => {
-						if (p.t === "img") {
-							return h(ImgTag, { key: "i" + j, src: p.v, alt: p.alt, pathImages: pathImages, onOpen: props.onOpen || null });
-						}
-						if (p.t === "code") return h(CodeBlock, { key: "c" + j, text: p.v });
-						return h(Md, { key: "m" + j, text: p.v, pathImages: pathImages });
-					})
-				)))
-				: null;
-
-			// ── ② 纸面动作（写成稿 / 改成稿）—— **落在「看正文」那一折里**，不在首屏 ──
-			const paperActs = h("div", {
-				key: "acts", "data-row": "actions",
-				style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "9px 11px", marginBottom: "10px" }
-			}, [
-				h("div", { key: "h", style: { fontSize: "11.5px", fontWeight: 600, marginBottom: "6px" } },
-					"成稿纸面上的动作（一条链，有先后：写成稿 → 改成稿）—— 它们改的是**规则与界面流程本身**"),
-				h("div", { key: "row", "data-row": "actioncards", style: { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" } },
-					cardIds.map((id) => defOf(id)).map(card)),
-				h("div", { key: "d", "data-action": e.id, style: { borderTop: "1px solid " + C.faint, paddingTop: "8px" } }, [
-					h("div", { key: "t", style: { fontSize: "11.5px", marginBottom: "6px" } }, [
-						h("b", { key: "b" }, e.label + "　"),
-						h("span", { key: "s", style: { color: C.muted, fontSize: "10.5px" } }, e.hint + "　前置：" + e.needs)
-					]),
-					h("div", { key: "f" }, form()),
-					actBlock("ab", e.id, built, "发到工作会话"),
-					h("div", { key: "ho", "data-handoff": e.id, style: { fontSize: "10.5px", color: C.muted, marginTop: "5px", lineHeight: 1.7 } },
-						"发起后：" + e.handoff + " —— 面板只给「跳到那个会话」。")
-				])
-			]);
-
-			/** 「看正文」折里的内容：标题一栏 + 左树 + 分块正文（**默认收起**，点开才渲染） */
-			//   ★ 只在**读到成稿**（`doc.tree` 在）时构造：认不出成稿时这一折整块不出现（不编内容）
-			const foldBody = (doc && doc.tree)
-				? h("div", { style: { display: "flex", flexDirection: "column", gap: "12px", marginTop: "4px" } }, [
-					// ★ 纸面动作（写成稿 / 改成稿）与正文写在**同一折**里：
-					//   它们是"改这份成稿"的动作，看正文的时候才用得上（工单 24c 的分层）
-					paperActs,
-					h("div", { key: "cols", style: { display: "flex", gap: "16px", alignItems: "flex-start" } }, [
-						h("div", { key: "toc", style: { flex: "0 0 272px", width: "272px", maxHeight: "62vh", overflow: "auto", borderRight: "1px solid " + C.faint, paddingRight: "10px" } }, [
-							h("div", { key: "head", style: { fontSize: "11px", color: C.muted, marginBottom: "8px", lineHeight: 1.7, userSelect: "text" } }, [
-								h("div", { key: "a" }, (data && data.name) + " · " + doc.counts.chapters + " 章 / " + doc.counts.groups + " 组 / " +
-									(doc.counts.rules + doc.counts.ues) + " 条（两大部分）"),
-								h("div", { key: "b" }, "点任一行 → 右边正文滚到那一块；§4 / §5 是后面两条支线的依据")
-							]),
-							toc
-						]),
-						h("div", {
-							key: "body", ref: bodyRef,
-							style: { flex: "1 1 auto", minWidth: 0, maxHeight: "62vh", overflow: "auto" }
-						}, body)
-					])
-				])
-				: null;
-
-			// ── ③ 支线 B（线框图）的**输入**：路径是唯一可靠输入 ⇒ 先展开、有输入才发 ──
-			const wireInput = h("div", { key: "wi", "data-wire-input": "1", style: { marginTop: "7px" } }, [
-				h("div", { key: "t", style: { fontSize: "11px", color: C.muted, lineHeight: 1.7, marginBottom: "5px" } },
-					"面板拿不到二进制 —— **路径是唯一的可靠输入**。粘进下面这一框，或从 `gdd\\UI\\` 已备好的图里点一个（可多选）。"),
-				field("wp", "界面图路径（一行一条；本机文件 / 目录 / 链接都行）", wirePaste, setWirePaste,
-					"D:\\…\\features\\联盟悬赏\\gdd\\UI\\UI-M1 联盟悬赏主面板 · 常规难度.png", 2),
-				(data && (data.uiImages || []).length)
-					? h("div", { key: "pk", style: { marginBottom: "7px" } }, [
-						h("div", { key: "l", style: LABEL }, "从 `gdd\\UI\\` 里挑（" + (data.uiImages || []).length + " 张；点一下加入/移出）"),
-						h("div", { key: "r", style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
-							(data.uiImages || []).map((im, i) => {
-								const on = picked.indexOf(im.abs) >= 0;
-								return h("button", {
-									key: "p" + i, type: "button", "data-pick": im.name, "data-picked": on ? "1" : "0",
-									title: im.abs,
-									onClick: () => setPicked((prev) => (prev.indexOf(im.abs) >= 0 ? prev.filter((x) => x !== im.abs) : prev.concat([im.abs]))),
-									style: {
-										font: "inherit", fontSize: "11px", padding: "3px 9px", borderRadius: "4px", cursor: "pointer",
-										border: "1px solid " + (on ? C.ink : C.soft), background: on ? C.ink : "#fff",
-										color: on ? "#fff" : C.ink
-									}
-								}, (on ? "✓ " : "") + im.name);
-							}))
-					])
-					: h("div", { key: "np", "data-wire-none": "1", style: { fontSize: "11px", color: C.warn, marginBottom: "7px", lineHeight: 1.7 } },
-						"`gdd\\UI\\` 里这次没列到界面图" + ((data && data.uiWhy) ? "（" + data.uiWhy + "）" : "") + " —— 那就把图**放进去**再回来，或直接粘一个别的路径。"),
-				h("div", { key: "c", "data-wire-count": String(wirePaths.length), style: { fontSize: "11px", color: C.muted } },
-					"已经给了 " + wirePaths.length + " 条路径。"),
-				h("div", { key: "f", style: { fontSize: "10.5px", color: C.muted, marginTop: "4px", lineHeight: 1.7 } },
-					"现状原文（面板读出来的 §5 ASCII 占位，会一并带进指令）：" +
-					((data && (data.ascii || []).length)
-						? (data.ascii || []).map((x) => "§" + x.no + (x.id ? " " + x.id : "") + " L" + x.line + "（约 " + x.lines + " 行）").join(" · ")
-						: "这次没在 §5 里认出 ASCII 占位（可能已经是图片引用了）"))
-			]);
-
-			// ── 首屏（Y 形三层）────────────────────────────────────────────────
-			//   ★ 判据（线框 A 注释 1）：**一屏只留一个主按钮**。`data-btn="primary"` 的那一颗恒为
-			//     整合定稿；两条支线的动作一律 `data-btn="ghost"`，折叠入口一律 `data-btn="link"`。
-			const noDoc = !(data && data.path);
-			const topExtra = doc
-				? "已就绪 · " + ((data && data.kb) || 0) + " KB · " + doc.counts.chapters + " 章"
-				: (notes.length ? "还没读到成稿 —— 先看下面的说明" : "还没读到成稿");
-			const top = h("div", {
-				key: "top", "data-node": "top",
-				style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "11px 13px" }
-			}, [
-				h("div", { key: "r", style: { display: "flex", gap: "10px", alignItems: "baseline", flexWrap: "wrap", justifyContent: "space-between" } }, [
-					h("span", { key: "t", "data-node-title": "top", style: { fontSize: "14px", fontWeight: 600, color: C.ink } },
-						(data && data.date ? "成稿 · " + data.date : (doc ? "成稿" : "成稿（还没有）"))),
-					h("span", { key: "m", "data-node-meta": "top", style: { fontSize: "12px", color: C.muted } }, topExtra)
-				]),
-				noDoc
-					? h("div", { key: "n", style: { fontSize: "11.5px", color: C.muted, marginTop: "6px", lineHeight: 1.75 } },
-						"这个功能目录的 `gdd\\` 里还没有成稿 —— 这一屏的第一个动作就是「写成稿」（在下面的〔看正文〕里）。")
-					: null,
-				doc && doc.parts.length
-					? fold("parts", openParts ? "收起两大部分" : "两大部分（点开看，默认收起）", openParts, () => setOpenParts(!openParts),
-						h("div", { key: "pp", style: { marginTop: "8px" } }, [
-							h("div", { key: "row", "data-row": "parts", style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
-								doc.parts.map(partCard)),
-							h("div", { key: "n", style: { fontSize: "10.5px", color: C.muted, marginTop: "7px", lineHeight: 1.75 } },
-								"这两部分是下面两条支线的依据：配置表从「功能规则」派生，线框图替换针对「用户体验与界面流程」。")
-						]))
-					: h("div", { key: "pn", style: { fontSize: "11.5px", color: doc ? C.warn : C.muted, marginTop: "8px", lineHeight: 1.75 } },
-						doc
-							? "⚠ 没认出两大部分（缺：" + doc.missingParts.join(" / ") + "）—— 面板不硬指一个章号，请核对成稿的章标题。"
-							: "（还没读到成稿，两大部分为空）"),
-				doc && doc.tree && (doc.tree.chapters || []).length
-					? fold("body", openBody ? "收起正文" : "看正文（" + ((data && data.kb) || 0) + " KB / " + doc.lines + " 行 / " + doc.counts.chapters + " 章 —— 左树 + 分块正文，点开才读）",
-						openBody, () => setOpenBody(!openBody), foldBody, { style: { marginTop: "8px" } })
-					: null
-			]);
-
-			const branches = h("div", { key: "br", "data-node": "mid", style: { display: "grid", gap: "12px", gridTemplateColumns: "1fr 1fr" } }, [
-				// 支线 A · 配置表
-				h("div", {
-					key: "a", "data-branch": "config",
-					style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "11px 13px" }
-				}, [
-					h("div", { key: "h", style: { display: "flex", gap: "8px", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap" } }, [
-						h("span", { key: "n", style: { fontSize: "12.5px", fontWeight: 600 } }, "支线 A · 配置表"),
-						h("span", {
-							key: "s", "data-branch-state": "config",
-							style: { fontSize: "11px", color: (story.config && story.config.tone) === "warn" ? C.warn : ((story.config && story.config.tone) === "ok" ? C.ok : C.muted) }
-						}, (story.config && story.config.gap) ? "还有没填的" : "已就绪")
-					]),
-					sayLine("config", (story.config && story.config.label) || "（还没读到配置支线的状态）", (story.config && story.config.tone) || "info",
-						(data && data.configMis && data.configMis.gapCount) ? "缺 " + data.configMis.gapCount + " 处" : ""),
-					h("div", { key: "b", style: { marginTop: "9px", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, [
-						ghost("gc", openCfg ? "收起" : "去配表", () => setOpenCfg(!openCfg), "把「§4 的规则 → 哪张表 / 哪个字段 → 缺口在哪」组装成指令，发给本功能的专属工作会话"),
-						h("span", { key: "h", style: { fontSize: "10.5px", color: C.muted } }, "跑 /sr-config：字段落表在那边做，面板不改表")
-					]),
-					openCfg ? h("div", { key: "oc", "data-wire-input": "config", style: { marginTop: "7px" } }, [
-						field("ci", "这次要改的（选填，一句话）", intent, setIntent,
-							"比如：把 §6.5 L363 的活动周期 / 排行过滤门槛 / 展示上限落到 A012-全局变量表", 2),
-						actBlock("cb", "config", builtCfg, "发「去配表」到工作会话")
-					]) : null
-				]),
-				// 支线 B · 线框图
-				h("div", {
-					key: "b", "data-branch": "wire",
-					style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "11px 13px" }
-				}, [
-					h("div", { key: "h", style: { display: "flex", gap: "8px", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap" } }, [
-						h("span", { key: "n", style: { fontSize: "12.5px", fontWeight: 600 } }, "支线 B · 线框图"),
-						h("span", {
-							key: "s", "data-branch-state": "wire",
-							style: { fontSize: "11px", color: (story.wire && story.wire.tone) === "warn" ? C.warn : C.muted }
-						}, (data && (data.uiImages || []).length) ? "待提交 " + data.uiImages.length + " 张" : "还没有图")
-					]),
-					sayLine("wire", (story.wire && story.wire.label) || "（还没读到线框图支线的状态）", (story.wire && story.wire.tone) || "info",
-						wirePaths.length ? "已给 " + wirePaths.length + " 条路径" : ""),
-					h("div", { key: "b2", style: { marginTop: "9px", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, [
-						ghost("gw", openWire ? "收起" : "提交线框图", () => setOpenWire(!openWire), "先展开输入（粘路径，或从 gdd\\UI\\ 里挑），有输入才发指令"),
-						h("span", { key: "h", style: { fontSize: "10.5px", color: C.muted } }, "落 §5：把 ASCII 占位换成 <img src=…>")
-					]),
-					openWire ? h("div", { key: "ow", style: { marginTop: "7px" } }, [
-						wireInput,
-						actBlock("wb", "wireframe", builtWire, "发「提交线框图」到工作会话")
-					]) : null
-				])
-			]);
-
+	const counts = g.counts || {};
+	return h("div", null, [
+		h(Notice, { key: "n", notice: props.notice }),
+		h(Card, {
+			key: "entry",
 			/**
-			 * ★ 工单 25 · **定稿门**（合流之后的落点）：这份定稿能不能交给程序。
-			 *
-			 * 三条口径（与本票的工单逐条对应）：
-			 *   ① **审查是必经的一步** —— 没跑审查 / 报告比定稿旧 / 看不到时间，一律**不标为可用**（`gate.canHandOff`）；
-			 *   ② **人话在首屏、口径在门里** —— 首屏只有一行 `定稿门 · <headline>`，三种告警与时间折进〔看定稿门〕；
-			 *   ③ 判据**不在这里算** —— `gate` 是 `loadFeatureDetail` 里 `finalGate()` 的返回值（纯函数、有回归网）。
+			 * ★ 原来这里挂着那句「没有先后，想走哪条走哪条 —— 指令发给这个功能的工作会话
+			 *   （cwd = 功能目录），产出落 analysis\」—— 用户口径：**去掉**。
+			 *   四张入口卡各自写着"跑什么 / 需要什么"，"发给哪条会话、产出落哪"是**实现细节**，
+			 *   不必每次占一行（要看逐字指令时下面就有〔看将要发出去的指令〕）。
 			 */
-			const gate = (data && data.gate) || null;
-			const gateLine = gate ? h("div", {
-				key: "g", "data-gate": gate.state,
-				style: { marginTop: "5px", display: "flex", gap: "8px", alignItems: "baseline", flexWrap: "wrap" }
-			}, [
-				h("span", {
-					key: "s", "data-gate-say": "1",
-					style: { fontSize: "12.5px", lineHeight: 1.7, color: gate.state === "ok" ? C.ok : C.ink }
-				}, "定稿门 · " + gate.headline),
-				gate.review && gate.review.state === "unknown-time"
-					? h("span", { key: "u", "data-gate-notime": "1", style: { fontSize: "11px", color: C.warn } }, "看不到时间")
-					: null
-			]) : null;
-			const gateBody = gate ? h("div", {
-				key: "gb", "data-gate-body": "1",
-				style: { fontSize: "12px", lineHeight: 1.85, border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", padding: "9px 12px" }
-			}, [
-				h("div", { key: "s", style: { color: C.ink } }, gate.say),
-				gate.alarms.length
-					? h("div", { key: "a", style: { marginTop: "7px" } }, gate.alarms.map((al, i) => h("div", {
-						key: i, "data-gate-alarm": al.code,
-						style: { color: al.level === "error" ? C.bad : C.ink }
-					}, "· " + al.say)))
-					: h("div", { key: "a0", style: { marginTop: "7px", color: C.ok } }, "· 没有告警：结构 / 审查 / 正文校验三条关都过了。"),
-				h("div", {
-					key: "r", "data-gate-review": gate.review.state,
-					style: { marginTop: "7px", color: C.muted }
-				}, "审查关：" + gate.review.say +
-					(gate.review.finalAt
-						? "　（定稿 " + gate.review.finalAt + (gate.review.reportAt ? " · 报告 " + gate.review.reportAt : "") + "）"
-						: "")),
-				gate.next
-					? h("div", { key: "n", style: { marginTop: "7px" } }, "下一步：" + gate.next)
-					: null,
-				h("div", { key: "fp", style: { marginTop: "7px", fontSize: "10.5px", color: C.muted } },
-					"判据来自 `finalgdd.checkFinals`（结构）/ `vchecks.checkV11`（审查）/ `vchecks`（正文校验）；时间取自宿主 `stat` 的版本串。")
-			]) : null;
-
-			const merge = h("div", {
-				key: "mg", "data-node": "bottom",
-				style: { border: "1px solid " + C.ink, borderRadius: "4px", padding: "13px 15px", display: "flex", gap: "12px", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }
-			}, [
-				h("div", { key: "t" }, [
-					h("div", { key: "a", style: { fontSize: "14px", fontWeight: 600 } }, "合流 → 定稿"),
-					h("div", { key: "b", style: { fontSize: "12px", color: C.muted, marginTop: "2px" } },
-						"先整合（sr-gdd-ai），" + "必经审查" + "（sr-gdd-review），再成立定稿。"),
-					// ★ 工单 25 · **定稿门**：合流完之后这份定稿**能不能交程序**（一句话，人话）
-					gateLine,
-					openInt
-						? h("div", { key: "c", style: { fontSize: "10.5px", color: C.muted, marginTop: "4px", lineHeight: 1.7 } },
-							"这个动作不发新东西 —— 它把「整合定稿」连同配置支线的现状（逐条带缺口）交给该功能的专属工作会话。整合结果（定稿与审查报告）由后续那一票承接，本屏不重画流程。")
-						: null
-				]),
-				h("button", {
-					key: "go", type: "button", "data-send": "integrate", "data-btn": "primary",
-					onClick: () => { if (!openInt) setOpenInt(true); else sendInt(); },
-					style: {
-						font: "inherit", fontSize: "13px", fontWeight: 600, padding: "8px 18px", borderRadius: "4px",
-						border: "1px solid " + C.ink, background: C.ink, color: "#fff", cursor: "pointer"
-					}
-				}, openInt ? "发到工作会话" : "发起整合定稿")
-			]);
-
-			// 主按钮的预览挂在合流块下面（点一次展开、再点一次发；先看清楚要发什么）
-			const mergeBlock = h("div", { key: "mgb", "data-merge": "1" }, [
-				merge,
-				openInt
-					? h("div", {
-						key: "pv", "data-integrate-open": "1",
-						style: { border: "1px solid " + C.faint, borderTop: "none", borderRadius: "0 0 4px 4px", background: "#fff", padding: "9px 13px" }
-					}, [actBlock("ib", "integrate", builtInt, "发到工作会话")])
-					: null,
-				// ★ 工单 25 · 定稿门的**明细**：默认收起（首屏只留上面那一行）
-				gate
-					? fold("gate", openGate
-						? "收起定稿门"
-						: "看定稿门（" + (gate.alarms.length ? gate.alarms.length + " 处要处理" : "为什么可以交") + "）",
-						openGate, () => setOpenGate(!openGate), gateBody, { style: { marginTop: "6px" } })
-					: null
-			]);
-
-			// ── ④ 详情（**全折**：四步勾 / 字段行数 / 缺口清单 / 两大部分明细 / 指纹 / 会话 / 说明）──
-			const machine = h("div", { key: "mc", style: { marginTop: "8px" } }, [
-				notes.length
-					? h("div", {
-						key: "nt", "data-notes": String(notes.length),
-						style: {
-							fontSize: "11px", color: C.warn, border: "1px solid " + C.faint, borderLeft: "3px solid " + C.warn,
-							background: "#fffdf7", borderRadius: "4px", padding: "7px 10px", marginBottom: "9px", lineHeight: 1.75
-						}
-					}, notes.map((x, i) => h("div", { key: i }, "⚠ " + x)))
-					: null,
-				cfgBox,
-				h("dl", { key: "kv", style: { margin: "0 0 10px", display: "grid", gridTemplateColumns: "max-content 1fr", gap: "4px 12px", fontSize: "11px", color: C.ink, lineHeight: 1.8 } }, [
-					h("dt", { key: "d1", style: { color: C.muted } }, "这一屏读的是"),
-					h("dd", { key: "v1", style: { margin: 0, userSelect: "text" } },
-						((data && data.name) || "（没有成稿）") + ((data && data.path) ? "　" + winPath(data.path) : "")),
-					h("dt", { key: "d2", style: { color: C.muted } }, "会话"),
-					h("dd", { key: "v2", style: { margin: 0, userSelect: "text" } },
-						"目标：本功能的专属工作会话" + (root ? "（cwd " + winPath(root) + "）" : "") + "　—— 面板只给「跳到那个会话」"),
-					h("dt", { key: "d3", style: { color: C.muted } }, "内容指纹"),
-					h("dd", { key: "v3", style: { margin: 0, userSelect: "text" } },
-						props.live
-							? shortDigest(props.live.digest) + " · " + freshnessOf({ phase: props.live.phase, pending: props.live.pending, digest: props.live.digest, reason: props.live.reason }).text +
-								" · 订阅 " + (Number(props.live.ready) || 0) + "/" + (Number(props.live.total) || 0)
-							: "（这一屏没拿到订阅实况）"),
-					h("dt", { key: "d4", style: { color: C.muted } }, "两大部分"),
-					h("dd", { key: "v4", style: { margin: 0, userSelect: "text" } },
-						doc && doc.parts.length
-							? doc.parts.map((p) => "§" + p.no + " " + p.label + "　L" + p.line + "–L" + p.endLine + "　" + p.groups + " 组 / " + p.items + " 条").join("　·　")
-							: "（没认出两大部分）"),
-					h("dt", { key: "d5", style: { color: C.muted } }, "§5 的 ASCII 占位"),
-					h("dd", { key: "v5", style: { margin: 0, userSelect: "text" } },
-						(data && (data.ascii || []).length)
-							? (data.ascii || []).map((x) => "§" + x.no + (x.id ? " " + x.id : "") + " L" + x.line + "（约 " + x.lines + " 行）").join("　·　")
-							: "（§5 里没认出 ASCII 占位）"),
-					h("dt", { key: "d6", style: { color: C.muted } }, "gdd\\UI\\ 里的图"),
-					h("dd", { key: "v6", style: { margin: 0, userSelect: "text" } },
-						(data && (data.uiImages || []).length)
-							? (data.uiImages || []).length + " 张：" + (data.uiImages || []).map((x) => x.name).join(" / ")
-							: "（没列到" + ((data && data.uiWhy) ? "：" + data.uiWhy : "") + "）"),
-					h("dt", { key: "d7", style: { color: C.muted } }, "动作表"),
-					h("dd", { key: "v7", style: { margin: 0, userSelect: "text" } },
-						actions.map((a) => a.label + "（" + a.hint + "）").join("　·　"))
-				]),
-				h("div", { key: "fp", style: { fontSize: "10px", color: C.muted, lineHeight: 1.8 } },
-					"面板只显示状态、不改文件；所有动作的指令都由 `src/pure/draftstep.ts` 组装，与卡上预览逐字相同。")
-			]);
-
-			return h("div", { "data-workface": "draft" }, [
-				data && data.error
-					? h("div", { key: "er", style: { fontSize: "12px", color: C.bad, marginBottom: "9px" } }, data.error)
-					: null,
-				!data ? h("div", { key: "ld", style: { fontSize: "12px", color: C.muted, marginBottom: "9px" } }, "正在读成稿…") : null,
-
-				// ── Y 形（上 → 中 → 下）────────────────────────────────────────
-				h("div", { key: "y", "data-y": "1", style: { display: "grid", gap: "14px", margin: "4px 0 14px" } }, [
-					h("div", { key: "stem", "aria-hidden": "true", style: { height: "12px", borderLeft: "1px dashed " + C.soft, marginLeft: "26px" } }),
-					top,
-					h("div", { key: "fork", "aria-hidden": "true", style: { height: "12px", borderTop: "1px dashed " + C.soft, margin: "0 25% 0 26px" } }),
-					branches,
-					mergeBlock
-				]),
-
-				// ── 底部一条：指纹 + 〔详情〕（**默认收起**：机器口径全在里面）──
-				h("div", {
-					key: "strip",
-					style: {
-						display: "flex", gap: "10px", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap",
-						borderTop: "1px solid " + C.faint, paddingTop: "9px", fontSize: "11px", color: C.muted
-					}
-				}, [
-					h("span", { key: "t", "data-strip": "1", style: { lineHeight: 2 } },
-						props.live ? "内容指纹 " + shortDigest(props.live.digest) + " · " + freshnessOf({ phase: props.live.phase, pending: props.live.pending, digest: props.live.digest, reason: props.live.reason }).text : "（没有订阅实况）"),
-					fold("machine", openMachine ? "收起详情" : "详情（展开看落到哪一步 / 缺在哪 / 这一屏读的是哪一版）", openMachine, () => setOpenMachine(!openMachine),
-						machine, { style: { marginTop: 0, flex: "1 1 auto" }, btn: "link" })
-				])
-			]);
-		}
-
-		/**
-		 * ★ 工单 16 · 变更订阅条 + **版本指纹**（常显在最上面一行）。
-		 *
-		 * 一眼要看出三件事（这就是本票的验收口径）：
-		 *   ① 屏幕上这份内容的**版本指纹**（8 位十六进制，来自宿主的 `version`）；
-		 *   ② 它是不是最新的 —— `freshnessOf` 给的那一句话（已是最新 / 有 N 处新变化 / 不可用）；
-		 *   ③ 订阅实况（几个目标就绪 / 被跳过几帧 / 最近一帧原文），**降级时如实说**。
-		 *
-		 * ★ 「刷新」按钮**任何状态下都在**：通道不可用时它是唯一出路（工单 16 的"不许假装修好了"）。
-		 */
-		function LiveBar(props) {
-			const live = props.live || {};
-			const f = freshnessOf({ phase: live.phase, pending: live.pending, digest: live.digest, reason: live.reason });
-			const tone = f.state === "fresh" ? C.ok : f.state === "stale" ? C.warn : (f.state === "down" ? C.bad : C.muted);
-			const skipped = Number(live.skipped) || 0;
-			const changed = live.changed || [];
-			return h("div", {
-				"data-live": f.state,
-				"data-digest": live.digest || "",
-				"data-pending": String(live.pending || 0),
-				"data-ready": String(live.ready || 0) + "/" + String(live.total || 0),
-				"data-reloads": String(live.reloads || 0),
-				"data-skipped": String(skipped),
-				// 各部件"被点名重读"的次数（只增不减）—— 验收"只重读受影响的部分"看的就是它
-				// （工单 26 把 `ueintake` 也列上：`source\` 桶那一帧点名它）
-				"data-rev": ["detail", "ledger", "final", "ui", "brain", "draft", "derived", "ueintake"].map((p) => p + ":" + (((props.rev || {})[p]) || 0)).join(","),
+			title: "四个入口"
+		}, [
+			h("div", {
+				key: "cards",
+				style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(214px, 1fr))", gap: "8px", marginBottom: "10px" }
+			}, ENTRANCES.map((e) => h("div", {
+				key: e.id, onClick: () => setPick(e.id),
 				style: {
-					display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap",
-					border: "1px solid " + C.faint, borderLeft: "3px solid " + tone,
-					borderRadius: "4px", padding: "5px 10px", marginBottom: "8px", background: "#fff",
-					fontSize: "11px"
+					border: "1px solid " + (pick === e.id ? V.brand : V.line), borderRadius: "7px",
+					padding: "8px 10px", cursor: "pointer", background: pick === e.id ? V.panel2 : "transparent"
 				}
 			}, [
-				h("span", { key: "fp", style: { fontFamily: "monospace", color: C.ink }, title: "内容指纹 = 详情清单里每个文件的宿主版本（不透明串）的有序哈希；变了就说明磁盘上那份内容变了" },
-					"内容指纹 " + shortDigest(live.digest)),
-				h("span", { key: "st", "data-live-text": f.text, style: { color: tone, fontWeight: 600 } }, f.text),
-				h("span", { key: "tgt", style: { color: C.muted } },
-					live.phase === "off" ? "" :
-						"订阅 " + (Number(live.ready) || 0) + "/" + (Number(live.total) || 0) + " 个目标" +
-						(skipped ? "　跳过 " + skipped + " 帧（不是新内容）" : "")),
-				props.onRefresh
-					? h("button", {
-						key: "rf", type: "button", "data-refresh": "manual",
-						onClick: () => props.onRefresh(),
-						title: "手动重读这个功能的全部数据（变更订阅不可用时的兜底）",
-						style: { font: "inherit", fontSize: "11px", padding: "2px 9px", border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer" }
-					}, "刷新")
-					: null,
-				changed.length
-					? h("span", { key: "ch", style: { color: C.muted } }, "刚重读：" + changed.map((x) => String(x).split(/[\\/]/).slice(-2).join("/")).join("、"))
-					: null,
-				live.reason ? h("span", { key: "rs", style: { color: C.muted } }, live.reason) : null,
-				// 原始帧留在这里：真机验收时"帧真的到了"要看得见，而不是只能听面板说
-				live.frame
-					? h("details", { key: "fr", style: { width: "100%" } }, [
-						h("summary", { key: "s", style: { cursor: "pointer", color: C.muted } },
-							"最近一帧（原始 JSON" + (live.at ? " · " + new Date(live.at).toLocaleTimeString() : "") + "）"),
-						h("pre", {
-							key: "p",
-							style: { margin: "4px 0 0", padding: "6px", background: C.bg, border: "1px solid " + C.faint, borderRadius: "3px", fontSize: "10.5px", overflowX: "auto", whiteSpace: "pre-wrap" }
-						}, live.frame)
+				h("div", { key: "t", style: { fontWeight: 600, fontSize: "12.5px" } }, e.label),
+				h("div", { key: "h", style: { fontSize: "11px", color: V.muted } }, e.hint),
+				h("div", { key: "n", style: { fontSize: "11px", color: V.muted, marginTop: "3px" } }, "需要：" + e.needs),
+				h("div", { key: "c", style: { fontSize: "11px", marginTop: "3px", color: V.muted } }, "已有产物 " + (counts[e.id] || 0) + " 件")
+			]))),
+			(FIELDS[pick] || []).map((f) => h("div", { key: f.k, style: { marginBottom: "7px" } }, [
+				h("div", { key: "l", style: { fontSize: "11.5px", color: V.muted, marginBottom: "3px" } }, f.label),
+				h("textarea", {
+					key: "i", rows: f.lines,
+					style: Object.assign({}, IN, { resize: "vertical", fontFamily: f.mono ? MONO : "inherit" }),
+					value: form[f.k] || "", onChange: (ev) => setField(f.k, ev.target.value)
+				})
+			])),
+			preview.blocked ? h("div", { key: "b", style: { fontSize: "12px", color: V.warn, marginBottom: "7px" } }, [
+				h("div", { key: "m" }, preview.blocked),
+				h("div", { key: "n", style: { color: V.muted } }, preview.next)
+			]) : null,
+			h("div", { key: "a", style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, [
+				Btn({ key: "s", label: props.sending ? "正在发…" : "交给工作会话", tone: "primary", off: !!preview.blocked || props.sending, onPick: () => props.onSend(preview.instruction) }),
+				h("span", { key: "n", style: { fontSize: "11.5px", color: V.muted } }, props.sessionNote || "")
+			]),
+			h(Fold, { key: "p", label: "看将要发出去的指令", note: "（逐字就是发出去的那一份）" },
+				h("pre", { style: PRE }, preview.instruction || "（还没填够 —— 上面那句说明了缺什么）"))
+		]),
+		h(Card, { key: "have", title: "已有的分析结论", note: "按四个入口分组；点文件名用系统默认程序打开" },
+			(g.total || 0) === 0
+				? h("div", { style: { color: V.muted, fontSize: "12.5px" } }, "analysis\\ 还是空的 —— 上面四个入口任选一个开始。")
+				: h("div", null, (g.entries || []).map((en) => h("div", { key: en.id, style: { marginBottom: "10px" } }, [
+					h("div", { key: "h", style: { fontSize: "12px", fontWeight: 600 } }, en.label + "（" + en.count + "）"),
+					en.count === 0
+						? h("div", { key: "e", style: { fontSize: "11.5px", color: V.muted } }, "这一路还没走过")
+						: h("div", { key: "l" }, en.files.map((f) => h(FileRow, {
+							key: f.rel, name: f.name, rel: f.rel, root: d.root, onOpen: props.onOpen
+						})))
+				])).concat((g.other || []).length ? [
+					h("div", { key: "__other", style: { marginBottom: "10px" } }, [
+						h("div", { key: "h", style: { fontSize: "12px", fontWeight: 600 } }, "其他 / 来源未知（" + g.other.length + "）"),
+						h("div", { key: "l" }, g.other.map((f) => h(FileRow, { key: f.rel, name: f.name, rel: f.rel, root: d.root, onOpen: props.onOpen })))
 					])
-					: null
-			]);
-		}
-
-		/**
-		 * 功能详情 · 状态块：三阶段进度 + "现在能用吗" + V 校验清单。
-		 * 放在**所有页签之上**，所以切到哪一屏都能看到（工单 12 的"详情页要能看到阶段进度与定稿有效性"）。
-		 */
-		function DetailStatus(props) {
-			const d = props.detail;
-			const onOpenFix = props.onOpenFix;
-			if (!d) return h("div", { style: { fontSize: "12px", color: C.muted, marginBottom: "10px" } }, "正在读产物清单与校验清单…");
-			if (d.error) return h("div", {
-				style: {
-					fontSize: "12px", color: C.bad, marginBottom: "10px", padding: "8px 11px",
-					border: "1px solid " + C.faint, borderLeft: "3px solid " + C.bad, background: "#fef2f2", borderRadius: "4px"
-				}
-			}, d.error);
-
-			const art = d.artifacts || { counts: {}, total: 0 };
-			const cl = d.checklist || { issues: [], counts: {} };
-			const v = finalVerdict(d.finalCheck);
-			/** ★ 工单 25 · 定稿门（loadFeatureDetail 给的；拿不到才退回 `finalVerdict` 的老口径） */
-			const g = d.gate || null;
-			const tone = g
-				? (g.state === "ok" ? C.ok : g.state === "blocked" ? C.warn : C.warn)
-				: (v.tone === "bad" ? C.bad : v.tone === "warn" ? C.warn : v.tone === "ok" ? C.ok : C.muted);
-			const usableTone = (g && g.state === "blocked") ? C.bad : tone;
-
-			return h("div", { style: { marginBottom: "12px" } }, [
-				// ① 三阶段进度
-				h("div", {
-					key: "stage",
-					style: { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "9px" }
-				}, (d.stage ? d.stage.stages : []).map((s) => h("div", {
-					key: s.key,
-					style: {
-						border: "1px solid " + (s.done ? C.ok : C.soft), borderLeft: "3px solid " + (s.done ? C.ok : C.soft),
-						background: s.done ? "#f0fdf4" : "#fff", borderRadius: "4px", padding: "5px 10px", minWidth: "150px"
-					}
-				}, [
-					h("div", { key: "l", style: { fontSize: "11px", fontWeight: 600, color: s.done ? C.ok : C.muted } }, (s.done ? "✔ " : "○ ") + s.label),
-					h("div", { key: "e", style: { fontSize: "10px", color: C.muted, fontFamily: "monospace" } }, s.evidence)
-				]))),
-				// 产物一览（进 / 出 / 过程留痕）—— 明细在「产物」页签
-				h("div", { key: "sum", style: { fontSize: "11px", color: C.muted, marginBottom: "9px" } },
-					"产物 " + (art.total || 0) + " 个　" + (art.meanings || []).map((m) => m.label + " " + ((art.counts || {})[m.key] || 0)).join("　")),
-
-				// ② "现在能用吗" = **定稿门**（工单 25）—— 人话在上，机器口径折进「原始判据」
-				h("div", {
-					key: "usable", "data-gate": g ? g.state : "none",
-					style: {
-						border: "1px solid " + C.faint, borderLeft: "3px solid " + usableTone,
-						background: (g ? g.state === "ok" : v.tone === "ok") ? "#f0fdf4" : "#fffdf7",
-						borderRadius: "4px", padding: "8px 11px", fontSize: "12px", marginBottom: "8px"
-					}
-				}, g
-					? [
-						h("div", { key: "t" }, [
-							h("b", { key: "a" }, "现在能用吗："),
-							h("span", { key: "b", "data-gate-say": "1", style: { color: usableTone, fontWeight: 600 } },
-								g.state === "ok" ? "可以交给程序" : (g.state === "blocked" ? "还不能交给程序" : "还没有定稿")),
-							h("span", { key: "c", style: { color: C.muted } }, "　" + g.say)
-						]),
-						// 三种情形（人话）+ 审查关 + 下一步
-						g.alarms.length
-							? h("div", { key: "al", style: { marginTop: "4px" } }, g.alarms.map((al, i) => h("div", {
-								key: "a" + i, "data-gate-alarm": al.code,
-								style: { fontSize: "11.5px", lineHeight: 1.8, color: al.level === "error" ? C.bad : C.ink }
-							}, "· " + al.say)))
-							: null,
-						h("div", { key: "rv", "data-gate-review": g.review.state, style: { marginTop: "4px", fontSize: "11.5px", color: C.muted } },
-							"审查关：" + g.review.say +
-							(g.review.finalAt ? "　（定稿 " + g.review.finalAt + (g.review.reportAt ? " · 报告 " + g.review.reportAt : "") + "）" : "")),
-						g.next ? h("div", { key: "nx", style: { marginTop: "4px", fontSize: "11.5px" } }, "下一步：" + g.next) : null,
-						// 机器口径（V1 的三条原始 issue）折在这里 —— 判据可核对，但不上首屏
-						h(Fold, {
-							key: "raw",
-							title: "原始判据（V1 的机器口径：" + (((d.finalCheck && d.finalCheck.issues) || []).length) + " 条）",
-							defaultOpen: false,
-							children: h("div", null, ((d.finalCheck && d.finalCheck.issues) || []).length
-								? ((d.finalCheck && d.finalCheck.issues) || []).map((it, i) => h("div", {
-									key: "i" + i, style: { fontSize: "11px", color: it.level === "error" ? C.bad : C.warn, marginTop: "3px", fontFamily: "monospace" }
-								}, "[" + it.code + "/" + it.level + "] " + it.msg + (it.files && it.files.length ? "　→ " + it.files.join("、") : "")))
-								: h("div", { style: { fontSize: "11px", color: C.muted } }, "（V1 没有报问题）"))
-						})
-					]
-					: [
-						h("div", { key: "t" }, [
-							h("b", { key: "a" }, "现在能用吗："),
-							h("span", { key: "b", style: { color: tone, fontWeight: 600 } }, v.text),
-							h("span", { key: "c", style: { color: C.muted } },
-								"　（按" + (d.finalCheck && d.finalCheck.currentFrom === "active" ? "active 标记" : "文件名日期") + "判定）")
-						]),
-						((d.finalCheck && d.finalCheck.issues) || []).map((it, i) => h("div", {
-							key: "i" + i, style: { fontSize: "11px", color: it.level === "error" ? C.bad : C.warn, marginTop: "3px" }
-						}, "[" + it.code + "/" + it.level + "] " + it.msg + (it.files && it.files.length ? "　→ " + it.files.join("、") : "")))
-					]),
-
-				// ③ V 校验清单（工单 30 的能力：V1+V3+V5+V6+V8+V11，带行号）
-				h("div", {
-					key: "checks",
-					style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", overflow: "hidden", marginBottom: "8px" }
-				}, h(Fold, {
-					title: "只读校验清单　error " + ((cl.counts || {}).error || 0) + " · warn " + ((cl.counts || {}).warn || 0) + " · info " + ((cl.counts || {}).info || 0) +
-						"　（V1+V3+V5+V6+V8+V11；V5 是待办计数、V6/V8 干净时不出现在这里）",
-					defaultOpen: !!(cl.counts && (cl.counts.error || cl.counts.warn)),
-					children: h("div", null, (cl.issues || []).length
-						? (cl.issues || []).map((it, i) => {
-							const tt = CHECK_TONE[it.level] || CHECK_TONE.info;
-							return h("div", {
-								key: "ck" + i,
-								style: { display: "flex", gap: "8px", fontSize: "11px", padding: "4px 0", borderTop: i ? "1px solid " + C.faint : "none", alignItems: "baseline" }
-							}, [
-								h("span", {
-									key: "b",
-									style: { fontFamily: "monospace", whiteSpace: "nowrap", border: "1px solid " + C.soft, borderRadius: "3px", padding: "0 5px", color: tt.c }
-								}, it.code + " · " + tt.t),
-								h("span", { key: "m", style: { flex: "1 1 auto", color: it.level === "info" ? C.muted : C.ink } }, it.msg),
-								// 行号：能定位到定稿原文（点它打开定稿）
-								(it.lines && it.lines.length)
-									? h("button", {
-										key: "l", type: "button", onClick: () => onOpenFix && onOpenFix(),
-										title: "点开定稿，按这些行号定位",
-										style: {
-											font: "inherit", fontSize: "10px", fontFamily: "monospace", whiteSpace: "nowrap",
-											border: "1px solid " + C.soft, background: "#fff", borderRadius: "3px",
-											padding: "0 5px", cursor: "pointer", color: C.link
-										}
-									}, "L" + it.lines.join(" · L"))
-									: null
-							]);
-						})
-						: h("div", { style: { fontSize: "11px", color: C.ok } }, "六条校验都没有问题（真实数据上 V6/V8 干净时就是这个样子）。"))
-				}))
-			]);
-		}
-
-		/**
-		 * 功能详情 · 产物（**按桶分组**：进 / 出 / 过程留痕）。
-		 * 每条：细分标签（gdd 内才有）+ 文件名（点开用系统默认程序）+ 规范名 + 定稿结论 + 日期。
-		 * ★ 清单来自 `detail.artifacts`（`src/pure/artifacts.ts` 算的），**与磁盘逐条对得上**。
-		 */
-		function ArtifactBuckets(props) {
-			const f = props.feature;
-			const d = props.detail;
-			const srWs = props.srWs || "";
-			const configRoot = props.configRoot || "";
-			const onOpen = props.onOpen;
-			const [fold, setFold] = React.useState({});
-			if (!d) return h("div", { style: { color: C.muted, fontSize: "12px" } }, "正在读产物清单…");
-			if (d.error) return h("div", { style: { color: C.bad, fontSize: "12px" } }, d.error);
-
-			const art = d.artifacts || {};
-			const groups = art.groups || [];
-			const meanings = art.meanings || [];
-			const configs = (f && f.configs) || [];
-			const absOf = (file) => (f && f.root ? f.root : srWs) + "/" + file.rel;
-
-			const rowOf = (file, i, clickAbs) => h("div", {
-				key: "f" + i,
-				style: { display: "flex", alignItems: "center", gap: "8px", padding: "5px 11px", borderTop: i ? "1px solid " + C.faint : "none" }
-			}, [
-				file.kindLabel
-					? h("span", {
-						key: "b",
-						style: {
-							fontSize: "10px", fontFamily: "monospace", padding: "0 5px", whiteSpace: "nowrap",
-							border: "1px solid " + C.soft, borderRadius: "3px",
-							color: file.kind === "final" ? C.ok : C.muted
-						}
-					}, file.kindLabel)
-					: null,
-				h("button", {
-					key: "n", type: "button",
-					onClick: () => onOpen(clickAbs),
-					title: "点击打开：" + clickAbs,
-					style: {
-						font: "inherit", fontSize: "12px", fontFamily: "monospace", padding: 0, border: "none",
-						background: "none", color: "#3b6ea5", cursor: "pointer", textAlign: "left",
-						overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "1 1 auto"
-					}
-				}, file.rel),
-				file.spec ? h("span", { key: "s", style: { fontSize: "10px", color: C.muted } }, "规范：" + file.spec) : null,
-				file.note ? h("span", {
-					key: "nt", whiteSpace: "nowrap",
-					style: { fontSize: "10px", color: /当前有效/.test(file.note) ? C.ok : C.warn, fontFamily: "monospace" }
-				}, file.note) : null,
-				fmtNameDate(file.name) ? h("span", { key: "d", style: { fontSize: "10px", color: C.muted, fontFamily: "monospace", whiteSpace: "nowrap" } }, fmtNameDate(file.name)) : null
-			]);
-
-			const groupBox = (g) => h("div", {
-				key: g.key,
-				style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", marginBottom: "9px", overflow: "hidden" }
-			}, [
-				h("div", {
-					key: "h",
-					onClick: () => setFold((s) => { const o = {}; for (const k in s) o[k] = s[k]; o[g.key] = !s[g.key]; return o; }),
-					style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 11px", background: C.bg, cursor: "pointer", borderBottom: fold[g.key] ? "none" : "1px solid " + C.faint }
-				}, [
-					h("span", { key: "l", style: { fontSize: "12px", fontWeight: 600 } }, [
-						g.label + "（" + g.count + "）",
-						h("span", { key: "d", style: { fontWeight: 400, fontSize: "11px", color: C.muted, fontFamily: "monospace" } }, g.dir ? "　" + g.dir + "/" : "")
-					]),
-					h("span", { key: "t", style: { fontSize: "10px", color: C.muted, maxWidth: "58%", textAlign: "right" } }, g.note + (fold[g.key] ? "　展开 ▸" : "　收起 ▾"))
-				]),
-				fold[g.key] ? null : (g.count
-					? h("div", { key: "b", style: { padding: "4px 0" } }, g.files.map((x, i) => rowOf(x, i, absOf(x))))
-					: h("div", { key: "e", style: { padding: "7px 11px", fontSize: "11px", color: C.muted } }, "（空）"))
-			]);
-
-			return h("div", null, [
-				h("div", { key: "sum", style: { fontSize: "12px", color: C.muted, marginBottom: "10px" } },
-					"共 " + (art.total || 0) + " 个产物　" + meanings.map((m) => m.label + " " + ((art.counts || {})[m.key] || 0)).join("　")),
-				(art.notes || []).map((t, i) => h("div", {
-					key: "n" + i,
-					style: { border: "1px solid " + C.faint, borderLeft: "3px solid " + C.warn, background: "#fffdf7", borderRadius: "4px", padding: "7px 11px", fontSize: "11px", marginBottom: "8px" }
-				}, "⚠ " + t)),
-				h("div", { key: "hint", style: { fontSize: "11px", color: C.muted, marginBottom: "9px" } },
-					"分组按**子目录**判（桶就是答案）；只有 gdd\\ 内部按文件名再细分一次。清单与磁盘逐条一致 —— 不是白名单过滤出来的。"),
-				...meanings.map((m) => {
-					const mine = groups.filter((g) => g.meaning === m.key);
-					if (!mine.length) return null;
-					return h("div", { key: "sec" + m.key, style: { marginBottom: "12px" } }, [
-						h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, marginBottom: "6px" } }, m.label +
-							h("span", { key: "c", style: { fontWeight: 400, color: C.muted } }, "　" + mine.reduce((n, g) => n + g.count, 0) + " 个")),
-						...mine.map(groupBox)
-					]);
-				}),
-				// 配置表：**不在功能目录里**（按主题挂靠）—— 单独一格，别混进上面的清单
-				configs.length ? h("div", {
-					key: "cfg",
-					style: { border: "1px solid " + C.faint, borderLeft: "3px solid " + C.soft, borderRadius: "4px", background: "#fff", padding: "8px 11px", marginBottom: "9px" }
-				}, [
-					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, marginBottom: "4px" } }, "配置表（" + configs.length + "）　按主题挂靠，不在功能目录内"),
-					...configs.map((n, i) => h("div", { key: i, style: { padding: "2px 0" } }, h("button", {
-						type: "button",
-						onClick: () => onOpen((configRoot || srWs) + "/" + n),
-						style: { font: "inherit", fontSize: "12px", fontFamily: "monospace", padding: 0, border: "none", background: "none", color: "#3b6ea5", cursor: "pointer" }
-					}, n)))
-				]) : null,
-				h("div", { key: "old", style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", overflow: "hidden" } }, h(Fold, {
-					title: "按阶段看（旧的读法：概念 / 成稿 / 定稿 / 审查 / 宣讲 / 证据 / 决策）",
-					children: h(ArtifactList, { feature: f, srWs: srWs, configRoot: configRoot, onOpen: onOpen })
-				})),
-				h("div", { key: "foot", style: { marginTop: "12px", fontSize: "11px", color: C.muted, lineHeight: 1.85 } }, [
-					h("div", { key: "a" }, "产物来自工作区实时读取（列目录，不读索引文件）。"),
-					h("div", { key: "b" }, "点一行用系统默认程序打开；失败会依次试「DSH 内置 openFile → 默认应用 → 文件管理器 reveal」并给出诊断。")
-				])
-			]);
-		}
-
-		/**
-		 * 解析定稿的 §5 界面章 —— A5 的数据源。
-		 *
-		 * **真实格式**（实测 `联盟悬赏_20260923_定稿.md`）：
-		 *   ## 5. 用户体验与界面流程
-		 *   ### 5.0 界面清单总览
-		 *   | 界面ID | 名称 | 进入方式 | 退出方式 |
-		 *   | --- | --- | --- | --- |
-		 *   | UI-M1 | 联盟悬赏主面板 | 联盟面板内【联盟悬赏】入口 | 返回联盟面板 |
-		 *   边界声明：出刀战斗本体复用 BOSS 挑战……（紧跟表格的一段）
-		 *   ### 5.1 UI-M1 联盟悬赏主面板
-		 *   <img src="联盟悬赏UI/UI-M1 联盟悬赏主面板 · 常规难度.png" alt="…" width="420" />
-		 *   | 编号 | 规则 |
-		 *   | UE1 | … |
-		 *
-		 * 只做这几件事；**不解析 §5.5/5.6**（流程与全局规范不是"界面图"）。
-		 */
-		function parseInterfaceSection(text) {
-			const all = String(text || "").split(/\r?\n/);
-			// 定位 "## 5." 到下一个 "## " 之间（### 不会被 /^##\s/ 命中）
-			let s = -1, e = all.length;
-			for (let i = 0; i < all.length; i++) {
-				if (s < 0 && /^##\s*5[.、\s]/.test(all[i])) { s = i; continue; }
-				if (s >= 0 && /^##\s/.test(all[i])) { e = i; break; }
-			}
-			if (s < 0) return null;
-			const sec = all.slice(s, e);
-
-			// ① §5.0 表格 + 边界声明
-			const uiRows = [];
-			let boundary = "";
-			let on = false;
-			for (let i = 0; i < sec.length; i++) {
-				const t = sec[i].trim();
-				if (/^###\s*5\.0/.test(t)) { on = true; continue; }
-				if (!on) continue;
-				if (/^###\s/.test(t)) break;
-				if (t.startsWith("|")) {
-					const cells = t.replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
-					const isSep = cells.every((c) => /^:?-{2,}:?$/.test(c));
-					if (cells.length >= 4 && !isSep && cells[0] !== "界面ID") {
-						uiRows.push({ id: cells[0], name: cells[1], enter: cells[2], exit: cells[3] });
-					}
-				} else if (uiRows.length && t && !boundary) {
-					boundary = t.replace(/^边界声明\s*[:：]\s*/, "");
-				}
-			}
-
-			// ② 各 UI 小节：图片引用 + UE 规则条数
-			const uis = [];
-			for (let i = 0; i < sec.length; i++) {
-				const m = /^###\s*5\.\d+\s+(UI-\S+)\s*(.*)$/.exec(sec[i].trim());
-				if (!m) continue;
-				let end = sec.length;
-				for (let j = i + 1; j < sec.length; j++) { if (/^###\s/.test(sec[j].trim())) { end = j; break; } }
-				const body = sec.slice(i + 1, end);
-				const images = [];
-				let ueCount = 0;
-				for (const l of body) {
-					const im = /<img[^>]*\bsrc\s*=\s*["']([^"']+)["']/i.exec(l);
-					if (im) images.push(im[1]);
-					if (/^\|\s*UE\d+/i.test(l.trim())) ueCount += 1;
-				}
-				uis.push({ id: m[1], title: m[2].trim(), images: images, ueCount: ueCount });
-			}
-			return { uiRows: uiRows, boundary: boundary, uis: uis, found: true };
-		}
-
-		/** 读某功能最新定稿的 §5 界面章（A5 数据源） */
-		/** 读定稿的 §5（界面图用）。收**绝对路径** —— 只有 `features\<主题>\gdd\` 一种结构 */
-		async function loadInterface(read, sid, absPath, signal) {
-			if (!absPath) return { empty: "本功能还没有定稿，界面图在定稿的 §5。" };
-			const text = await readAllText(read, sid, absPath, signal, 4000);
-			if (!text) return { error: "读不到定稿：" + absPath };
-			let parsed = null;
-			try { parsed = parseInterfaceSection(text); }
-			catch (e) { return { error: "解析 §5 失败：" + String((e && e.message) || e) }; }
-			if (!parsed) return { empty: "定稿里没有 §5 界面章。" };
-			parsed.file = String(absPath).split(/[\\/]/).pop();
-			return parsed;
-		}
-
-		/** 本机图片 → 同源 URL（DSH 的 /api/file 路由；Windows 盘符绝对路径服务端也接受） */
-		function fileUrl(abs) {
-			try {
-				const o = (typeof window !== "undefined" && window.location && window.location.origin) || "";
-				return o + "/api/file?path=" + encodeURIComponent(abs);
-			} catch (e) { return ""; }
-		}
-
-		/**
-		 * 读定稿全文并解析结构（设计 §6.2 定稿工作面）。
-		 * ★ 收**绝对路径**（= 功能的 `openPath`）—— 面板不自己拼路径，
-		 *   路径由调用方从功能目录算出来，所以目录结构怎么变都不用改这里。
-		 */
-		async function loadFinal(read, sid, absPath, signal) {
-			if (!absPath) return { empty: "这个功能还没有定稿。" };
-			const text = await readAllText(read, sid, absPath, signal, 6000);
-			if (!text) return { error: "读不到定稿：" + absPath };
-			const g = parseFinalGdd(text);
-			g.path = absPath;
-			g.dir = String(absPath).replace(/[\\/][^\\/]*$/, "");
-			g.name = String(absPath).split(/[\\/]/).pop();
-			return g;
-		}
-
-		const PRESTYLE = {
-			fontSize: "11px", fontFamily: "monospace", whiteSpace: "pre-wrap",
-			wordBreak: "break-word", background: C.bg, border: "1px solid " + C.faint,
-			borderRadius: "3px", padding: "10px", margin: 0,
-			maxHeight: "70vh", overflow: "auto", userSelect: "text", lineHeight: 1.6
-		};
-
-		/** 一段 markdown（用 DSH 的 MarkdownText；取不到则降级 <pre>） */
-		function Md(props) {
-			const text = props.text || "";
-			if (primitives && primitives.MarkdownText) {
-				return h("div", { style: { fontSize: "13px", lineHeight: 1.85, color: C.ink } },
-					h(primitives.MarkdownText, { text: text, pathImages: props.pathImages }));
-			}
-			return h("pre", { style: PRESTYLE }, text);
-		}
-
-
-		/** 折叠块（A5 用） */
-		function Fold(props) {
-			const [open, setOpen] = React.useState(!!props.defaultOpen);
-			return h("div", { style: props.style }, [
-				h("div", {
-					key: "h",
-					onClick: () => setOpen(!open),
-					style: {
-						display: "flex", justifyContent: "space-between", alignItems: "center",
-						padding: "7px 11px", background: C.bg, cursor: "pointer",
-						borderBottom: open ? "1px solid " + C.faint : "none"
-					}
-				}, [
-					h("span", { key: "t", style: { fontSize: "12px", fontWeight: 600 } }, props.title),
-					h("span", { key: "g", style: { fontSize: "10px", color: C.muted } }, open ? "收起 ▾" : "展开 ▸")
-				]),
-				open ? h("div", { key: "b", style: { padding: "9px 11px" } }, props.children) : null
-			]);
-		}
-
-		/**
-		 * A5 · 功能详情 · 界面图
-		 * ① §5.0 界面清单快照　② Figma 提示条（折叠，只提示不执行）
-		 * ③ 每个 UI 的骨架图（内嵌；失败则退化为打开）　④ 边界声明
-		 */
-		function InterfacePanel(props) {
-			const data = props.data;
-			const srWs = props.srWs || "";
-			const onOpen = props.onOpen;
-			const [broken, setBroken] = React.useState({});
-
-			if (!data) return h("div", { style: { color: C.muted, fontSize: "12px" } }, "正在读定稿的 §5…");
-			if (data.error) return h("div", { style: { color: C.bad, fontSize: "12px" } }, data.error);
-			if (data.empty) return h("div", { style: { color: C.muted, fontSize: "12px" } }, data.empty);
-
-			const rows = data.uiRows || [];
-			const uis = data.uis || [];
-			const imgTotal = uis.reduce((n, u) => n + u.images.length, 0);
-			const ueTotal = uis.reduce((n, u) => n + u.ueCount, 0);
-			const markBroken = (k) => setBroken((s) => { const o = {}; for (const x in s) o[x] = s[x]; o[k] = true; return o; });
-
-			return h("div", null, [
-				h("div", { key: "sum", style: { fontSize: "12px", color: C.muted, marginBottom: "10px" } },
-					"来自定稿 " + (data.file || "") + "　界面 " + rows.length + " 个 · 骨架图 " + imgTotal + " 张 · UE 规则 " + ueTotal + " 条"),
-
-				// ② Figma 提示条（只提示不执行）
-				h("div", {
-					key: "figma",
-					style: {
-						border: "1px solid " + C.faint, borderLeft: "3px solid " + C.warn,
-						background: "#fffdf7", borderRadius: "4px", marginBottom: "11px"
-					}
-				}, h(Fold, {
-					title: "本节含 " + imgTotal + " 张界面图 · 可用 Figma MCP 生成线框图 · 手工触发",
-					children: h("div", { style: { fontSize: "12px", lineHeight: 1.9, color: C.ink } }, [
-						h("div", { key: "a" }, "工作台**不代跑**这一步（成本、TTY 授权与外部副作用都由你决定）。"),
-						h("div", { key: "b" }, "做法：把上面对应 UI 的 ASCII 图/骨架图交给 Figma MCP，新建 Figma Draft；生成后把 Draft 链接记回 §5。"),
-						h("div", { key: "c", style: { color: C.muted } }, "参考：成稿到线框图-提示方案.md · S0 实测报告.md")
-					])
-				})),
-
-				// ① §5.0 界面清单
-				rows.length ? h("div", {
-					key: "tbl",
-					style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", overflow: "hidden", marginBottom: "11px" }
-				}, [
-					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600, padding: "7px 11px", background: C.bg, borderBottom: "1px solid " + C.faint } }, "§5.0 界面清单（" + rows.length + "）"),
-					h("div", { key: "b", style: { padding: "0" } }, rows.map((r, i) => h("div", {
-						key: i,
-						style: { display: "flex", gap: "9px", padding: "6px 11px", borderTop: i ? "1px solid " + C.faint : "none", fontSize: "12px", lineHeight: 1.7 }
-					}, [
-						h("span", { key: "i", style: { fontFamily: "monospace", fontSize: "11px", color: C.muted, minWidth: "52px", flex: "0 0 auto" } }, r.id),
-						h("span", { key: "n", style: { fontWeight: 600, minWidth: "110px", flex: "0 0 auto" } }, r.name),
-						h("span", { key: "e", style: { flex: "1 1 200px", color: C.muted } }, "进入：" + r.enter),
-						h("span", { key: "x", style: { flex: "0 1 160px", color: C.muted } }, "退出：" + r.exit)
-					])))
-				]) : null,
-
-				// ③ 各 UI 的骨架图
-				...uis.map((u) => h("div", {
-					key: u.id,
-					style: { border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff", marginBottom: "10px", overflow: "hidden" }
-				}, [
-					h("div", {
-						key: "h",
-						style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 11px", background: C.bg, borderBottom: "1px solid " + C.faint }
-					}, [
-						h("span", { key: "t", style: { fontSize: "12px", fontWeight: 600 } }, u.id + "　" + (u.title || "")),
-						h("span", { key: "c", style: { fontSize: "10px", color: C.muted, fontFamily: "monospace" } }, "UE " + u.ueCount + " 条 · 图 " + u.images.length)
-					]),
-					h("div", { key: "b", style: { padding: "10px 11px", display: "flex", flexWrap: "wrap", gap: "10px" } },
-						u.images.length ? u.images.map((rel, i) => {
-							const abs = srWs + "/proposals/" + rel;
-							const name = String(rel).split("/").pop();
-							return h("div", { key: i, style: { flex: "1 1 300px", maxWidth: "460px" } }, [
-								broken[abs]
-									? h("div", {
-										key: "f",
-										style: { border: "1px dashed " + C.soft, borderRadius: "4px", padding: "18px", textAlign: "center", fontSize: "11px", color: C.muted }
-									}, [
-										h("div", { key: "a" }, "图片未能在面板内显示"),
-										h("button", {
-											key: "b", type: "button",
-											onClick: () => onOpen(abs),
-											style: { font: "inherit", fontSize: "11px", marginTop: "6px", padding: "3px 10px", border: "1px solid " + C.ink, background: "#fff", borderRadius: "3px", cursor: "pointer" }
-										}, "用默认程序打开")
-									])
-									: h("img", {
-										key: "i",
-										src: fileUrl(abs),
-										alt: name,
-										onError: () => markBroken(abs),
-										style: { width: "100%", border: "1px solid " + C.faint, borderRadius: "4px", background: C.bg, display: "block" }
-									}),
-								h("div", { key: "n", style: { marginTop: "4px" } }, h("button", {
-									type: "button",
-									onClick: () => onOpen(abs),
-									title: abs,
-									style: {
-										font: "inherit", fontSize: "10px", fontFamily: "monospace", padding: 0,
-										border: "none", background: "none", color: "#3b6ea5", cursor: "pointer",
-										textAlign: "left", maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
-									}
-								}, name))
-							]);
-						}) : [h("span", { key: "none", style: { fontSize: "11px", color: C.muted } }, "该界面还没有骨架图引用")])
+				] : []))),
+		((b.legacy || []).length || (b.humannote || []).length || (b.unreadable || []).length)
+			? h(Card, { key: "fmt", title: "固定格式的两类产物", note: "旧文档分析（四段固定章节）· 人工补充（原话与结论并排）" }, [
+				(b.legacy || []).map((x) => h("div", { key: "L" + x.rel, style: { marginBottom: "6px" } }, [
+					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600 } }, "旧文档分析：" + x.name),
+					(x.missing || []).length ? h("div", { key: "m", style: { fontSize: "11.5px", color: V.warn } }, "缺固定章节：" + x.missing.join("、")) : null,
+					(x.extra || []).length ? h("div", { key: "e", style: { fontSize: "11.5px", color: V.muted } }, "多出来的章节：" + x.extra.map((s) => s.title).join("、")) : null
 				])),
+				(b.humannote || []).map((x) => h("div", { key: "H" + x.rel, style: { marginBottom: "6px" } }, [
+					h("div", { key: "t", style: { fontSize: "12px", fontWeight: 600 } }, "人工补充：" + x.name),
+					h("div", { key: "q", style: { fontSize: "11.5px", color: V.muted, whiteSpace: "pre-wrap" } },
+						x.quote && x.quote.found ? x.quote.raw : "（没有 `> 原话：…` 那一行）"),
+					(x.missing || []).length ? h("div", { key: "m", style: { fontSize: "11.5px", color: V.warn } }, "缺固定章节：" + x.missing.join("、")) : null
+				])),
+				(b.unreadable || []).length
+					? h("div", { key: "u", style: { fontSize: "11.5px", color: V.warn } },
+						"读不动的文件：" + b.unreadable.map((u) => u.name + "（" + u.why + "）").join("；"))
+					: null
+			])
+			: null,
+		(b.notes || []).length
+			? h("div", { key: "notes", style: { fontSize: "11.5px", color: V.muted } }, b.notes.map((s, i) => h("div", { key: i }, "· " + s)))
+			: null
+	]);
+}
 
-				// ④ 边界声明
-				data.boundary ? h("div", {
-					key: "bd",
-					style: {
-						border: "1px solid " + C.faint, borderLeft: "3px solid " + C.soft,
-						background: C.bg, borderRadius: "4px", padding: "9px 11px",
-						fontSize: "11px", lineHeight: 1.8, color: C.ink
-					}
-				}, [
-					h("div", { key: "t", style: { fontWeight: 600, marginBottom: "3px" } }, "边界声明（§5.0）"),
-					h("div", { key: "b" }, data.boundary)
-				]) : null,
+// ════════════════════════════════════════════════════════════════════════════
+// ③ 模块二 · 决策记录（把那一份文件读成人能看的时间线）
+// ════════════════════════════════════════════════════════════════════════════
 
-				h("div", { key: "foot", style: { marginTop: "12px", fontSize: "11px", color: C.muted, lineHeight: 1.85 } }, [
-					h("div", { key: "a" }, "界面清单与骨架图引用**从定稿 §5 现场解析**，不另存索引。"),
-					h("div", { key: "b" }, "「Draft 记账表」与「漏画/多画对账」还没做——那需要 §5 里记回 Draft 链接，目前定稿里没有这个字段。")
-				])
-			]);
-		}
+/** 正文里认识的字段标签（**只认这几个**；别的行按普通段落渲染，不瞎猜）。 */
+const BODY_LABELS = ["决策", "依据", "理由", "影响", "结论", "备注", "风险", "边界", "落点"];
+const LABEL_RE = new RegExp("^\\s*(?:\\*\\*)?\\s*(" + BODY_LABELS.join("|") + ")\\s*(?:\\*\\*)?\\s*[:：]\\s*(.*)$");
 
-		/** 折叠起来的原始返回，给需要深究时看 */
-		function RawDetail(props) {
-			const [open, setOpen] = React.useState(false);
-			if (!props.text) return null;
-			return h("div", { style: { marginTop: "6px" } }, [
-				h("button", {
-					key: "b", type: "button",
-					onClick: () => setOpen(!open),
-					style: {
-						font: "inherit", fontSize: "10px", padding: "1px 7px", border: "1px solid " + C.soft,
-						background: "#fff", borderRadius: "3px", cursor: "pointer", color: C.muted
-					}
-				}, open ? "收起技术详情" : "技术详情"),
-				open ? h("pre", {
-					key: "p",
-					style: {
-						marginTop: "5px", marginBottom: 0, padding: "8px", fontSize: "10px",
-						whiteSpace: "pre-wrap", background: C.bg, border: "1px solid " + C.faint,
-						borderRadius: "3px", maxHeight: "240px", overflow: "auto",
-						fontFamily: "monospace", userSelect: "text", color: C.muted
-					}
-				}, props.text) : null
-			]);
-		}
+/** 正文 → 渲染行（不改变原文，只决定怎么显示）。 */
+function bodyParts(body) {
+	const out = [];
+	for (const line of String(body || "").split(/\r?\n/)) {
+		const m = LABEL_RE.exec(line);
+		if (m) { out.push({ kind: "label", label: m[1], text: m[2] }); continue; }
+		if (/^\s*[-*]\s+/.test(line)) { out.push({ kind: "li", text: line.replace(/^\s*[-*]\s+/, "") }); continue; }
+		if (line.trim() === "") { out.push({ kind: "gap" }); continue; }
+		out.push({ kind: "p", text: line });
+	}
+	return out;
+}
 
-		/**
-		 * A2 流水线（A2 屏）。
-		 * 面向策划：六段进度 + 一个「推进一步」。
-		 * 通道验证在背后自动做，失败用人话说，原始返回折叠在「技术详情」里。
-		 */
-		function PipelinePanel(props) {
-			const f = props.feature;
-			const probe = props.probe;
-			const presetId = props.presetId || "sr-workbench";
-			const projectRoot = props.projectRoot || "";
-			const cacheKey = workKey(presetId, f ? f.topic : "");
-			const [workSid, setWorkSidState] = React.useState(() => WORK_SESSIONS.get(cacheKey) || "");
-			const setWorkSid = (v) => { setWorkSidState(v); setWorkSession(cacheKey, v); };
-			const [busy, setBusy] = React.useState(false);
-			const [msg, setMsg] = React.useState(null);
-			const [detail, setDetail] = React.useState("");
-			const [wsNote, setWsNote] = React.useState("");
-
-			// ★ hooks 无条件调用：待拍板问题（工作会话那一格）
-			const usePending = props.useSessionPendingInteraction;
-			const pending = usePending ? usePending((m) => (workSid ? m.get(workSid) : void 0)) : void 0;
-
-			if (!f) return h("div", { style: { color: C.muted, fontSize: "12px" } }, "没有选中功能。");
-
-			const stages = f.stages || {};
-			const doneCount = STAGE_ORDER.filter((k) => stages[k]).length;
-			const nextKey = STAGE_ORDER.filter((k) => !stages[k])[0] || null;
-			const meta = nextKey ? STAGE_META[nextKey] : null;
-
-			const setErr = (text, raw) => { setMsg({ kind: "err", text: text }); setDetail(raw || ""); };
-			const setOk = (text) => { setMsg({ kind: "ok", text: text }); setDetail(""); };
-
-			/** 推进一步：确保工作会话 → 执行该阶段的斜杠命令 */
-			const advance = () => {
-				if (!meta) return;
-				setBusy(true);
-				setMsg({ kind: "pending", text: "正在准备…" });
-				setDetail("");
-
-				/**
-				 * ★ 工单 07：工作会话的创建/认领**只走统一出口**（`__ensureWork` =
-				 *   组合根的 `ensureFeatureWorkSession`）—— 这样它一定有可识别标题
-				 *   （`策划工作台·工作（主题）`）、有 workspace 归属（不落「未分组」）、
-				 *   建完切「完全权限」，而且**刷新后按标题认回来**（不再每次点都新建一条）。
-				 *
-				 *   改前这里是**另一份**建会话代码（`probe.create(当前会话的工作区 id, …)`）：
-				 *   没有标题 ⇒ 认不回来；用当前会话的工作区 ⇒ 可能落进用户当时所在的分组。
-				 */
-				const ensure = workSid
-					? Promise.resolve({ ok: true, value: { sessionId: workSid } })
-					: (typeof props.__ensureWork === "function"
-						? props.__ensureWork(f.root, props.rows || [], {}).then((got) => {
-							if (got && got.ok && got.sid) {
-								// ★ 建完的降级/权限说明一并显示（"工作区归属：" 那一行）——
-								//   不许装成"什么都没发生"（工单 07 第 7 条的读回证据就落在这里）
-								setWsNote((got.source === "created" ? "新建于 " : "复用 ") + winPath(f.root) +
-									((got.note || []).length ? "　" + got.note.join("；") : ""));
-								return { ok: true, value: { sessionId: got.sid }, note: (got.note || []).join("；") };
-							}
-							return {
-								ok: false,
-								error: { message: (got && got.error) || "拿不到该功能的工作会话。" },
-								note: ((got && got.note) || []).join("；")
-							};
-						})
-						: Promise.resolve({
-							ok: false,
-							error: { message: "统一的工作会话通道没挂上（__ensureWork 缺失）—— 刷新页面再试。" },
-							note: ""
-						}));
-
-				ensure.then((cr) => {
-					if (!cr.ok) {
-						setBusy(false);
-						setErr("无法为工作台创建会话：" + humanError(cr) +
-							"（工作区 " + (projectRoot || "(未配置 projectRoot)") + "）。" +
-							(cr.note ? "　" + cr.note : ""),
-							JSON.stringify(cr, null, 1));
-						return;
-					}
-					const sid = idText(cr.value && cr.value.sessionId) || workSid;
-					setWorkSid(sid);
-					// ★ `wsNote`（"工作区归属：" 那一行）已在上面的 `__ensureWork` 分支里写好：
-					//   "新建于/复用 <path>　<降级或权限说明>" —— 这里**不要再覆盖它**。
-
-					const line = meta.cmd + " " + f.topic;
-					setMsg({ kind: "pending", text: "已启动「" + meta.label + "」，正在把 " + line + " 交给会话…" });
-
-					// ★ skill 不是宿主命令：`commands.execute` 只认 /compact /plan /goal 这类已注册命令，
-					//   对 skill 返回 undefined（静默无事发生）。
-					//   正确做法与 composer 一致：把 `/skill-name 参数` 当**普通提示词**发出去，
-					//   由 host 端的 skill 解析注入指令。
-					probe.prompt(sid, line).then((er) => {
-						setBusy(false);
-						if (er.ok) {
-							setOk("已把「" + meta.label + "」交给工作会话（" + line + "）。" +
-								"进度与提问在那个会话里看——在左侧列表点开它即可。");
-							setDetail(JSON.stringify(er.value, null, 1));
-						} else {
-							setErr("无法启动「" + meta.label + "」：" + humanError(er), JSON.stringify(er, null, 1));
-						}
-					});
-				});
-			};
-
-			return h("div", null, [
-				// ① 六段进度
-				h("div", {
-					key: "bar",
-					style: {
-						display: "flex", gap: "6px", flexWrap: "wrap",
-						marginBottom: "12px", alignItems: "center"
-					}
-				}, STAGE_ORDER.map((k) => {
-					const on = !!stages[k];
-					const isNext = k === nextKey;
-					return h("div", {
-						key: k,
+function DecisionEntry(props) {
+	const e = props.entry;
+	return h("div", { style: { borderLeft: "2px solid " + V.line2, paddingLeft: "12px", marginBottom: "14px", position: "relative" } }, [
+		h("div", {
+			key: "dot",
+			style: { position: "absolute", left: "-5px", top: "7px", width: "8px", height: "8px", borderRadius: "50%", background: V.brand }
+		}),
+		h("div", { key: "t", style: { display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap" } }, [
+			h("span", { key: "a", style: { fontFamily: MONO, fontSize: "12.5px", fontWeight: 600 } }, e.at || "（没有时间戳）"),
+			h("span", { key: "n", style: { fontSize: "11px", color: V.muted } }, "第 " + e.index + " 条"),
+			e.title ? h("span", { key: "x", style: { fontSize: "12px", color: V.muted } }, "· " + e.title) : null
+		]),
+		h("div", { key: "b", style: { marginTop: "4px" } }, bodyParts(e.body).map((p, i) => {
+			if (p.kind === "gap") return h("div", { key: i, style: { height: "5px" } });
+			if (p.kind === "li") return h("div", { key: i, style: { paddingLeft: "12px", fontSize: "12.5px" } }, "· " + p.text);
+			if (p.kind === "label") {
+				return h("div", { key: i, style: { fontSize: "12.5px", display: "flex", gap: "7px", alignItems: "baseline", marginTop: "2px" } }, [
+					h("span", {
+						key: "l",
 						style: {
-							fontSize: "12px", padding: "5px 12px", borderRadius: "4px",
-							border: "1px solid " + (on ? C.ok : (isNext ? C.ink : C.soft)),
-							background: on ? "#f0fdf4" : (isNext ? "#fff" : "#fafafa"),
-							color: on ? C.ok : (isNext ? C.ink : "#aaa"),
-							fontWeight: isNext ? 600 : 400
+							flex: "0 0 auto", color: p.label === "决策" ? V.ink : V.muted,
+							fontWeight: p.label === "决策" ? 600 : 400, fontSize: "11.5px",
+							border: "1px solid " + V.line2, borderRadius: "4px", padding: "0 5px"
 						}
-					}, (on ? "✓ " : "") + STAGE_META[k].label);
-				})),
+					}, p.label),
+					h("span", { key: "t", style: { whiteSpace: "pre-wrap", wordBreak: "break-word" } }, p.text)
+				]);
+			}
+			return h("div", { key: i, style: { fontSize: "12.5px", whiteSpace: "pre-wrap", wordBreak: "break-word" } }, p.text);
+		}))
+	]);
+}
 
-				// ② 结论行
-				h("div", {
-					key: "sum",
-					style: {
-						border: "1px solid " + C.faint, borderRadius: "4px", background: "#fff",
-						padding: "11px 13px", marginBottom: "12px", fontSize: "12px", lineHeight: 1.9
-					}
-				}, [
-					h("div", { key: "a" }, "已完成 " + doneCount + " / 6 个阶段" +
-						(f.latestDate ? "　最终版 " + f.latestDate.slice(0, 4) + "-" + f.latestDate.slice(4, 6) + "-" + f.latestDate.slice(6, 8) : "")),
-					h("div", { key: "b", style: { color: meta ? C.ink : C.ok } },
-						meta
-							? "下一步：「" + meta.label + "」——" + meta.desc
-							: "已走完六个阶段，可以交程序了。")
-				]),
+function DecisionsModule(props) {
+	const d = props.detail;
+	const dec = d.decisions || { log: null, rel: "decisions/决策记录.md", abs: "" };
+	const log = dec.log || { present: false, entries: [], issues: [], preamble: "", title: "", text: "" };
+	const [raw, setRaw] = React.useState(false);
+	const entries = (log.entries || []).slice().reverse();          // 最新的在最上面
+	const abs = dec.abs || (String(d.root || "").replace(/[\\/]+$/, "") + "\\decisions\\决策记录.md");
+	/**
+	 * ★ 条目格式模板**只在"没东西可读"时出现**（文件还不存在 / 文件在但没有带时间戳的条目）。
+	 *   有真实条目时它纯属占位 —— 条目标题本身就是"时间 + 决策内容"的样例，
+	 *   而 `决策 / 依据 / 影响` 三个标签下每一条都印着（用户口径：不额外占位置）。
+	 */
+	const showFormat = !log.present || entries.length === 0;
 
-				// ③ 动作
-				meta ? h("div", { key: "act", style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", marginBottom: "12px" } }, [
-					h("button", {
-						key: "go", type: "button", disabled: busy,
-						onClick: advance,
-						style: {
-							font: "inherit", fontSize: "13px", padding: "7px 16px",
-							border: "1px solid " + C.ink, background: busy ? "#888" : C.ink,
-							color: "#fff", borderRadius: "4px", cursor: busy ? "default" : "pointer"
-						}
-					}, busy ? "执行中…" : "推进一步：「" + meta.label + "」"),
-					h("span", { key: "w", style: { fontSize: "11px", color: C.muted } },
-						"会在工作会话里执行 " + meta.cmd + " " + f.topic)
-				]) : null,
+	return h("div", null, [
+		h(Card, {
+			key: "h",
+			title: "决策记录",
+			note: "这个功能的所有决策都记在同一个文件里 —— 不管发生在哪一步、哪个 skill",
+			actions: h("div", { key: "a", style: { display: "flex", gap: "6px" } }, [
+				Btn({ key: "r", label: raw ? "看时间线" : "看原文", onPick: () => setRaw(!raw), off: !log.present }),
+				Btn({ key: "o", label: "打开文件", onPick: () => props.onOpenAbs(abs), off: !log.present })
+			])
+		}, [
+			h("div", { key: "p" }, PathLine({ text: abs })),
+			h("div", { key: "s", style: { fontSize: "11.5px", color: V.muted, marginTop: "5px" } },
+				log.present
+					? "共 " + (log.entries || []).length + " 条" + (entries[0] ? "　｜　最近一条 " + entries[0].at : "")
+					: "这个文件还不存在 —— 会话里的 agent 在该功能第一次做决策时会按下面的格式创建它。"),
+			(log.issues || []).length
+				? h("div", { key: "i", style: { marginTop: "7px", fontSize: "11.5px", color: V.warn } }, log.issues.map((s, i) => h("div", { key: i }, "· " + s)))
+				: null
+		]),
+		showFormat
+			? h(Card, { key: "f", title: "条目格式", note: "时间（年月日时分秒）+ 决策内容；只在文件末尾追加" },
+				h("pre", { style: PRE }, decisionEntryTemplate(stampOf(new Date()))))
+			: null,
+		raw && log.present
+			? h(Card, { key: "raw", title: "原文" }, h("pre", { style: Object.assign({}, PRE, { maxHeight: "560px" }) }, log.text))
+			: (log.present
+				? h(Card, { key: "list", title: "全部决策", note: "最新的在最上面" },
+					entries.length === 0
+						? h("div", { style: { color: V.muted, fontSize: "12.5px" } }, "文件在，但还没有带时间戳的条目 —— 照上面那份格式追加第一条。")
+						: entries.map((e) => h(DecisionEntry, { key: e.index, entry: e })))
+				: h(Card, { key: "empty", title: "还没有决策记录" },
+					h("div", { style: { fontSize: "12.5px", color: V.muted } },
+						"进了这个功能的工作会话之后，任何一步定了事，都让 agent 往 " + abs +
+						" 末尾追加一条（时间 + 决策内容）。上面那份模板就是它要照抄的格式。")))
+	]);
+}
 
-				// ④ 结果
-				msg ? h("div", {
-					key: "msg",
-					style: {
-						border: "1px solid " + (msg.kind === "err" ? C.bad : C.faint),
-						borderLeft: "3px solid " + (msg.kind === "err" ? C.bad : msg.kind === "ok" ? C.ok : C.soft),
-						background: "#fff", borderRadius: "4px", padding: "10px 12px",
-						fontSize: "12px", lineHeight: 1.75,
-						color: msg.kind === "err" ? C.bad : msg.kind === "ok" ? C.ok : C.muted
-					}
-				}, [h("div", { key: "t" }, msg.text), h(RawDetail, { key: "d", text: detail })]) : null,
+// ════════════════════════════════════════════════════════════════════════════
+// ④ 模块三 · 最终产物（四类 + 一个折叠的兜底）
+// ════════════════════════════════════════════════════════════════════════════
 
-				// ⑤ 工作会话实时状态
-				workSid ? h(WorkSessionStatus, {
-					key: "ws", sessionId: workSid,
-					useSessions: props.useSessions,
-					useSessionPendingInteraction: props.useSessionPendingInteraction,
-					onOpen: (sid) => {
-						const r = probe.openSession(sid);
-						if (!r.ok) setErr("无法打开会话：" + humanError(r), JSON.stringify(r, null, 1));
-					}
-				}) : null,
+function OutputsModule(props) {
+	const d = props.detail;
+	const o = d.outputs || { groups: [], total: 0, counts: {} };
+	const main = (o.groups || []).filter((g) => g.key !== "other");
+	const other = (o.groups || []).filter((g) => g.key === "other")[0];
 
-				// ⑥ 待拍板：直接在面板里回答（A2 闭环）
-				h(PendingQuestionCard, { key: "pq", pending: pending }),
-
-				// ⑥ 底部说明
-				h("div", { key: "foot", style: { marginTop: "14px", fontSize: "11px", color: C.muted, lineHeight: 1.85 } }, [
-					h("div", { key: "a" }, "工作台不在这里重画流程——它把阶段交给 sr 的 skill，进度与提问都在那个会话里。"),
-					h("div", { key: "b" }, "预设：" + presetId + (projectRoot ? "　兜底工作区根：" + projectRoot : "")),
-					wsNote ? h("div", { key: "d", style: { color: C.ink } }, "工作区归属：" + wsNote) : null
-				])
-			]);
-		}
-
+	return h("div", null, [
 		/**
-		 * 索引会话的来源（面板要**如实说出**"这条会话是怎么来的" —— 排障全靠它）。
-		 * 与 pure 层 `SessionPick.source` 一一对应，外加组合根自己的 "created"。
+		 * ★ 卡片头与「这个功能的 4 个桶」整块**去掉**（用户口径）：上面那排页签已经写着「最终产物（N）」，
+		 *   再顶一行标题+说明是重复占位；想看目录就点功能根那行的〔打开路径〕。
+		 *   于是这里**只有四组产物**，不再有别的字。
 		 */
-		function sessionSourceText(s) {
-			if (!s) return "(未解析)";
-			const map = {
-				cache: "上次那条（本地缓存）",
-				title: "按标题「策划工作台·索引」认回",
-				cwd: "按 cwd 覆盖 sr 工作区根匹配",
-				main: "用户当前选中的那条（兜底）",
-				recent: "最近更新的那条（兜底）",
-				created: "新建（已登记工作区并命名）"
-			};
-			const tag = map[s.source] || String(s.source || "?");
-			const sid = s.sid ? "：" + String(s.sid).slice(0, 14) + "…" : "";
-			return tag + sid + (s.sessionTitle ? "「" + s.sessionTitle + "」" : "");
-		}
+		h(Card, { key: "h" }, [
+			o.total === 0
+				? h("div", { key: "e", style: { color: V.muted, fontSize: "12.5px" } }, "还没有产物。")
+				: main.map((g) => h("div", { key: g.key, style: { marginBottom: "12px" } }, [
+					// 组头：标签 + 桶名（等宽小字）+ 右对齐件数。长说明收进 tooltip，不占位置。
+					h("div", {
+						key: "h", title: g.note,
+						style: { display: "flex", alignItems: "baseline", gap: "8px", borderBottom: "1px solid " + V.line, paddingBottom: "3px", marginBottom: "4px" }
+					}, [
+						h("div", { key: "t", style: { fontSize: "12.5px", fontWeight: 600 } }, g.label),
+						g.dir ? h("code", { key: "d", style: { fontFamily: MONO, fontSize: "10.5px", color: V.idle } }, g.dir + "\\") : null,
+						h("div", { key: "s", style: { flex: 1 } }),
+						h("div", { key: "c", style: { fontSize: "11px", color: g.count ? V.muted : V.idle } }, g.count + " 件")
+					]),
+					g.dynamic ? h("div", { key: "dy", style: { fontSize: "11px", color: V.warn, margin: "2px 0 3px" } }, g.dynamic) : null,
+					g.count === 0
+						? h("div", { key: "e", style: { fontSize: "11.5px", color: V.idle, paddingLeft: "2px" } }, "这一类还没有")
+						: h("div", { key: "l", style: { paddingLeft: "2px" } }, g.files.map((f) => h(FileRow, {
+							key: f.rel, name: f.name, rel: f.rel, root: d.root,
+							sub: f.subdir ? f.subdir + "\\" : "", note: f.note, onOpen: props.onOpen
+						})))
+				])),
+			other && other.count > 0
+				? h(Fold, { key: "o", label: "其它（不属上面四类）", note: "（" + other.count + " 件 —— 如实列出，不丢）" },
+					h("div", { style: { paddingLeft: "2px" } },
+						other.files.map((f) => h(FileRow, {
+							key: f.rel, name: f.name, rel: f.rel, root: d.root,
+							note: f.kindLabel, sub: f.subdir ? f.subdir + "\\" : "", onOpen: props.onOpen
+						}))))
+				: null
+		])
+	]);
+}
 
+// ════════════════════════════════════════════════════════════════════════════
+// ⑤ 功能详情（三个模块）
+// ════════════════════════════════════════════════════════════════════════════
+
+const MODULES = [
+	{ id: "brainstorm", label: "头脑风暴" },
+	{ id: "decisions", label: "决策记录" },
+	{ id: "outputs", label: "最终产物" }
+];
+
+function FeatureView(props) {
+	const d = props.detail;
+	const [mod, setMod] = React.useState("brainstorm");
+	const items = MODULES.map((m) => Object.assign({}, m, {
+		count: m.id === "brainstorm" ? ((d.brainstorm && d.brainstorm.groups && d.brainstorm.groups.total) || 0)
+			: m.id === "decisions" ? ((d.decisions && d.decisions.log && d.decisions.log.entries.length) || 0)
+				: (d.outputs ? d.outputs.total : 0)
+	}));
+	return h("div", null, [
+		h("div", { key: "top", style: { display: "flex", alignItems: "baseline", gap: "9px", flexWrap: "wrap", marginBottom: "4px" } }, [
+			Btn({ key: "back", label: "‹ 卡片墙", onPick: props.onBack }),
+			h("div", { key: "t", style: { fontSize: "17px", fontWeight: 700 } }, d.topic),
+			h("div", { key: "s", style: { flex: 1 } }),
+			Btn({ key: "r", label: "刷新", onPick: props.onRefresh, off: props.phase === "loading" }),
+			props.sessionId ? Btn({ key: "o", label: "打开工作会话", onPick: () => props.onOpenSession(props.sessionId) }) : null
+		]),
+		h("div", { key: "p", style: { marginBottom: "10px" } }, PathLine({ text: d.root, onOpen: props.onOpen })),
 		/**
-		 * **工作会话**的来源（工单 15）—— 与索引会话那套分开写，因为来源不同：
-		 * 工作会话按"每个功能一条"认，认领凭据是标题 `策划工作台·工作（主题）`。
+		 * 功能根下"不属 4 个桶"的东西：只在这两样非空时各占一行小字（干净的功能永远看不到它们）。
+		 * ★ 原来它们挂在「这个功能的 4 个桶」卡里 —— 那张卡已按用户口径整块去掉
+		 *   （想看目录直接点上面的〔打开路径〕），但"不静默丢"的纪律得有地方落。
 		 */
-		function pickSourceText(s) {
-			const map = {
-				memory: "这次页面里已经认过它",
-				cache: "上次那条（本地缓存）",
-				title: "按标题「策划工作台·工作」认回",
-				created: "新建（已登记功能工作区并命名）"
-			};
-			return map[s] || String(s || "?");
-		}
+		(d.strangerDirs || []).length
+			? h("div", { key: "sd", style: { fontSize: "11.5px", color: V.warn, marginBottom: "6px" } },
+				"不是 4 个桶的目录（如实列出）：" + d.strangerDirs.join("、"))
+			: null,
+		(d.rootFiles || []).length
+			? h("div", { key: "rf", style: { fontSize: "11.5px", color: V.muted, marginBottom: "6px" } },
+				"功能根下的散文件：" + d.rootFiles.join("、"))
+			: null,
+		(d.missing || []).length
+			? h("div", { key: "m", style: { fontSize: "12px", color: V.warn, marginBottom: "8px" } },
+				"这个功能缺桶：" + d.missing.join("、") + " —— 面板只建不删，不会替你补，请手工建这几个目录。")
+			: null,
+		h(Notice, { key: "n", notice: props.notice }),
+		h(TabBar, { key: "tabs", items: items, view: mod, onPick: setMod }),
+		mod === "brainstorm" ? h(BrainstormModule, {
+			detail: d, onOpen: props.onOpen, onSend: props.onSendBrainstorm,
+			sending: props.sending, notice: null, sessionNote: props.sessionNote
+		}) : null,
+		mod === "decisions" ? h(DecisionsModule, { detail: d, onOpenAbs: props.onOpenAbs }) : null,
+		mod === "outputs" ? h(OutputsModule, { detail: d, onOpen: props.onOpen }) : null
+	]);
+}
 
-		/**
-		 * 显示用路径：混合分隔符统一成 `\`。
-		 * ★ 只改**显示**，不改传给 Remote 的字符串（`workspace.create` / `session.create` 收到的一字不动）——
-		 *   那串路径是工单 12 就存在的既有形状（`D:\…\workspace/features/…`，两种分隔符 Windows 都认），
-		 *   本票不借机改行为。
-		 */
-		function winPath(p) {
-			return String(p === null || p === undefined ? "" : p).replace(/\//g, "\\");
-		}
+// ════════════════════════════════════════════════════════════════════════════
+// ⑥ 错误边界 + 面板根组件
+// ════════════════════════════════════════════════════════════════════════════
 
-		/** 全局面板：A1 功能看板 */		function Panel(props) {
-			// ★ 工单 32（0.2.0 兼容）：面板**不再读"用户当前选中的会话"**。
-			//   0.1.5 时这里读 `sessions.current`，而 0.2.0 的会话快照里没有 `current` 了
-			//   （"当前会话"改由 `byId[id].retainedBy.mainView > 0` 表达）⇒ sessionId 恒为 undefined
-			//   ⇒ 面板永远显示「先在左侧选一个会话…」，点会话也没用。
-			//   现在：store 快照只当**候选线索**，真正的会话由 `resolveIndexSession` 解析
-			//   （标题认领 → 缓存 → cwd 覆盖 sr 根 → 新建），见 apply 里的注释。
-			const useSessions = props.useSessions;
-			const useWorkspaces = props.useWorkspaces;
-			// ★ hooks 必须无条件调用：条件只放在"这个 hook 存不存在"上（跨渲染稳定）
-			const sessionsSnap = useSessions ? useSessions((s) => s) : null;
-			const wsSnap = useWorkspaces ? useWorkspaces((s) => s) : null;
-			const sessionRows = React.useMemo(() => rowsFromStore(sessionsSnap), [sessionsSnap]);
-			const wsPaths = React.useMemo(
-				() => ((wsSnap && wsSnap.items) || []).map((w) => w && w.path).filter(Boolean),
-				[wsSnap]
+class PanelErrorBoundary extends React.Component {
+	constructor(props) { super(props); this.state = { err: null }; }
+	static getDerivedStateFromError(err) { return { err: err }; }
+	componentDidCatch(err, info) { console.error("[sr-workbench] 渲染失败", err, info); }
+	render() {
+		const e = this.state.err;
+		if (!e) return this.props.children;
+		return h("div", { style: Object.assign({}, PAGE, { color: V.bad }) }, [
+			h("h1", { key: "t", style: { fontSize: "16px", margin: "0 0 10px", color: V.ink } }, "策划工作台 · 渲染失败"),
+			h("div", { key: "m", style: { fontSize: "13px", marginBottom: "10px" } }, String((e && e.message) || e)),
+			h("pre", { key: "s", style: Object.assign({}, PRE, { maxHeight: "400px", color: V.muted }) }, String((e && e.stack) || "").slice(0, 3000))
+		]);
+	}
+}
+
+/** `YYYYMMDD`（四条入口的产出文件名用）。 */
+function todayCompact() {
+	const d = new Date();
+	const p = (n) => (n < 10 ? "0" : "") + n;
+	return String(d.getFullYear()) + p(d.getMonth() + 1) + p(d.getDate());
+}
+
+function Panel(props) {
+	const useSessions = props.useSessions;
+	const useWorkspaces = props.useWorkspaces;
+	const sessionsSnap = useSessions ? useSessions((s) => s) : null;
+	const wsSnap = useWorkspaces ? useWorkspaces((s) => s) : null;
+	const sessionRows = React.useMemo(() => rowsFromStore(sessionsSnap), [sessionsSnap]);
+	const wsPaths = React.useMemo(() => ((wsSnap && wsSnap.items) || []).map((w) => w && w.path).filter(Boolean), [wsSnap]);
+	const archived = React.useMemo(() => { try { return archivedFromSnapshot(wsSnap); } catch (e) { return null; } }, [wsSnap]);
+
+	const [idx, setIdx] = React.useState(null);
+	const [phase, setPhase] = React.useState("idle");
+	const [notice, setNotice] = React.useState(null);
+	const [dash, setDash] = React.useState(null);
+	const [view, setView] = React.useState({ kind: "cards" });
+	const [detail, setDetail] = React.useState(null);
+	const [rev, setRev] = React.useState(0);
+	const [sending, setSending] = React.useState(false);
+	const [newOpen, setNewOpen] = React.useState(false);
+	const [newTopic, setNewTopic] = React.useState("");
+	const [newBusy, setNewBusy] = React.useState(false);
+	const [plan, setPlan] = React.useState(null);
+
+	const refresh = React.useCallback(() => setRev((n) => n + 1), []);
+	const rowsKey = sessionRows.length + "|" + wsPaths.length + "|" + (archived === null ? "?" : archived.length);
+
+	// ① 解析索引会话（读通道）
+	React.useEffect(() => {
+		let alive = true;
+		const ac = new AbortController();
+		props.__index({ rows: sessionRows, wsPaths: wsPaths, archived: archived, signal: ac.signal }).then(
+			(r) => { if (alive) setIdx(r); },
+			(e) => { if (alive) setIdx({ ok: false, error: String((e && e.message) || e) }); }
+		);
+		return () => { alive = false; ac.abort(); };
+	}, [rowsKey]);
+
+	const sid = idx && idx.ok ? idx.sid : "";
+
+	// ② 读卡片墙
+	React.useEffect(() => {
+		if (!idx || !idx.ok) return;
+		let alive = true;
+		const ac = new AbortController();
+		setPhase("loading");
+		props.__dashboard(idx, ac.signal).then(
+			(d) => { if (alive) { setDash(d); setPhase("idle"); } },
+			(e) => { if (alive) { setPhase("idle"); setNotice({ kind: "err", text: "读工作区失败：" + String((e && e.message) || e) }); } }
+		);
+		return () => { alive = false; ac.abort(); };
+	}, [sid, rev]);
+
+	const topic = view.kind === "feature" ? view.topic : "";
+	const rootOf = React.useCallback(
+		(t) => ((dash && dash.features ? dash.features : []).filter((x) => x.topic === t)[0] || {}).root || "",
+		[dash]);
+
+	// ③ 读功能详情（进功能时 + 刷新时）
+	React.useEffect(() => {
+		if (!idx || !idx.ok || topic === "") { setDetail(null); return; }
+		const root = rootOf(topic);
+		if (!root) { setDetail(null); return; }
+		let alive = true;
+		const ac = new AbortController();
+		setPhase("loading");
+		props.__feature(idx, root, ac.signal).then(
+			(d) => { if (alive) { setDetail(d); setPhase("idle"); } },
+			(e) => { if (alive) { setPhase("idle"); setNotice({ kind: "err", text: "读功能目录失败：" + String((e && e.message) || e) }); } }
+		);
+		return () => { alive = false; ac.abort(); };
+	}, [sid, topic, rev, dash]);
+
+	// ④ 详情页每 5 秒轻量重读：agent 在会话里写的东西要自己冒出来（内容没变就保持原对象，不闪）
+	React.useEffect(() => {
+		if (!idx || !idx.ok || topic === "") return;
+		const root = rootOf(topic);
+		if (!root) return;
+		const t = setInterval(() => {
+			props.__feature(idx, root, undefined).then(
+				(d) => setDetail((prev) => (JSON.stringify(prev) === JSON.stringify(d) ? prev : d)),
+				() => { /* 轮询失败就静默等下一次：不打断正在看的人 */ }
 			);
-			// 索引会话解析结果：`{ sid, cwd, root, srWs, source, ... }`
-			const [idx, setIdx] = React.useState(null);
-			const sessionId = idx && idx.sid ? idx.sid : void 0;
-			const cwd = idx && idx.cwd ? idx.cwd : void 0;
-			const [state, setState] = React.useState({ phase: "idle" });
-			const [q, setQ] = React.useState("");
-			const [notice, setNotice] = React.useState(null);
-			const [view, setView] = React.useState("dashboard");       // dashboard | detail（工单 31：assets/config/knowledge 三个占位视图已删）
-			const [detailTopic, setDetailTopic] = React.useState(null);
-			// ★ 工单 23：进功能先落在**第一个工作面**（头脑风暴）；`final` = 定稿修订工作面，其余是资料页签
-			const [dtab, setDtab] = React.useState(ENTRY_TAB);
-			const [ledger, setLedger] = React.useState(null);
-			const [iface, setIface] = React.useState(null);
-			const [finalDoc, setFinalDoc] = React.useState(null);
-			// ★ 工单 12：功能详情的产物清单 / 三阶段 / 定稿有效性 / V 校验清单（进详情时读一次）
-			const [detail, setDetail] = React.useState(null);
-			// ★ 工单 23：头脑风暴工作面的数据（已有的分析结论 + 两种新格式的解析结果）
-			const [brain, setBrain] = React.useState(null);
-			// ★ 工单 24：文档生成工作面的数据（成稿的两大部分与左树 + 配置支线走到哪）
-			const [draft, setDraft] = React.useState(null);
-			// ★ 工单 28：派生物的数据（交付桶里的产物 + 它们的 provenance 侧车 + 过期判定）
-			const [derived, setDerived] = React.useState(null);
-			// ★ 工单 26：外部交付包 ①②③ 的数据（包识别 / 基线校验 / 回写清单 + 归档位）
-			const [ueIntake, setUeIntake] = React.useState(null);
-			/**
-			 * ★ 工单 22 · 新建功能（**一个动作**）的四份状态：
-			 *   `newOpen` 表单开着没有 · `newTopic` 输的主题名 · `newBusy` 正在提交（拉事实 + 发送）
-			 *   · `creating` 已经交给工作会话、正在**窄轮询回读**的那一份（`{topic,id,root,sid,state,progress}`）
-			 *   · `created` 建好了（给一句"已经可以用了" + 〔进详情 ›〕）。
-			 */
-			const [newOpen, setNewOpen] = React.useState(false);
-			const [newTopic, setNewTopic] = React.useState("");
-			const [newBusy, setNewBusy] = React.useState(false);
-			const [creating, setCreating] = React.useState(null);
-			const [created, setCreated] = React.useState(null);
-			/** 窄轮询的定时器与"这一轮还算不算数"的令牌（取消/收工后，迟到的回读不许再排下一轮） */
-			const createTimer = React.useRef(null);
-			const createToken = React.useRef("");
-			/** 目录刚出现时只重读一次看板（那一刻卡片就该出现） */
-			const createSawDir = React.useRef(false);
-			/**
-			 * ★ 工单 16：详情里每一份数据都盖一个"这是哪个功能的"戳（`__topic`），渲染时对不上
-			 *   当前功能就**不当数**。两个作用合在一起：
-			 *     ① 换功能时**不需要任何清空动作**（旧数据自动失效，不会闪一个上一个功能的内容）；
-			 *     ② 重读（自动刷新）时**保留屏幕上的旧数据** —— 不整屏重挂、不丢用户选中的条目。
-			 */
-			const ofTopic = (r) => (r && r.__topic !== undefined && r.__topic !== detailTopic ? null : r);
-			/** 盖上当前功能的戳（组合根该干的事：结果属于哪一次请求由调用方知道） */
-			const stamped = (r) => Object.assign({}, r, { __topic: detailTopic });
-			/** 详情数据中"属于当前功能的那一份"（下面所有渲染与判断都用它，不再直接用 detail） */
-			const dview = ofTopic(detail);
-			// ★ 台账在**渲染期**从 ledger 派生（不是加载期冻结），见 ledgerOf 的注释
-			const designLedger = React.useMemo(() => ledgerOf(ofTopic(ledger)), [ledger, detailTopic]);
-			// ════════════════════════════════════════════════════════════════
-			// ★ 工单 16 · 自动刷新与版本指纹
-			//   三个状态：`rev`（各部件重读计数，只增不减）· `live`（订阅与指纹，给人看的）
-			//   · 四个 ref（版本袋 / 已应用版本 / 待落批 / 定时器）。
-			//   判定全在 `src/pure/refresh.ts`；这里只负责"按它说的去调、把结果如实显示"。
-			// ════════════════════════════════════════════════════════════════
-			const [rev, setRev] = React.useState({ detail: 0, ledger: 0, final: 0, ui: 0, brain: 0, draft: 0, derived: 0, ueintake: 0 });
-			const [live, setLive] = React.useState({ phase: "off", reason: "", ready: 0, total: 0, digest: "", pending: 0, changed: [], frame: "", at: 0, reloads: 0, skipped: 0 });
-			/** 读文件时收下的版本袋（`portOf` 往里写）—— 指纹与自激防护的凭据 */
-			const bagRef = React.useRef({});
-			/** 已经"读进屏幕"的 路径 → version */
-			const appliedRef = React.useRef({});
-			/** stat 核对时"上次看见的目录版本"（目录版本只在这里记，见 `checkNow`） */
-			const dirSeenRef = React.useRef({});
-			/** 当前这一批待落的变更（去抖用） */
-			const batchRef = React.useRef(null);
-			const timerRef = React.useRef(null);
-			/** 渲染期把"最新一次的落盘实施"和"当前上下文"挂上，定时器回调不必重造闭包 */
-			const flushRef = React.useRef(null);
-			const ctxRef = React.useRef({});
-			/** 当前订阅计划（轮询核对要知道盯了哪些目录） */
-			const planRef = React.useRef(null);
-			/**
-			 * ★ 工单 24：**这一批变更碰到的是不是文档生成工作面依赖的桶**（`gdd\` / `evidence\`）。
-			 *   判据 = 帧里的路径是不是那两份订阅目标之一 —— 订阅目标是**逐个目录**给的
-			 *   （见 `watchPlan`），所以"帧长什么样"就能说出"哪个桶变了"。
-			 *   `detail`（产物清单）是**所有桶的共主**：任何桶变了它都会换，只盯着它就会在
-			 *   `analysis\` 变了的时候也把 39 KB 的成稿白读一遍（实测踩过）。
-			 *   `false` = 这一轮的变更不在这一屏依赖的桶里（跳过）；其余情况（进功能 / 手动刷新 /
-			 *   切页签 / stat 核对）一律照读。
-			 */
-			const draftBucketRef = React.useRef(true);
-			/** 这一轮订阅已经 ready 了几个目标（判"帧永不 ready"的降级） */
-			const readyCountRef = React.useRef(0);
-			/** 订阅回调的**最新**一份（换一次渲染就换一个闭包，但不能因此重开订阅） */
-			const onLiveEventRef = React.useRef(null);
-			const loader = props.__loader;
-			const remoteOpen = props.__remoteOpen;
-			const ledgerLoader = props.__ledger;
-			const finalLoader = props.__final;
-			const fixRunner = props.__fix;
-			const interfaceLoader = props.__interfaces;
-			const detailLoader = props.__detail;
-			// ★ 工单 23：头脑风暴工作面的加载器 + 四入口的发送出口（走**工单 15 那条链路**，不是新通道）
-			const brainstormLoader = props.__brainstorm;
-			const brainstormRunner = props.__sendBrainstorm;
-			// ★ 工单 24：文档生成工作面（成稿 + 配置支线）+ 三个动作的发送出口（**同一条链路**）
-			const draftLoader = props.__draft;
-			const draftRunner = props.__sendDraft;
-			// ★ 工单 28：派生物（读交付桶与侧车）+ 两个派生动作的发送出口（**同一条链路**）
-			const derivedLoader = props.__derived;
-			const derivedRunner = props.__sendDerived;
-			// ★ 工单 26：外部交付包 ①②③（读工作区根的 zip + 归档位）+ 两个动作的发送出口（**同一条链路**）
-			const ueIntakeLoader = props.__ueIntake;
-			const intakeRunner = props.__sendIntake;
-			const diagnose = props.__diagnose;
-			const probe = props.__probe;
-			// ★ 工单 16：变更订阅 / 批量 stat（都是官方通道，包在组合根里）
-			const watchRunner = props.__watch;
-			const statManyRunner = props.__statMany;
+		}, 5000);
+		return () => clearInterval(t);
+	}, [sid, topic]);
 
-			// ★ 看板要能看出「哪个功能在等你拍板」。
-			//   hooks 无条件调用；订阅整张 pending 表 + 工作会话缓存，在渲染体里算。
-			const usePendingMap = props.useSessionPendingInteraction;
-			const workMap = useWorkSessions();
-			const pendingMap = usePendingMap ? usePendingMap((m) => m) : null;
-			/** 功能名 → 'pending'（该功能的会话正等你拍板） */
-			const attentionOf = (topic) => {
-				if (!pendingMap) return null;
-				const sid = workMap.get(workKey("sr-workbench", topic));
-				if (sid && pendingMap.get(sid)) return "pending";
-				return null;
-			};
+	// ── 动作 ──────────────────────────────────────────────────────────
+	const openAbs = (abs) => {
+		props.__open(abs).then(
+			(r) => { if (r && r.ok !== true) setNotice({ kind: "warn", text: (r.error && (r.error.message || r.error)) || "打不开这个文件。" }); },
+			(e) => setNotice({ kind: "warn", text: "打不开：" + String((e && e.message) || e) })
+		);
+	};
 
-			/**
-			 * 打开一个工作区文件。**每一步都有超时**，保证有限时间内一定给出结果。
-			 *   ① DSH 内置 openFile（会话节点树里的文件链接用它；全局面板里的行为未知）
-			 *   ② openWorkspacePath —— 系统默认应用
-			 *   ③ openWorkspacePath action:"reveal" —— 在文件管理器里显示
-			 * ★ 之前 ① 没包超时，一挂就永远停在"正在打开"——那正是你看到的现象。
-			 */
-			const STEP_MS = 3500;
-			const withTimeout = (name, fn, ms) => {
-				let p;
-				try { p = Promise.resolve(fn()); }
-				catch (e) {
-					return Promise.reject(new Error(name + "：同步抛错 " + String((e && e.message) || e)));
+	const onTopic = (t) => {
+		setNewTopic(t);
+		setPlan(null);
+		if (!idx || !idx.ok || t.trim() === "") return;
+		if (!checkTopicName(t).ok) return;
+		const wsPathsNow = wsPaths;
+		props.__createFacts(idx, idx.srWs).then((facts) => {
+			const p = planNewFeature(t, { dirNames: facts.dirNames, wsPaths: wsPathsNow, srWs: idx.srWs });
+			if (!p.ok && facts.note) p.message = facts.note + " " + p.message;
+			setPlan(p);
+		}, () => { /* 读不到事实就不显示预览；提交时还会再算一次 */ });
+	};
+
+	const submitNew = () => {
+		if (newBusy) return;
+		const chk = checkTopicName(newTopic);
+		if (!chk.ok) { setNotice({ kind: "warn", text: chk.message, next: chk.next }); return; }
+		setNewBusy(true);
+		setNotice({ kind: "info", text: createPendingNotice(newTopic) });
+		props.__createFeature(newTopic, { wsPaths: wsPaths, sid: sid }).then(
+			(r) => {
+				setNewBusy(false);
+				if (!r.ok) {
+					setNotice({ kind: "warn", text: r.message || "没建成。", next: r.next || "" });
+					if (r.plan) setPlan(r.plan);
+					return;
 				}
-				return Promise.race([
-					p,
-					new Promise((_, rej) => setTimeout(
-						() => rej(new Error(name + "：超过 " + Math.round((ms || STEP_MS) / 1000) + " 秒未响应")),
-						ms || STEP_MS
-					))
-				]);
-			};
+				setNewOpen(false);
+				setNewTopic("");
+				setPlan(null);
+				setNotice({ kind: "ok", text: r.doneText, next: (r.notes || []).join("　") });
+				refresh();
+				setView({ kind: "feature", topic: r.topic });
+			},
+			(e) => { setNewBusy(false); setNotice({ kind: "err", text: "新建失败：" + String((e && e.message) || e) }); }
+		);
+	};
 
-			const handleOpen = (f, relOverride) => {
-				const rel = relOverride || (f && f.openPath);
-				if (!rel) { setNotice({ kind: "err", text: "没有可打开的文件" }); return; }
-				const abs = toAbs(cwd, rel);
-				setNotice({ kind: "pending", text: "正在打开：" + abs });
-
-				const builtin = props.openFile;
-				const hasBuiltin = typeof builtin === "function";
-				const steps = [];
-				if (hasBuiltin) steps.push(["DSH 内置 openFile", () => builtin(rel)]);
-				steps.push(["默认应用", () => remoteOpen({ path: abs }, "默认应用")]);
-				steps.push(["文件管理器 reveal", () => remoteOpen({ path: abs, action: "reveal" }, "reveal")]);
-
-				const errs = [];
-				const next = (i) => {
-					if (i >= steps.length) {
-						setNotice({ kind: "err", text: "三种方式都失败 ｜ " + errs.join(" ｜ "), diag: "探测中…" });
-						Promise.resolve()
-							.then(() => (diagnose ? diagnose() : Promise.resolve("(无诊断)")))
-							.then(
-								(t) => setNotice({
-									kind: "err",
-									text: "三种方式都失败 ｜ " + errs.join(" ｜ "),
-									diag: "typeof props.openFile = " + typeof builtin + "\n" + String(t || "")
-								}),
-								(e) => setNotice({
-									kind: "err",
-									text: "三种方式都失败 ｜ " + errs.join(" ｜ "),
-									diag: "typeof props.openFile = " + typeof builtin + "\n诊断本身失败：" + String((e && e.message) || e)
-								})
-							);
-						return;
-					}
-					const name = steps[i][0];
-					withTimeout(name, steps[i][1]).then(
-						() => setNotice({ kind: "ok", text: "已打开（" + name + "）：" + rel }),
-						(e) => { errs.push(String((e && e.message) || e)); next(i + 1); }
-					);
-				};
-				next(0);
-			};
-
-			/**
-			 * ① 解析索引会话 → ② 扫看板。
-			 * ★ 依赖数组是空的：解析在**面板挂载时做一次**（结果进 localStorage 缓存，
-			 *   下次直接认回来）。跟着会话快照重算会让看板每次有会话更新就重扫一遍。
-			 */
-			React.useEffect(() => {
-				let cancelled = false;
-				const ac = new AbortController();
-				setState({ phase: "loading" });
-				const resolve = props.__resolve;
-				if (typeof resolve !== "function") {
-					setState({ phase: "error", error: "索引会话解析器没挂上（__resolve 缺失）。" });
-					return () => { cancelled = true; ac.abort(); };
-				}
-				Promise.resolve()
-					.then(() => resolve({ rows: sessionRows, wsPaths: wsPaths, signal: ac.signal }))
-					.then((res) => {
-						if (cancelled) return;
-						if (!res || res.ok !== true || !res.sid) {
-							setState({
-								phase: "nosession",
-								error: (res && res.error) || "",
-								note: (res && res.note) || []
-							});
-							return;
-						}
-						setIdx(res);
-						return loader(res.sid, res.cwd, ac.signal, res.extraPaths).then(
-							(data) => { if (!cancelled) setState({ phase: "ready", data: data, session: res }); },
-							(err) => { if (!cancelled) setState({ phase: "error", error: String((err && err.message) || err), session: res }); }
-						);
-					})
-					.then(void 0, (err) => {
-						if (!cancelled) setState({ phase: "error", error: "解析索引会话失败：" + String((err && err.message) || err) });
-					});
-				return () => { cancelled = true; ac.abort(); };
-			}, []);
-
-			// ════════════════════════════════════════════════════════════════
-			// ★ 工单 16 · 自动刷新：订阅 → 去抖合批 → **只重读受影响的那几处**
-			//
-			// 分工（照着 `src/pure/refresh.ts` 的文件头读）：
-			//   · 组合根（这里）只做三件事：按 `watchPlan` 去开订阅、按 `planReload` 去触发重读、
-			//     把 `freshnessOf` 那句话如实显示出来；
-			//   · 判定（帧怎么认 / 该重读什么 / 什么叫"同一份内容"）**全在纯函数层**，有测试；
-			//   · 重读**不整屏重挂**：给每个部件一个只增不减的重读计数（`rev`），
-			//     加载 effect 把它挂在依赖数组上 —— 只有被点名的那几个部件会重跑，
-			//     其余部件的状态（用户选中的条目、滚动位置、组件的 key）原样不动。
-			// ════════════════════════════════════════════════════════════════
-
-			/** 当前功能卡（看板数据里那一条）—— 功能根与"当前最终版"都从它来 */
-			const curFeature = React.useMemo(() => {
-				const d0 = state.phase === "ready" ? state.data : null;
-				if (!d0 || !detailTopic) return null;
-				return ((d0.features || []).filter((x) => x.topic === detailTopic)[0]) || null;
-			}, [state, detailTopic]);
-			const featureRoot = (curFeature && curFeature.root) || "";
-			/** 当前正在看的那一个文件（详情里的最终版）—— 窄订阅 + 低频轮询的对象 */
-			const openFinal = (curFeature && curFeature.openPath) || "";
-			const srWsOf = (state.phase === "ready" && state.data) ? (state.data.srWs || "") : "";
-
-			/** 渲染期把最新上下文挂上：定时器与订阅回调不在渲染闭包里，但读的必须是这一刻的值 */
-			ctxRef.current = {
-				view: view, dtab: dtab, topic: detailTopic,
-				root: featureRoot, srWs: srWsOf, openPath: openFinal
-			};
-
-			/** 详情清单 → 绝对路径数组（指纹与 stat 批核对都用它） */
-			const listingAbs = (detailData) => {
-				if (!detailData || detailData.error || !detailData.artifacts) return [];
-				const root = String(detailData.root || "").replace(/\\+$/, "");
-				if (root === "") return [];
-				return (detailData.artifacts.allPaths || []).map((rel) => root + "\\" + String(rel).replace(/\//g, "\\"));
-			};
-
-			/** 重读一个部件：把它的计数 +1（加载 effect 依赖它，于是只有它重跑） */
-			const bumpParts = (parts) => {
-				const bump = {};
-				// ★ 工单 24：`brain`（头脑风暴）与 `draft`（文档生成）也进名单 —— 在此之前
-				//   `planReload` 已经会点名 `brain`，但这里没接，那一票的"只重读受影响的部分"里
-				//   头脑风暴其实是靠 `detail` 间接重跑的。现在两个工作面各自有独立的计数：
-				//   切到哪一屏、哪一屏在屏幕上都由它决定，`LiveBar` 的 `data-rev` 也看得见。
-				// ★ 工单 26：`ueintake`（外部交付包 ①②③）同样进名单 —— `source\` 桶变了的帧点名它。
-				for (const p of ["detail", "ledger", "final", "ui", "brain", "draft", "derived", "ueintake"]) if ((parts || []).indexOf(p) >= 0) bump[p] = 1;
-				if (Object.keys(bump).length === 0) return;
-				setRev((prev) => {
-					const next = Object.assign({}, prev);
-					for (const k of Object.keys(bump)) next[k] = (prev[k] || 0) + 1;
-					return next;
+	const sendBrainstorm = (instruction) => {
+		if (!detail || sending) return;
+		setSending(true);
+		props.__sendBrainstorm(detail.root, instruction).then(
+			(r) => {
+				setSending(false);
+				if (!r.ok) setNotice({ kind: "warn", text: r.error || "没发出去。", next: r.next || "" });
+				else setNotice({
+					kind: "ok",
+					text: "已发给这个功能的工作会话" + (r.source === "created" ? "（新建的）" : "") + "。进度与提问都在那条会话里 —— 面板不重画流程。",
+					next: (r.notes || []).join("　")
 				});
-			};
+			},
+			(e) => { setSending(false); setNotice({ kind: "err", text: "发送失败：" + String((e && e.message) || e) }); }
+		);
+	};
 
+	const sessionId = React.useMemo(() => {
+		if (!detail) return "";
+		return props.__workSessionOf(detail.root);
+	}, [detail, rev]);
+
+	// ── 渲染 ──────────────────────────────────────────────────────────
+	return h("div", { style: PAGE }, [
+		!idx ? h("div", { key: "boot", style: { color: V.muted } }, "正在解析工作台锚点…") : null,
+		idx && !idx.ok
+			? h(Notice, {
+				key: "ie",
+				notice: { kind: "err", text: idx.error || "拿不到读通道（索引会话）。", next: (idx.note || []).join("；") }
+			})
+			: null,
+		idx && idx.ok && (idx.note || []).length
+			? h("div", { key: "in", style: { fontSize: "11.5px", color: V.muted, marginBottom: "8px" } }, idx.note.join("　"))
+			: null,
+		idx && idx.ok && view.kind === "cards"
+			? h(Dashboard, {
+				key: "dash", dash: dash, phase: phase, notice: notice,
+				onRefresh: refresh, onOpen: (t) => { setNotice(null); setView({ kind: "feature", topic: t }); },
+				onNew: () => { setPlan(null); setNewOpen(true); },
+				newOpen: newOpen, newTopic: newTopic, plan: plan, busy: newBusy,
+				onTopic: onTopic, onSubmit: submitNew,
+				onCancel: () => { setNewOpen(false); setNewTopic(""); setPlan(null); setNotice(null); }
+			})
+			: null,
+		idx && idx.ok && view.kind === "feature"
+			? (detail
+				? h(FeatureView, {
+					key: "fv", detail: detail, phase: phase, notice: notice,
+					onBack: () => { setNotice(null); setView({ kind: "cards" }); },
+					onRefresh: refresh, onOpen: openAbs, onOpenAbs: openAbs,
+					onSendBrainstorm: sendBrainstorm, sending: sending,
+					sessionId: sessionId,
+					sessionNote: sessionId ? "工作会话已就绪（可在右上角打开）" : "还没建工作会话 —— 发送时会自动建一条（策划模式）",
+					onOpenSession: (id) => props.__openSession(id)
+				})
+				: h("div", { key: "fl", style: { color: V.muted } }, "正在读「" + topic + "」…"))
+			: null
+	]);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑦ 组合根：唯一知道 ctx / remote / store 的地方
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 核心服务写进 inject；可选依赖（uiWorkspace / sessions / workspaces）用 `ctx.get` 取。 */
+export const inject = [
+	"slots", "remote",
+	"remote.workspaceFiles", "remote.session", "remote.workspace", "remote.commands", "remote.permissionPresets"
+];
+
+/** 安全取一个可选服务（可能为 undefined，不抛） */
+function svc(ctx, name) {
+	try { return ctx.get(name); } catch (e) { return void 0; }
+}
+
+/** 把一次 Remote 调用的结果原样收成可显示对象（同步抛错也接住）。 */
+function safeCall(name, fn) {
+	let p;
+	try { p = Promise.resolve(fn()); }
+	catch (e) { return Promise.resolve({ name: name, ok: false, error: { message: "同步抛错 " + String((e && e.message) || e) } }); }
+	return p.then(
+		(r) => ({ name: name, ok: !!(r && r.ok), value: r && r.value, error: r && r.error }),
+		(e) => ({ name: name, ok: false, error: { message: String((e && e.message) || e) } })
+	);
+}
+
+function humanError(r) {
+	if (!r) return "（没有返回）";
+	const e = r.error;
+	if (!e) return String(r.message || r.name || "未知错误");
+	return String(e.message || e.code || JSON.stringify(e));
+}
+
+/** 从可能的包装对象里取 id 文本。 */
+function idText(v) {
+	if (typeof v === "string") return v;
+	if (v && typeof v === "object") {
+		const inner = v.value || v.sessionId || v.workspaceId || v.id;
+		if (typeof inner === "string") return inner;
+	}
+	return "";
+}
+
+/**
+ * 兜底工作区根 —— 只在"前三条候选全落空"时才用（浏览器半侧收不到插件 config，
+ * 绝对路径只能自己推）。候选顺序是：
+ *   profile 的 `projectRoot` → 客户端登记过的**工作区列表** → 各会话的 `cwd` → 这个常量。
+ * ★ 分发到别的机器：前三条通常已经命中（工作区登记过就行），这个常量留作最后兜底；
+ *   如果对方的工作区不在 `D:\TimeMachine` 且一条工作区都没登记，改成对方的工作区根即可。
+ */
+const DEFAULT_ROOT = "D:\\TimeMachine";
+/**
+ * 「策划模式」预设的 **id** —— 显示名是「策划模式」，id 仍是 `sr-workbench`
+ * （会话日志按 id 恢复，改 id = 旧会话打不开）。见 `cordis.patch.yml` 的 `preset-sr-workbench` 行。
+ */
+const PLAN_PRESET = "sr-workbench";
+
+export function apply(ctx, config) {
+	const cfg = config || {};
+	const read = (sid, path, range, signal) => ctx.remote.workspaceFiles.read(sid, path, range, signal);
+
+	/** 锚点缓存（"新建"与"读"两条路都要用工作区根）。 */
+	let srWsCache = "";
+
+	/**
+	 * 端口：加载层唯一的测试接缝。只读三法需要**一条真会话**（sid）；
+	 * 指令侧四法在签名里显式带 sessionId（它们的目标常常不是读通道那条会话）。
+	 */
+	function portOf(sid) {
+		return {
+			readText: async (path, range, signal) => {
+				const r = await read(sid, path, range, signal);
+				if (!r || r.ok !== true) throw new Error("读不到 " + path + "：" + humanError(r));
+				return r.value;
+			},
+			listDir: async (path, signal) => {
+				const r = await ctx.remote.workspaceFiles.list(sid, path, signal);
+				if (!r || r.ok !== true) throw new Error("列举不了 " + path + "：" + humanError(r));
+				return r.value;
+			},
+			stat: async (path, signal) => {
+				const r = await ctx.remote.workspaceFiles.stat(sid, path, signal);
+				if (!r || r.ok !== true) throw new Error("读不到 " + path + " 的信息：" + humanError(r));
+				return r.value;
+			},
+			prompt: (sid2, text) => safeCall("session.prompt", () => ctx.remote.session.prompt({
+				requestId: "wb-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+				sessionId: sid2, mode: "queue", content: [{ type: "text", text: text }]
+			})),
+			execCommand: (sid2, line) => safeCall("commands.execute", () => ctx.remote.commands.execute(sid2, line, [])),
+			renameSession: (sid2, title) => safeCall("session.rename", () => ctx.remote.session.rename({ sessionId: sid2, title: title })),
+			ensureWorkspace: (path) => safeCall("workspace.create", () => ctx.remote.workspace.create({ path: path })),
+			createSession: (req) => safeCall("session.create", () => ctx.remote.session.create(req))
+		};
+	}
+
+	const listSessions = (signal) => safeCall("session.list", () => ctx.remote.session.list({}, signal));
+
+	// ── 单航班锁（连点两次 / 同一页两次挂载 ⇒ 只建一条会话）─────────────
+	const INFLIGHT = new Map();
+	const singleFlight = (key, fn) => {
+		const prev = INFLIGHT.get(key);
+		if (prev) return prev;
+		const p = Promise.resolve().then(fn).then(
+			(v) => { INFLIGHT.delete(key); return v; },
+			(e) => { INFLIGHT.delete(key); throw e; }
+		);
+		INFLIGHT.set(key, p);
+		return p;
+	};
+
+	// ── localStorage：索引会话缓存 / 工作会话缓存 ──────────────────────
+	const cacheRaw = () => {
+		try {
+			if (typeof localStorage === "undefined" || !localStorage) return null;
+			return localStorage.getItem(indexCacheKey());
+		} catch (e) { return null; }
+	};
+	const cacheWrite = (srWs, sid, title) => {
+		try {
+			if (typeof localStorage === "undefined" || !localStorage) return;
+			localStorage.setItem(indexCacheKey(), indexCacheSerialize(srWs, sid, title || ""));
+		} catch (e) { /* 无缓存也能用 */ }
+	};
+	const workCacheRaw = () => {
+		try {
+			if (typeof localStorage === "undefined" || !localStorage) return null;
+			return localStorage.getItem(workCacheKey());
+		} catch (e) { return null; }
+	};
+	const workCacheSet = (root, sid) => {
+		try {
+			if (typeof localStorage === "undefined" || !localStorage) return;
+			const raw = workCacheRaw();
+			localStorage.setItem(workCacheKey(), sid === null || sid === void 0 ? workCacheDrop(raw, root) : workCachePut(raw, root, sid));
+		} catch (e) { /* 无缓存也能用 */ }
+	};
+
+	/** 本机权限预设目录（一页只读一次；读不到就 `null`，按最坏情况处理）。 */
+	let permCatalog = null;
+	let permCatalogDone = false;
+	const permissionCatalog = () => {
+		if (permCatalogDone) return Promise.resolve(permCatalog);
+		return safeCall("permissionPresets.catalog", () => ctx.remote.permissionPresets.catalog()).then((r) => {
+			permCatalogDone = true;
+			permCatalog = r && r.ok ? r.value : null;
+			return permCatalog;
+		});
+	};
+
+	/** 建完就把新工作区 / 新会话并进**客户端 store**（否则侧边栏要按 F5 才看得见）。 */
+	const syncSidebarStores = async (path) => {
+		const workspacesSvc = svc(ctx, "workspaces");
+		const sessionsSvc = svc(ctx, "sessions");
+		const plan = planSidebarSync({
+			path: path || "",
+			services: {
+				workspaces: !!(workspacesSvc && typeof workspacesSvc.create === "function"),
+				sessions: !!(sessionsSvc && typeof sessionsSvc.refresh === "function")
+			}
+		});
+		const notes = plan.notes.slice();
+		if (!sidebarSyncNeeded(plan)) return { plan: plan, notes: notes };
+		const tryCall = async (name, fn) => {
+			try { return { name: name, ok: true, value: await fn() }; }
+			catch (e) { return { name: name, ok: false, error: { message: String((e && e.message) || e) } }; }
+		};
+		for (const step of plan.steps) {
+			if (step === "workspaces.create") {
+				const r = await tryCall("workspaces.create", () => workspacesSvc.create({ path: plan.resolvePath }));
+				if (!r.ok) notes.push("工作区分组没能即时并进侧边栏（" + humanError(r) + "）。");
+			} else {
+				const r = await tryCall("sessions.refresh", () => sessionsSvc.refresh());
+				if (!r.ok) notes.push("会话行没能即时并进侧边栏（" + humanError(r) + "）。");
+			}
+		}
+		return { plan: plan, notes: notes };
+	};
+
+	/**
+	 * 按 `root` 建一条带可识别标题的会话（**唯一的建会话出口**）。
+	 * 坑只留一处：`session.create` 的 `workspaceId` 与 `cwd` **互斥** ——
+	 * 拿不到 workspaceId 时才退回给 cwd（会话落进「未分组」，但可用）。
+	 */
+	const createSessionAt = async (root, title, preset, opts) => {
+		const o = opts || {};
+		const note = [];
+		const port = portOf("");
+		const ws = await port.ensureWorkspace(root);
+		const wsId = ws.ok ? idText(ws.value && ws.value.workspace ? ws.value.workspace.workspaceId : (ws.value && ws.value.workspaceId)) : "";
+		if (!ws.ok) note.push("按路径登记工作区失败（改用 cwd 建会话）：" + humanError(ws));
+		/**
+		 * 建会话时带「策划模式」预设（`agentPreset`）。
+		 *
+		 * ★ 它随 **bundle 的 patch** 分发 ⇒ 只有包在 profile 的 `dsh.profile.bundles` 里才存在。
+		 *   万一没挂上（有人只手写插件行、没把包加进 bundles），host 会拒绝这个预设 ——
+		 *   那时**退一步建一条不带预设的会话**并如实说清"这条会话没有决策记录契约"，
+		 *   总好过让「新建功能」停在半个目录上（决策靠 skill 侧的写入规范仍然管得住）。
+		 */
+		const withPreset = preset || PLAN_PRESET;
+		const reqOf = (p) => (wsId
+			? (p ? { workspaceId: wsId, agentPreset: p } : { workspaceId: wsId })
+			: (p ? { cwd: root, agentPreset: p } : { cwd: root }));
+		let cr = await port.createSession(reqOf(withPreset));
+		if (!cr.ok && withPreset) {
+			const retry = await port.createSession(reqOf(""));
+			if (retry.ok) {
+				note.push("「策划模式」预设没挂上（`agentPreset: " + withPreset + "` 被拒：" + humanError(cr) + "）—— " +
+					"这条会话用的是 **profile 的默认预设**，**决策记录契约不在它的上下文里**（其余照常）。" +
+					"原因多半是包没进 profile 的 `dsh.profile.bundles`（预设只能随 bundle 的 patch 分发）：补上后重建这条会话即可。");
+				cr = retry;
+			}
+		}
+		if (!cr.ok) return { sid: "", error: humanError(cr), note: note, wsId: wsId };
+		const sid = idText(cr.value && (cr.value.sessionId || cr.value));
+		if (!sid) return { sid: "", error: "会话已创建，但拿不到 sessionId。", note: note, wsId: wsId };
+		if (title) {
+			const rn = await port.renameSession(sid, title);
+			if (!rn.ok) note.push("会话建好了但改名失败（下次按缓存认回来）：" + humanError(rn));
+		}
+		if (o.fullAccess) {
+			const plan = permissionPlanOf(await permissionCatalog());
+			if (plan.needed) {
+				const ex = await port.execCommand(sid, permissionCommandLine(plan.preset));
+				const back = await listSessions(o.signal);
+				const row = back.ok ? rowsFromList(back.value).filter((r) => r.id === sid)[0] : null;
+				note.push(permissionResultNote(
+					!!(ex && ex.ok),
+					ex && ex.ok ? ((ex.value && (ex.value.text || ex.value.kind)) || "") : humanError(ex),
+					row ? row.preset : ""
+				));
+			} else if (plan.note) {
+				note.push(plan.note);
+			}
+		}
+		const sync = await syncSidebarStores(root);
+		for (const n of sync.notes) note.push(n);
+		return { sid: sid, error: "", note: note, title: title || "", wsId: wsId };
+	};
+
+	/**
+	 * ═══ 解析「读通道」：索引会话 ═══
+	 *   1. 先借一条**任何可用**的会话，只为读 sr 配置（`read` 不受工作区限制）；
+	 *   2. 按候选根读 `config.local.json` → 绝对锚点 `sr_workspace`；
+	 *   3. **正式认领**：只认**面板自己的**（标题前缀 / 自己写的缓存），且必须能列出 root；
+	 *   4. 认不着就新建。
+	 */
+	const resolveIndexSession = async (o) => {
+		const note = [];
+		const signal = o.signal;
+		let rows = (o.rows || []).filter((r) => r && r.id);
+		if (rows.length === 0) {
+			const L = await listSessions(signal);
+			if (L.ok) rows = rowsFromList(L.value);
+			else note.push("会话列表读取失败：" + humanError(L));
+		}
+		const arch = { ids: o.archived === undefined ? null : o.archived };
+		if (arch.ids === null) note.push(NO_ARCHIVE_INFO_NOTE);
+
+		const cached = indexCacheParse(cacheRaw());
+		const cachedMine = indexCacheOwned(cached);
+		if (cached && !cachedMine) note.push(FOREIGN_CACHE_NOTE);
+		const cachedSid = cached && cached.sid ? String(cached.sid) : "";
+		const cachedArchived = isArchivedId(arch.ids, cachedSid);
+		if (cachedMine && cachedArchived) note.push(ARCHIVED_CACHED_NOTE);
+		const ownCachedSid = cachedMine && !cachedArchived ? cachedSid : "";
+
+		const roots = [];
+		if (cfg.projectRoot) roots.push(cfg.projectRoot);
+		for (const p of (o.wsPaths || [])) roots.push(p);
+		for (const r of rows) if (r.cwd) roots.push(r.cwd);
+		roots.push(DEFAULT_ROOT);
+
+		// 1) 借一条能读文件的会话（这一步不排除归档：它只被 read 用）
+		const boot = pickIndexSession(rows, "", { cachedId: cachedArchived ? "" : cachedSid, borrow: true });
+		if (!boot) {
+			return { ok: false, error: "一条会话都没有 —— 先在左侧建一条会话（任意工作区），面板要用它读文件。", note: note };
+		}
+
+		// 2) 读 sr 配置 → 绝对锚点
+		const cands = [];
+		if (cfg.configPath) cands.push(cfg.configPath);
+		for (const p of configPathCandidates(roots)) cands.push(p);
+		let cfgPath = "";
+		let cfgObj = null;
+		for (const p of cands) {
+			try {
+				const r = await read(boot.id, p, { offset: 1, limit: 200 }, signal);
+				if (!r || r.ok !== true || !r.value || typeof r.value.text !== "string") continue;
+				const parsed = JSON.parse(r.value.text);
+				if (parsed && parsed.sr_workspace) { cfgObj = parsed; cfgPath = p; break; }
+			} catch (e) { /* 换下一个候选 */ }
+		}
+		const srWs = cfgObj ? String(cfgObj.sr_workspace).replace(/[\\/]+$/, "") : "";
+		const root = srWs || cfg.projectRoot || DEFAULT_ROOT;
+		if (!cfgObj) {
+			note.push("没读到 sr 配置（试过 " + cands.length + " 个候选路径）—— 工作区锚点未知；先跑一次 `/sr-askme`，" +
+				"或确认**工作区根**下有 `.agents\\skills\\sr-askme\\config.local.json`。");
+		}
+		srWsCache = srWs;
+
+		// 3) 正式认领（先 store 行 → 认不着就拉一次列表 → 再认）
+		const pickOwn = () => pickIndexSession(rows, root, { cachedId: ownCachedSid, archived: arch.ids });
+		let hit = pickOwn();
+		if (!hit) {
+			const L = await listSessions(signal);
+			if (L.ok) { rows = mergeRows(rows, rowsFromList(L.value)); hit = pickOwn(); }
+		}
+		if (hit) {
 			/**
-			 * 看板重读。**保留旧数据直到新数据到手**（不清空、不显示"正在读"）——
-			 * 否则每次后台变化都会把屏幕闪一下。
+			 * ★ 这里**不再**提示"侧边栏里有 N 条索引会话"（用户口径：不额外占位置）。
+			 *   那是**整理建议**，不是故障：面板照旧用最近更新的那条、照旧写缓存，功能一点不受影响。
+			 *   真需要清理时，去侧边栏把多余的那条归档即可（一次性动作）。
+			 *   保留 `hit.others` 这个事实（`pickIndexSession` 还会算它），只是不再往界面上顶一行。
 			 */
-			const reloadBoard = () => {
-				if (typeof loader !== "function" || !sessionId || state.phase !== "ready") return;
-				const ac = new AbortController();
-				loader(sessionId, cwd, ac.signal, (idx && idx.extraPaths) || []).then(
-					(data) => setState((prev) => (prev.phase === "ready" ? Object.assign({}, prev, { data: data }) : prev)),
-					() => { /* 重读失败：保留旧数据，界面上"已是最新"那句话不会被编出来 */ }
-				);
-			};
+			cacheWrite(root, hit.id, titleOf(hit.row));
+			return { ok: true, sid: hit.id, root: root, srWs: srWs, configFile: cfgPath, source: hit.source, note: note };
+		}
 
-			/**
-			 * 落一次重读（自动与手动共用一个出口）。
-			 * @param parts 要重读的部件（`unionParts` 的结论，或手动刷新时给全集）
-			 */
-			const applyReload = (parts) => {
-				if ((parts || []).indexOf("board") >= 0) reloadBoard();
-				bumpParts(parts);
-				setLive((prev) => Object.assign({}, prev, { pending: 0, reloads: prev.reloads + 1 }));
-			};
-			flushRef.current = applyReload;
+		// 4) 新建（索引会话只读，不切权限）
+		const title = indexTitleFor(root);
+		const made = await singleFlight("index:" + normPath(root), () => createSessionAt(root, title, PLAN_PRESET, { fullAccess: false, signal: signal }));
+		for (const n of made.note) note.push(n);
+		if (made.error) return { ok: false, error: "无法创建索引会话：" + made.error, note: note };
+		cacheWrite(root, made.sid, title);
+		return { ok: true, sid: made.sid, root: root, srWs: srWs, configFile: cfgPath, source: "created", note: note };
+	};
 
-			/**
-			 * 手动刷新（**永远保留的兜底**）：所有部件重读一遍。
-			 * ★ 通道不可用时（没有索引会话 / 宿主不支持 watch / 帧永不 ready）它就派上用场 ——
-			 *   所以这个按钮**任何状态下都在**，降级时界面上会明说"用「刷新」或 F5"。
-			 */
-			const onManualRefresh = () => applyReload(RELOAD_PARTS);
+	/**
+	 * 建那 5 个目录（`features\` + 功能目录 + 4 个桶）。**三条路按能力退** —— 理由见 `createFeature` 的注释。
+	 * @returns `{ ok, done: string[], message, next }` —— 失败时 message/next 直接给用户看。
+	 */
+	const scaffoldDirs = async (port, base, topic, buckets, indexSid, signal, notes, wait) => {
+		const root = featureRootFor(base, topic);
+		const done = [];
+		const uw = svc(ctx, "uiWorkspace");
 
-			// ════════════════════════════════════════════════════════════════
-			// ★ 工单 22 · 新建功能（一个动作）
-			//   面板在这条路上**不写盘**（`CONTEXT.md`「面板只读 / agent 执行」）：
-			//     ① 校验（纯函数 + 只读事实）→ 不过就**一个字节都不写、连指令都不发**；
-			//     ② 把算好的指令发给**无归属工作会话**（cwd = SR 工作区根；功能专属工作区此刻还不存在）；
-			//     ③ **窄轮询回读**：列功能根 + 读 feature.json（两次调用）→ 判定在纯函数 `verifyCreated` 里；
-			//     ④ 目录一出现就看板重读（**卡片立刻出现，不用 F5**）；建全了再登记专属工作区 + 建工作会话。
-			//   ★ 为什么"建"这件事必须由 agent 做：Remote 层只有读 + 指令侧五法，**没有写文件的能力**
-			//     （`lib/client.js` 的端口注释与 spec 的 Out of Scope「编辑文件」都写着这一条）。
-			// ════════════════════════════════════════════════════════════════
-			/** 轮询节奏：1.5 秒一次，最多 200 次（5 分钟）——agent 侧建目录通常几秒到十几秒 */
-			const CREATE_POLL_MS = 1500;
-			const CREATE_POLL_MAX = 200;
-
-			const stopCreateTimer = () => {
-				if (createTimer.current) { clearTimeout(createTimer.current); createTimer.current = null; }
-			};
-
-			/** 建好之后的收口：登记专属工作区 + 建专属工作会话（走工单 07 的统一出口） */
-			const finishCreate = (info, verdict) => {
-				stopCreateTimer();
-				createToken.current = "";
-				setCreating(null);
-				setCreated({ topic: info.topic, root: info.root, sid: info.sid || "", note: verdict ? verdict.note : "" });
-				setNotice({ kind: "ok", text: createDoneNotice(info.topic, info.id, info.root) });
-				reloadBoard();      // ★ 卡片立刻出现（不用 F5）
-				if (typeof props.__ensureWork !== "function") return;
-				props.__ensureWork(info.root, sessionRows, {}).then(
-					(got) => {
-						if (got && got.ok) {
-							setCreated((prev) => (prev && prev.topic === info.topic ? Object.assign({}, prev, { sid: got.sid || prev.sid }) : prev));
-							return;
-						}
-						setNotice({
-							kind: "err",
-							text: "功能建好了，但它的**专属工作区/工作会话**没建起来：" + ((got && got.error) || "原因未知") +
-								"　下一步：刷新页面再进它的详情 —— 面板会按路径 + 标题重新认领或新建（不会落进「未分组」）。"
-						});
-					},
-					(e) => setNotice({
-						kind: "err",
-						text: "功能建好了，但建它的专属工作会话时抛错：" + String((e && e.message) || e) +
-							"　下一步：刷新页面再进它的详情（面板会按路径 + 标题重新认领/新建）。"
-					})
-				);
-			};
-
-			/** 一次窄回读（列功能根 + 读 feature.json）→ 判定；建全了就收口，否则排下一次 */
-			const pollCreate = (info, tries, token) => {
-				if (createToken.current !== token) return;
-				const p = typeof props.__readBack === "function"
-					? props.__readBack(sessionId, info.root, info.id)
-					: Promise.reject(new Error("面板拿不到回读通道（__readBack 没挂上）"));
-				p.then(
-					(verdict) => {
-						if (createToken.current !== token) return;
-						const v = verdict || null;
-						if (v && v.state !== "absent" && !createSawDir.current) {
-							createSawDir.current = true;
-							reloadBoard();      // ★ 目录一出现就看板重读 —— 这一刻卡片就该出现在下面
-						}
-						if (v && v.state === "done") { finishCreate(info, v); return; }
-						setCreating(Object.assign({}, info, {
-							state: v ? v.state : "absent",
-							progress: v ? v.progress : info.progress,
-							note: v ? v.note : ""
-						}));
-						if (tries + 1 >= CREATE_POLL_MAX) {
-							stopCreateTimer();
-							createToken.current = "";
-							setCreating(null);
-							setNotice({ kind: "err", text: createTimeoutNotice(info.topic, v, info.sid) });
-							return;
-						}
-						createTimer.current = setTimeout(() => pollCreate(info, tries + 1, token), CREATE_POLL_MS);
-					},
-					() => {
-						// 回读本身失败（列举/读取通道坏了）：**不当成建完**，接着等下一轮（超时那一刻会如实说）
-						if (createToken.current !== token) return;
-						createTimer.current = setTimeout(() => pollCreate(info, tries + 1, token), CREATE_POLL_MS);
-					}
-				);
-			};
-
-			/** 〔建立〕：**先校验后创建** ——
-			 *  ① 提交时再拉一次最新事实（看板数据可能已经旧了）并重新校验；不过就只显示话术、**不发指令**；
-			 *  ② 发出去之后开始窄轮询回读。 */
-			const submitCreate = (plan, srWs, wsPathsNow) => {
-				if (newBusy || creating) return;
-				if (!plan || !plan.ok) {
-					setNotice({ kind: "err", text: (plan && plan.message ? plan.message + "　" + plan.next : "这条建不了。") });
-					return;
+		/** ① 宿主目录原语（**只有 browse 后端才有**） */
+		if (uw && typeof uw.createDirectory === "function") {
+			const mk = async (parent, name) => {
+				try {
+					await uw.createDirectory(parent, name);
+					return { ok: true, code: "", message: "" };
+				} catch (e) {
+					const code = String((e && (e.code || (e.details && e.details.code))) || "");
+					return { ok: false, code: code, message: String((e && e.message) || e) };
 				}
-				if (typeof props.__createFacts !== "function" || typeof props.__createFeature !== "function") {
-					setNotice({ kind: "err", text: "面板拿不到「新建功能」的通道（__createFacts / __createFeature 没挂上）—— 刷新页面再试。" });
-					return;
-				}
-				setNewBusy(true);
-				props.__createFacts(sessionId, srWs).then(
-					(fresh) => {
-						if (fresh && fresh.note) {
-							// 事实都读不到 ⇒ **不发**（宁可让人先解决"读不到"，也不冒"建重了"的风险）
-							setNewBusy(false);
-							setNotice({ kind: "err", text: fresh.note + "　下一步：先让面板能列出 sr 工作区（确认锚点与索引会话），再点「建立」。" });
-							return;
-						}
-						const facts = {
-							dirNames: (fresh && fresh.dirNames) || [],
-							features: (fresh && fresh.features) || [],
-							wsPaths: (wsPathsNow || []).slice(),
-							compact: compactDate(Date.now()),
-							created: dashedDate(Date.now()),
-							srWs: srWs
-						};
-						const verdict = planNewFeature(plan.topic, facts, srWs);
-						if (!verdict.ok) {
-							setNewBusy(false);
-							setNotice({ kind: "err", text: verdict.message + "　下一步：" + verdict.next });
-							return;
-						}
-						props.__createFeature(verdict, { srWs: srWs, rows: sessionRows }).then(
-							(res) => {
-								setNewBusy(false);
-								if (!res || !res.ok) {
-									setNotice({
-										kind: "err",
-										text: ((res && res.message) || "发送失败。") + (res && res.next ? "　下一步：" + res.next : "")
-									});
-									return;
-								}
-								setNewOpen(false);
-								createSawDir.current = false;
-								const token = "c" + Date.now() + "-" + Math.random().toString(36).slice(2, 7);
-								createToken.current = token;
-								const info = {
-									topic: verdict.topic, id: verdict.id, root: verdict.root, sid: res.sid || "",
-									state: "sent", progress: "已看到：功能目录 —（还在建）", note: ""
-								};
-								setCreating(info);
-								setCreated(null);
-								setNotice({ kind: null, text: createSentNotice(verdict.topic) + (res.note ? "　" + res.note : "") });
-								createTimer.current = setTimeout(() => pollCreate(info, 0, token), CREATE_POLL_MS);
-							},
-							(e) => {
-								setNewBusy(false);
-								setNotice({ kind: "err", text: "发送失败：" + String((e && e.message) || e) + "　下一步：刷新页面再点一次「建立」。" });
-							}
-						);
-					},
-					(e) => {
-						setNewBusy(false);
-						setNotice({ kind: "err", text: "读已有的功能目录失败：" + String((e && e.message) || e) + "　下一步：先让面板能列工作区，再点「建立」。" });
-					}
-				);
 			};
-
-			/** 〔不再等〕：停轮询 + 如实说"它建好了的话点刷新就看得到" */
-			const stopWaiting = () => {
-				const info = creating;
-				stopCreateTimer();
-				createToken.current = "";
-				setCreating(null);
-				if (info) setNotice({ kind: null, text: createCancelNotice(info.topic, { progress: info.progress } ) });
-			};
-
-			/** 版本袋 → "已应用"，并按当前清单刷新指纹 */
-			const commitBag = (detailData) => {
-				appliedRef.current = mergeApplied(appliedRef.current, bagRef.current);
-				const paths = listingAbs(detailData);
-				const fp = fingerprintOf(appliedRef.current, paths);
-				setLive((prev) => Object.assign({}, prev, { digest: fp.digest }));
-				return fp;
-			};
-
-			/**
-			 * 详情清单里每个文件 `stat` 一遍 —— 版本指纹的**完整**凭据。
-			 * ★ 为什么值得多花这一轮：`read` 只覆盖"面板真的读过的文件"（定稿头部、analysis 产物…），
-			 *   而清单里还有 24 个里没被读过的那些（图片、宣讲稿）。stat 只取元数据、不取内容，
-			 *   一次 20~40 个调用的代价换"指纹真的等于这个功能目录的当前状态"。
-			 * ★ 它也是**正确性底线**的落点：帧通道漏了（watch 不支持 / 更深一层）时，
-			 *   下一次重读会把真版本收回来 → `stalePaths` 能判出来。
-			 */
-			const sweepVersions = (detailData) => {
-				if (typeof statManyRunner !== "function" || !sessionId) return;
-				const paths = listingAbs(detailData);
-				if (paths.length === 0) return;
-				const ac = new AbortController();
-				statManyRunner(sessionId, paths, ac.signal).then(
-					(map) => {
-						appliedRef.current = mergeApplied(appliedRef.current, map);
-						const fp = fingerprintOf(appliedRef.current, paths);
-						setLive((prev) => Object.assign({}, prev, { digest: fp.digest }));
-					},
-					() => { /* stat 批失败：指纹留在上一份，界面照实显示旧指纹（不编新的） */ }
-				);
-			};
-
-			/** 去抖合批：静默 300ms 落一次；一直在写也不能超过 1.5s（判据在纯函数里） */
-			const scheduleFlush = () => {
-				if (timerRef.current) clearTimeout(timerRef.current);
-				const tick = () => {
-					const b = batchRef.current;
-					if (!b) { timerRef.current = null; return; }
-					if (!shouldFlush(b, Date.now())) { timerRef.current = setTimeout(tick, 120); return; }
-					timerRef.current = null;
-					batchRef.current = null;
-					const parts = unionParts(b.plans);
-					setLive((prev) => Object.assign({}, prev, { changed: b.why.slice(-8), at: Date.now() }));
-					if (flushRef.current) flushRef.current(parts);
-				};
-				timerRef.current = setTimeout(tick, FLUSH_QUIET_MS);
-			};
-
-			/** 把一条"该重读了"的路径塞进当前批（帧与 stat 核对共用） */
-			const enqueueChange = (path, version, reason) => {
-				// ★ 目录版本**当场记下**（唯一记它的地方）：核对时不再为同一个目录版本反复重读。
-				//   文件的版本不在这里记 —— 它要由重读（stat 批）收回来，这样重读失败时还能再被发现。
-				if (version && planRef.current && (planRef.current.dirs || []).some((d) => normPath(d) === normPath(path))) {
-					dirSeenRef.current = mergeApplied(dirSeenRef.current, { [path]: version });
-				}
-				const b = batchRef.current || (batchRef.current = { firstAt: Date.now(), lastAt: 0, plans: [], paths: {}, why: [] });
-				b.lastAt = Date.now();
-				b.paths[normPath(path)] = version || "";
-				b.plans.push(planReload({ path: path }, { root: ctxRef.current.root, srWs: ctxRef.current.srWs }));
-				// ★ 工单 24：这一批是不是碰到了"文档生成工作面依赖的桶"（gdd\ 顶层 / evidence\）
-				const targets = (planRef.current && planRef.current.targets) || [];
-				const hit = targets.filter((tp) => normPath(tp) === normPath(path))[0] || "";
-				if (hit !== "") {
-					const rel = String(ctxRef.current.root || "") !== "" && containsPath(ctxRef.current.root, hit)
-						? normPath(hit).slice(normPath(ctxRef.current.root).length + 1)
-						: "";
-					const seg = String(rel).split("\\")[0].toLowerCase();
-					draftBucketRef.current = (seg === "gdd" || seg === "evidence");
+			let bad = null;
+			const mkFeatures = await mk(base, "features");
+			if (!mkFeatures.ok && mkFeatures.code !== "directory-exists") bad = { what: "features\\", r: mkFeatures };
+			if (!bad) {
+				done.push("features\\");
+				const mkRoot = await mk(base + "\\features", topic);
+				if (!mkRoot.ok && mkRoot.code !== "directory-exists") {
+					bad = { what: topic + "\\", r: mkRoot };
 				} else {
-					draftBucketRef.current = false;      // 别的桶（analysis / decisions / …）
-				}
-				b.why.push(path + (reason ? "（" + reason + "）" : ""));
-				setLive((prev) => Object.assign({}, prev, { phase: "on", pending: Object.keys(b.paths).length }));
-				scheduleFlush();
-			};
-
-			/** 收到一帧（或一条订阅状态）—— 组合根回调，可能在 React 之外 */
-			const onLiveEvent = (ev) => {
-				const e = ev || {};
-				if (e.kind === "ready") {
-					readyCountRef.current = Number(e.ready) || (readyCountRef.current + 1);
-					setLive((prev) => Object.assign({}, prev, { phase: "on", ready: readyCountRef.current, total: Number(e.total) || prev.total, reason: "" }));
-					return;
-				}
-				if (e.kind === "down") {
-					setLive((prev) => Object.assign({}, prev, { phase: "down", reason: e.reason || "订阅建立失败" }));
-					return;
-				}
-				if (e.kind === "error") {
-					setLive((prev) => Object.assign({}, prev, {
-						phase: prev.ready > 0 ? prev.phase : "down",
-						reason: "订阅报错：" + (e.error || "原因未知") + "（这个目标的自动跟随停了）"
-					}));
-					return;
-				}
-				if (e.kind === "end") {
-					setLive((prev) => Object.assign({}, prev, { phase: "down", reason: "订阅被宿主结束（目标可能被删了）" }));
-					return;
-				}
-				if (e.kind !== "frame") return;
-				const parsed = parseFrame(e.frame);
-				if (!parsed) {
-					setLive((prev) => Object.assign({}, prev, { skipped: prev.skipped + 1 }));
-					return;
-				}
-				if (parsed.kind === "ready") {
-					readyCountRef.current = readyCountRef.current + 1;
-					setLive((prev) => Object.assign({}, prev, { phase: "on", ready: readyCountRef.current }));
-					return;
-				}
-				const notice = parsed.change;
-				// ★ 自激防护：同一份内容（version 相同）不重读 —— 判定在 `acceptFrame` 里
-				const verdict = acceptFrame(notice, { applied: appliedRef.current, file: ctxRef.current.openPath });
-				if (!verdict.accept) {
-					setLive((prev) => Object.assign({}, prev, { skipped: prev.skipped + 1 }));
-					return;
-				}
-				setLive((prev) => Object.assign({}, prev, { frame: JSON.stringify(e.frame), at: Date.now() }));
-				enqueueChange(notice.path, notice.version, notice.absent ? "目标已不在" : "");
-			};
-			onLiveEventRef.current = onLiveEvent;
-
-			/**
-			 * stat 核对（切回面板 / 焦点回来 / 低频轮询）—— **正确性底线**。
-			 * 帧通道可能不可用或漏（更深一层、watch 不支持），这条不依赖帧：
-			 * 直接拿当前文件与被订阅目录的版本与"屏幕上那份"比，不一致就重读。
-			 *
-			 * ★ 两边的**记账不同**，这是为了不出现"每 15 秒重读一次"的慢自激：
-			 *   · **文件**：与 `applied` 比；不一致**不**在这里改 `applied` —— 真版本要由重读
-			 *     （stat 批）收回来。好处：重读失败时下一轮还会再发现（每 15 秒重试一次，不是死循环）。
-			 *   · **目录**：与 `dirSeen` 比；看见的版本由 `enqueueChange` 当场记下 ——
-			 *     重读只 stat 清单里的文件、**不 stat 目录**，不记的话同一个目录版本会被每一轮
-			 *     核对都判成"不一致"，于是每 15 秒白重读一次。
-			 */
-			const checkNow = () => {
-				if (typeof statManyRunner !== "function" || !sessionId || !ctxRef.current.root) return;
-				const dirs = ((planRef.current && planRef.current.dirs) || []).slice();
-				const files = ctxRef.current.openPath ? [ctxRef.current.openPath] : [];
-				if (dirs.length === 0 && files.length === 0) return;
-				const ac = new AbortController();
-				statManyRunner(sessionId, files.concat(dirs), ac.signal).then((map) => {
-					const dirKeys = {};
-					for (const d of dirs) dirKeys[normPath(d)] = true;
-					const fileMap = {}, dirMap = {};
-					for (const p of Object.keys(map)) {
-						if (dirKeys[normPath(p)]) dirMap[p] = map[p]; else fileMap[p] = map[p];
+					done.push(topic + "\\");
+					for (const b of buckets) {
+						const rb = await mk(root, b);
+						if (!rb.ok && rb.code !== "directory-exists") { bad = { what: b + "\\", r: rb }; break; }
+						done.push(b + "\\");
 					}
-					const staleFiles = stalePaths(appliedRef.current, fileMap);
-					const staleDirs = stalePaths(dirSeenRef.current, dirMap);
-					if (staleFiles.length === 0 && staleDirs.length === 0) return;
-					// 目录版本的记账在 `enqueueChange` 里（唯一一处）；这里只负责判与入队
-					for (const p of staleDirs.concat(staleFiles)) enqueueChange(p, map[p], "stat 核对发现不一致");
-				}, () => { /* stat 失败：这次核对放弃，绝不假装"已是最新" */ });
-			};
-
-			/**
-			 * ★ 进功能 / 在功能里换工作面时订阅变更（工单 16 的主刀）。
-			 *
-			 * 三个不许省的细节：
-			 *   ① 用**索引会话**的 id 订阅（`list` 与 `changes` 都锁在会话工作区内 —— 开发笔记坑 3），
-			 *      而功能目录在 SR 根之下，所以只有 cwd 覆盖 SR 根的索引会话看得见它；
-			 *   ② 目标要**逐个目录**给（0.2.0 的 watch 是 depth 0：只订阅功能根看不见 `gdd\` 里的写入）；
-			 *   ③ 离开功能 / 换工作面就 `abort`（信号）+ 释放订阅（`dispose`）—— 不留悬挂的流。
-			 */
-			const watchKey = (dview && !dview.error && String(dview.root || "") === String(featureRoot || "") && featureRoot !== "")
-				? "d:" + ((dview.dirs || []).join("|")) + "#n:" + ((dview.nestedDirs || []).join("|"))
-				: "";
-			React.useEffect(() => {
-				if (view !== "detail" || !detailTopic || !sessionId || state.phase !== "ready" || !featureRoot || watchKey === "") {
-					setLive((prev) => Object.assign({}, prev, { phase: "off", ready: 0, total: 0 }));
-					return;
 				}
-				if (typeof watchRunner !== "function") {
-					setLive((prev) => Object.assign({}, prev, { phase: "down", reason: "订阅器没挂上（__watch 缺失）" }));
-					return;
-				}
-				const plan = watchPlan({
-					root: featureRoot,
-					dirs: (dview && dview.dirs) || [],
-					nested: (dview && dview.nestedDirs) || [],
-					file: openFinal
-				});
-				planRef.current = plan;
-				readyCountRef.current = 0;
-				setLive((prev) => Object.assign({}, prev, {
-					phase: "connecting", ready: 0, total: plan.targets.length,
-					reason: plan.dropped.length ? "有 " + plan.dropped.length + " 个目标超出订阅上限（这些位置不会自动跟随）" : ""
-				}));
-				const ac = new AbortController();
-				const handle = watchRunner(sessionId, plan.targets, onLiveEventRef.current, ac.signal);
-				// 「帧永不 ready」也要如实降级：8 秒一条 ready 都没有 ⇒ 不说自己在跟随
-				const t = setTimeout(() => {
-					if (ac.signal.aborted || readyCountRef.current > 0) return;
-					setLive((prev) => Object.assign({}, prev, { phase: "down", reason: "订阅建起来了但一直没有就绪帧（宿主可能不支持 watch）" }));
-				}, 8000);
-				return () => {
-					ac.abort();
-					clearTimeout(t);
-					if (handle && typeof handle.dispose === "function") handle.dispose();
-				};
-			}, [view, detailTopic, sessionId, state.phase, featureRoot, watchKey, openFinal]);
-
-			/** 低频轮询 + 焦点回来核对：用户盯着改的就是"当前这一个文件" */
-			React.useEffect(() => {
-				if (view !== "detail" || !sessionId || state.phase !== "ready") return;
-				const id = setInterval(() => checkNow(), 15000);
-				const onFocus = () => {
-					try { if (typeof document !== "undefined" && document.hidden) return; } catch (e) { /* 无 document：照样核 */ }
-					checkNow();
-				};
-				try {
-					window.addEventListener("focus", onFocus);
-					document.addEventListener("visibilitychange", onFocus);
-				} catch (e) { /* 无 window/document：只留轮询 */ }
-				return () => {
-					clearInterval(id);
-					try {
-						window.removeEventListener("focus", onFocus);
-						document.removeEventListener("visibilitychange", onFocus);
-					} catch (e) { /* 同上 */ }
-				};
-			}, [view, detailTopic, sessionId, state.phase, openFinal]);
-
-			/** 换功能就把版本与订阅状态清干净（否则新功能的指纹会掺进上一个功能的文件） */
-			const topicSeenRef = React.useRef("");
-			React.useEffect(() => {
-				if (topicSeenRef.current === detailTopic) return;
-				topicSeenRef.current = detailTopic;
-				appliedRef.current = {};
-				dirSeenRef.current = {};
-				bagRef.current = {};
-				batchRef.current = null;
-				planRef.current = null;
-				draftSigRef.current = "";
-				setLive({ phase: "off", reason: "", ready: 0, total: 0, digest: "", pending: 0, changed: [], frame: "", at: 0, reloads: 0, skipped: 0 });
-			}, [detailTopic]);
-
-			/**
-			 * ★ 工单 12：进「功能详情」时读**产物清单 + 校验清单**。
-			 * 一次读，两个页签与状态块共用（不按页签重复扫盘）。
-			 * 与看板的边界：看板只给"卡片级"结论（finalCheck 等）；这里给详情级（逐文件、逐条校验）。
-			 *
-			 * ★ 工单 16 两处改动：
-			 *   ① 依赖里多了 `rev.detail` —— 变更订阅判定"该重读详情"时，**只有这一条 effect 重跑**；
-			 *   ② 不再在开头 `setDetail(null)`：重读期间**保留屏幕上的旧数据**（不清屏、不丢用户
-			 *      已展开的条目），换功能时的清空改由渲染期的 `detail.root === f.root` 守卫负责。
-			 */
-			React.useEffect(() => {
-				if (view !== "detail" || !detailTopic || !sessionId || state.phase !== "ready") { setDetail(null); return; }
-				const d0 = state.data;
-				const feat = (d0.features || []).filter((x) => x.topic === detailTopic)[0];
-				if (!feat || !feat.root) { setDetail({ error: "拿不到功能根目录：详情读不了。" }); return; }
-				let cancelled = false;
-				const ac = new AbortController();
-				if (typeof detailLoader !== "function") {
-					setDetail({ error: "详情加载器没挂上（__detail 缺失）。" });
-					return () => { cancelled = true; ac.abort(); };
-				}
-				detailLoader(sessionId, feat.root, ac.signal, bagRef.current).then(
-					(r) => {
-						if (cancelled) return;
-						setDetail(stamped(r));
-						// 指纹：先按"读到了哪几个"给一个，再 stat 一遍清单把它补成完整的
-						commitBag(r);
-						sweepVersions(r);
-					},
-					(e) => { if (!cancelled) setDetail(stamped({ error: "读产物清单失败：" + String((e && e.message) || e) })); }
-				);
-				return () => { cancelled = true; ac.abort(); };
-			}, [view, detailTopic, sessionId, state.phase, rev.detail]);
-
-			/**
-			 * ★ 工单 23：进「头脑风暴」工作面时读**已有的分析结论** + 两种新格式的解析。
-			 *
-			 * 依赖 `detail`：产物清单是工单 12 那份（**同一份来源**），这里只拿 `analysis` 组做事 ——
-			 * 不重新列目录，免得"面板列出的产物"与"工作面认出的结论"两处对不上。
-			 * 出口判据那一句话也是搬 `detail.stage.note`（在 `artifacts.ts` 里算的），这一层不重算。
-			 */
-			React.useEffect(() => {
-				if (view !== "detail" || dtab !== "brainstorm" || !sessionId || state.phase !== "ready") { setBrain(null); return; }
-				const dready = ofTopic(detail);
-				if (!dready || dready.error) { setBrain(null); return; }
-				if (typeof brainstormLoader !== "function") {
-					setBrain({ error: "头脑风暴加载器没挂上（__brainstorm 缺失）。" });
-					return;
-				}
-				const root = dready.root || "";
-				if (!root) { setBrain({ error: "拿不到功能根目录：头脑风暴读不了。" }); return; }
-				const group = ((dready.artifacts && dready.artifacts.groups) || []).filter((g) => g.key === "analysis")[0];
-				const files = (group && group.files) || [];
-				let cancelled = false;
-				const ac = new AbortController();
-				brainstormLoader(sessionId, { root: root, files: files, stage: dready.stage }, ac.signal, bagRef.current).then(
-					(r) => { if (!cancelled) setBrain(stamped(r)); },
-					(e) => { if (!cancelled) setBrain(stamped({ error: "读分析产物失败：" + String((e && e.message) || e) })); }
-				);
-				return () => { cancelled = true; ac.abort(); };
-			}, [view, dtab, detailTopic, sessionId, state.phase, detail]);
-
-			/** ★ 工单 24：文档生成工作面已经读过的**那一批变更的签名**（同一批只读一遍盘） */
-			const draftSigRef = React.useRef("");
-			/** ★ 工单 24：文档生成工作面的**重读代数**（`rev.detail + rev.draft`，只增不减） */
-			const draftGenRef = React.useRef(-1);
-			/**
-			 * ★ 工单 24：进「文档生成」工作面时读**成稿（两大部分 + 左树）**与**配置支线走到哪**。
-			 *
-			 * 依赖 `detail`（工单 12 的产物清单是**同一份来源**：`gdd\` 与 `evidence\` 组的文件清单）——
-			 * 不重新列目录，免得"面板列出的产物"与"工作面读的那份成稿"两处对不上（与头脑风暴同一条纪律）。
-			 * 另见下面 effect 里的两处说明：为什么**不把 `rev.draft` 当依赖**、以及那道"输入清单没变就不重读"的闸门。
-			 */
-			React.useEffect(() => {
-				if (view !== "detail" || dtab !== "draft" || !sessionId || state.phase !== "ready") { setDraft(null); draftSigRef.current = ""; draftGenRef.current = -1; return; }
-				const dready = ofTopic(detail);
-				if (!dready || dready.error) { setDraft(null); draftSigRef.current = ""; draftGenRef.current = -1; return; }
-				if (typeof draftLoader !== "function") {
-					setDraft({ error: "文档生成加载器没挂上（__draft 缺失）。" });
-					return;
-				}
-				const root = dready.root || "";
-				if (!root) { setDraft({ error: "拿不到功能根目录：这一屏读不了。" }); return; }
-				const groups = (dready.artifacts && dready.artifacts.groups) || [];
-				const gdd = groups.filter((g) => g.key === "gdd")[0];
-				const ev = groups.filter((g) => g.key === "evidence")[0];
-				/**
-				 * ★ **一次重读只读一遍盘**：这条 effect 的依赖里**没有** `rev.draft` ——
-				 *   它认的是 `detail`（工单 12 的产物清单）。`planReload` 对 `gdd\` 与 `evidence\`
-				 *   两处都同时点名 `detail` 与 `draft`，所以"该重读这一屏"的那一帧必然先把 `detail`
-				 *   换掉，这条 effect 跟着重跑一次 —— 依赖里再加 `rev.draft` 只会把同一份 39 KB 的成稿
-				 *   在前后的两次渲染里各读一遍（实测过：一条 gdd 帧读两次）。
-				 *   `rev.draft` 仍然照常累加（刷新条上的 `data-rev` 看得见它被点名），只是不当依赖用。
-				 *
-				 * ★ 闸门看**两件事一起**：① **这一批变更的代数**（`rev.detail + rev.draft`，见下面 `gen`）
-				 *   ② 面板已经读到过内容（`draft` 非空）。少看任何一条都不行：
-				 *   · 只看 ① ⇒ 组件被重新挂载时（`draft` 是 null）永远不读 —— 这一屏一直空着
-				 *     （这是实测踩出来的：闸门漏了 ② 时面板空屏）；
-				 *   · 只看 ② ⇒ **同一批里被调用两次**时会各读一遍 39 KB（一次原子替换会来两条帧）。
-				 *   `sig`（清单 + 宿主版本）留着给人排障看，不作判据 —— 它会被 stat 批更新掉。
-				 */
-				const verOf = (rel) => String(appliedRef.current[normPath(root + "\\" + String(rel).replace(/\//g, "\\"))] || "?");
-				const gddFiles = (gdd && gdd.files) || [];
-				const evFiles = (ev && ev.files) || [];
-				/**
-				 * ★ `gen` = **这一批变更的代数**（`rev.detail + rev.draft`）：一次重读只算一代，
-				 *   所以"同一批里被调用两次"的第二跳会被闸门挡掉（内容没变，白读一遍盘）。
-				 *   而 `rev` 每次重读都 +1 ⇒ 下一批的 `gen` 更大 ⇒ **原地改文件名不变**也照读。
-				 */
-				const gen = (Number(rev.detail) || 0) + (Number(rev.draft) || 0);
-				const sig = gen + "\u0001" + root + "\u0001" + (gdd && gdd.count) + "\u0001" +
-					gddFiles.map((x) => x.name + "@" + verOf(x.rel || "gdd/" + x.name)).join(",") + "\u0001" +
-					evFiles.map((x) => x.name + "@" + verOf(x.rel || "evidence/" + x.name)).join(",") + "\u0001" +
-					String((dready.finalCheck && dready.finalCheck.current) || "") + "\u0001" +
-					(((curFeature && curFeature.configs) || []).join(","));
-				const sameGen = draftGenRef.current === gen;
-				// ★ 判据 = **"这一代已经读过、并且读出了内容"**。
-				//   为什么不比 `sig`：同一代里 `applied` 的版本会被 stat 批更新，`sig` 因此会变，
-				//   于是"同一批"里会各读一遍 39 KB（实测踩过：一条帧读两遍）。
-				//   代数（`rev.detail + rev.draft`）只在**真正重读**时才变，所以以它为准：
-				//   同一批只读一遍；下一批照读（`gen` 变大）—— **原地改文件名不变**也能看见。
-				// 跳过（两个理由之一）：① 这一批变更不在这一屏依赖的桶里（`gdd\` / `evidence\`）；
-				// ② 同一代里已经读过、并读出了内容。其余情况照读（进功能 / 手动刷新 / 切页签 / stat 核对）。
-				const skip = (sameGen && !!draft && dready.root === (draft && draft.root)) || draftBucketRef.current === false;
-				if (skip) return;
-				draftBucketRef.current = true;
-				draftGenRef.current = gen;
-				draftSigRef.current = sig;
-				let cancelled = false;
-				const ac = new AbortController();
-				draftLoader(sessionId, {
-					root: root,
-					gddFiles: gddFiles,
-					evidenceFiles: evFiles.map((x) => x.name),
-					finalCheck: dready.finalCheck,
-					// ★ 工单 25：定稿门（合流 → 定稿 的落点）—— 判据在 detail 那一层算好，这里只搬
-					gate: dready.gate,
-					configFiles: (curFeature && curFeature.configs) || [],
-					// ★ 配置表存在性以**真目录的列举**为准（看板按主题挂上来的那份只当兜底）
-					configRoot: (d && d.configRoot) || ""
-				}, ac.signal, bagRef.current).then(
-					(r) => { if (!cancelled) setDraft(stamped(r)); },
-					(e) => { if (!cancelled) setDraft(stamped({ error: "读成稿失败：" + String((e && e.message) || e) })); }
-				);
-				return () => { cancelled = true; ac.abort(); };
-			}, [view, dtab, detailTopic, sessionId, state.phase, detail]);
-
-			// 进「功能详情」时加载该功能的决策台账（§3.2：从**功能根目录**读）
-			// ★ 工单 16：依赖里多了 `rev.ledger` —— 只有 decisions/ 或 evidence/ 变了才会重读它
-			React.useEffect(() => {
-				if (view !== "detail" || !detailTopic || !sessionId) { setLedger(null); return; }
-				let cancelled = false;
-				const ac = new AbortController();
-				const d = state.phase === "ready" ? state.data : null;
-				const feat = ((d && d.features) || []).filter((x) => x.topic === detailTopic)[0];
-				if (!feat || !feat.root) { setLedger(null); return; }
-				ledgerLoader(sessionId, feat.root, d && d.skillsRoot, ac.signal, bagRef.current).then(
-					(L) => { if (!cancelled) setLedger(stamped(L)); },
-					(e) => { if (!cancelled) setLedger(stamped({ records: [], calibration: [], calFiles: [], schemaOk: false, error: String((e && e.message) || e) })); }
-				);
-				return () => { cancelled = true; ac.abort(); };
-			}, [view, detailTopic, sessionId, state.phase, rev.ledger]);
-
-			// 进「定稿」页签时读定稿全文并解析结构（§6.2）
-			// ★ 工单 16：依赖里多了 `rev.final` —— 只有 gdd/ 顶层变了才重读定稿全文
-			React.useEffect(() => {
-				if (view !== "detail" || dtab !== "final" || !sessionId || state.phase !== "ready") { setFinalDoc(null); return; }
-				const d0 = state.data;
-				const feat = (d0.features || []).filter((x) => x.topic === detailTopic)[0];
-				if (!feat || !feat.openPath) { setFinalDoc({ empty: "本功能还没有定稿。" }); return; }
-				let cancelled = false;
-				const ac = new AbortController();
-				finalLoader(sessionId, feat.openPath, ac.signal, bagRef.current).then(
-					(g) => { if (!cancelled) setFinalDoc(stamped(g)); },
-					(e) => { if (!cancelled) setFinalDoc(stamped({ error: "读定稿失败：" + String((e && e.message) || e) })); }
-				);
-				return () => { cancelled = true; ac.abort(); };
-			}, [view, detailTopic, dtab, sessionId, state.phase, rev.final]);
-
-			/**
-			 * ★ 工单 28：进「定稿修订」工作面时读**派生物**（交付桶里的产物 + 它们的 provenance 侧车）。
-			 *
-			 * 输入全部来自**已有来源**（不重新列目录 —— 与头脑风暴 / 文档生成同一条纪律）：
-			 *   · 交付桶的文件清单 = 工单 12 产物清单里的 `delivery` 组（`subdir` 带上，能拼绝对路径）；
-			 *   · 比对基准 = `detail.final`（`checkFinals` 认出来的当前有效定稿 + 它的**版本指纹原文**）；
-			 *   · 界面图目录与张数 = `gdd` 组里 `kind === "ui"` 的那些（宣讲页的图源）。
-			 *
-			 * ★ 依赖里带 `rev.derived`：`delivery\` 变了（产物/侧车落盘）或 `gdd\` 顶层变了（定稿改过 ⇒
-			 *   指纹变 ⇒ 过期判定要翻）时**只有这一条 effect 重跑**（判定在 `pure/refresh.ts` 里）。
-			 */
-			React.useEffect(() => {
-				if (view !== "detail" || dtab !== "final" || !sessionId || state.phase !== "ready") { setDerived(null); return; }
-				const dready = ofTopic(detail);
-				if (!dready || dready.error) { setDerived(null); return; }
-				if (typeof derivedLoader !== "function") {
-					setDerived({ error: "派生物加载器没挂上（__derived 缺失）。" });
-					return;
-				}
-				const root = dready.root || "";
-				if (!root) { setDerived({ error: "拿不到功能根目录：派生物读不了。" }); return; }
-				const groups = (dready.artifacts && dready.artifacts.groups) || [];
-				const delivery = groups.filter((g) => g.key === "delivery")[0];
-				const gdd = groups.filter((g) => g.key === "gdd")[0];
-				// ★ 只给**交付桶顶层**的文件名（带子目录的是 UE 交付包那类外部件，不是这份面板的派生物）——
-				//   侧车路径由 `load/derived.ts` 按"同基名"算，喂 `rel` 进去会把它拼成两层 delivery。
-				const files = ((delivery && delivery.files) || []).filter((f) => !f.subdir).map((f) => f.name);
-				const uiFiles = ((gdd && gdd.files) || []).filter((f) => f.kind === "ui");
-				const gddFinalHtml = ((gdd && gdd.files) || []).filter((f) => f.kind === "finalHtml").map((f) => f.name);
-				let cancelled = false;
-				const ac = new AbortController();
-				derivedLoader(sessionId, {
-					root: root,
-					topic: detailTopic,
-					compact: compactDate(Date.now()),
-					files: files,
-					final: dready.final || null,
-					skillsRoot: (state.data && state.data.skillsRoot) || "",
-					uiDir: uiFiles.length ? root + "\\gdd\\UI" : "",
-					uiCount: uiFiles.length,
-					gddFinalHtml: gddFinalHtml
-				}, ac.signal, bagRef.current).then(
-					(r) => { if (!cancelled) setDerived(stamped(r)); },
-					(e) => { if (!cancelled) setDerived(stamped({ error: "读派生物失败：" + String((e && e.message) || e) })); }
-				);
-				return () => { cancelled = true; ac.abort(); };
-			}, [view, dtab, detailTopic, sessionId, state.phase, detail, rev.derived]);
-
-			/**
-			 * ★ 工单 26：进「产物」页签时读**外部交付包**（工作区根上的 zip + 归档位里的 manifest / 回写文档）。
-			 *
-			 * 输入全部来自**已有来源**（不重新列目录、不另判功能）：
-			 *   · 工作区根 = 索引会话的 cwd（`d.srWs`）—— 交付包就躺在那一层（实测）；
-			 *   · 该功能的 `source\` 桶 = **工单 12 产物清单里的 `source` 组**（归档位在不在、里面有什么，
-			 *     与「产物」页签上看到的是同一份来源）；
-			 *   · 比对基准 = `dready.final`（当前有效定稿 + 它的**版本指纹原文**，工单 28 同一口径）；
-			 *   · 改哪儿的目标 = 当前正在看的那一份定稿文件名（不是"最新" —— 面板不猜）。
-			 *
-			 * ★ 依赖里带 `rev.ueintake`：`source\` 桶变了（agent 按归档指令解压归位）**只有这一条 effect
-			 *   重跑**；`gdd\` 顶层变了（定稿改过 ⇒ 基线校验要翻）走 `rev.detail`（工单 16 的 `planReload`
-			 *   给 `gdd` 顶层点名了 `detail`）。
-			 */
-			React.useEffect(() => {
-				if (view !== "detail" || dtab !== "artifacts" || !sessionId || state.phase !== "ready") { setUeIntake(null); return; }
-				const dready = ofTopic(detail);
-				if (!dready || dready.error) { setUeIntake(null); return; }
-				if (typeof ueIntakeLoader !== "function") {
-					setUeIntake({ error: "外部交付包加载器没挂上（__ueIntake 缺失）。" });
-					return;
-				}
-				const root = dready.root || "";
-				if (!root) { setUeIntake({ error: "拿不到功能根目录：这一屏读不了。" }); return; }
-				const d0 = state.data;
-				const f = ((d0.features || [])).filter((x) => x.topic === detailTopic)[0] || null;
-				// 身份（名字 + 别名）来自看板；没有身份声明时退回目录名 —— 与 `identityOf` 同一条口径
-				const me = f
-					? { topic: f.topic, name: (f.identity && f.identity.name) || f.topic, aliases: (f.identity && f.identity.aliases) || [] }
-					: { topic: detailTopic, name: detailTopic, aliases: [] };
-				const all = (d0.features || []).map((x) => ({
-					topic: x.topic,
-					name: (x.identity && x.identity.name) || x.topic,
-					aliases: (x.identity && x.identity.aliases) || []
-				}));
-				const fc = dready.finalCheck || {};
-				let cancelled = false;
-				const ac = new AbortController();
-				ueIntakeLoader(sessionId, {
-					root: root,
-					topic: detailTopic,
-					features: [me],
-					allFeatures: all,
-					srWs: d0.srWs || "",
-					compact: compactDate(Date.now()),
-					final: dready.final
-						? Object.assign({}, dready.final, { actives: fc.actives || [] })
-						: null
-				}, ac.signal, bagRef.current).then(
-					(r) => { if (!cancelled) setUeIntake(stamped(r)); },
-					(e) => { if (!cancelled) setUeIntake(stamped({ error: "读外部交付包失败：" + String((e && e.message) || e) })); }
-				);
-				return () => { cancelled = true; ac.abort(); };
-			}, [view, dtab, detailTopic, sessionId, state.phase, detail, rev.ueintake]);
-
-			// 进「界面图」时读定稿的 §5
-			// ★ 工单 16：依赖里多了 `rev.ui` —— gdd/ 变了就重读界面图（改 png 也算）
-			React.useEffect(() => {
-				if (view !== "detail" || dtab !== "ui" || !sessionId || state.phase !== "ready") { setIface(null); return; }
-				const d0 = state.data;
-				const feat = (d0.features || []).filter((x) => x.topic === detailTopic)[0];
-				if (!feat || !feat.openPath) { setIface({ empty: "本功能还没有定稿，界面图在定稿的 §5。" }); return; }
-				let cancelled = false;
-				const ac = new AbortController();
-				interfaceLoader(sessionId, feat.openPath, ac.signal, bagRef.current).then(
-					(r) => { if (!cancelled) setIface(stamped(r)); },
-					(e) => { if (!cancelled) setIface(stamped({ error: "读取失败：" + String((e && e.message) || e) })); }
-				);
-				return () => { cancelled = true; ac.abort(); };
-			}, [view, dtab, detailTopic, sessionId, state.phase, rev.ui]);
-
-
-			const shell = (children) => h("div", {
-				style: {
-					padding: "18px 22px", fontFamily: "system-ui, 'Microsoft YaHei', sans-serif",
-					color: C.ink, height: "100%", overflow: "auto", boxSizing: "border-box", background: C.bg
-				}
-			}, children);
-
-			/** 一级导航当前项：功能详情归在「功能看板」下 */
-			const navView = view === "detail" ? "dashboard" : view;
-			/** 标题 + 一级导航（做进 head，所有分支自动带上） */
-			const head = (sub) => h("div", { key: "hd" }, [
-				h("div", { key: "row", style: { display: "flex", alignItems: "baseline", gap: "10px", marginBottom: "12px" } }, [
-					h("h1", { key: "t", style: { fontSize: "18px", margin: 0 } }, "策划工作台"),
-					h("span", { key: "s", style: { fontSize: "12px", color: C.muted } }, sub)
-				]),
-				h(TabBar, {
-					key: "nav",
-					items: NAV,
-					view: navView,
-					onPick: (id) => { setView(id); setDetailTopic(null); }
-				})
-			]);
-
-			if (state.phase === "nosession") return shell([head("功能看板 · A1"),
-				h("p", { key: "p", style: { color: C.bad } }, "工作台没能拿到可用会话（索引会话没解析出来）。"),
-				h("div", { key: "e", style: { color: C.muted, fontSize: "12px", lineHeight: 1.9, marginTop: "8px" } },
-					(state.error ? ["原因：" + state.error] : []).concat(state.note || [])),
-				h("div", { key: "h", style: { color: C.muted, fontSize: "12px", lineHeight: 1.95, marginTop: "10px" } }, [
-					h("div", { key: "a" }, "① 索引会话的取法：缓存 → 标题「策划工作台·索引」→ cwd 覆盖 sr 根 → 新建；都不成才会到这里。"),
-					h("div", { key: "b" }, "② 目录列举限定在会话工作区内（文件读取不受限）——所以索引会话的 cwd 必须覆盖 sr 工作区根。")
-				])]);
-			if (state.phase === "idle" || state.phase === "loading") return shell([head("功能看板 · A1"),
-				h("p", { key: "p", style: { color: C.muted } }, "正在解析索引会话并读工作区…")]);
-			if (state.phase === "error") return shell([head("功能看板 · A1"),
-				h("p", { key: "p", style: { color: C.bad } }, "读取失败：" + state.error),
-				h("div", { key: "h", style: { color: C.muted, fontSize: "12px", lineHeight: 1.95, marginTop: "10px" } }, [
-					h("div", { key: "a" }, "① 面板锚定方式：读 sr 配置的 sr_workspace 字段（绝对路径），不跟当前选中会话走。"),
-					h("div", { key: "b" }, "② 索引会话：" + sessionSourceText(state.session) + "　cwd = " + (cwd || "(未解析)")),
-					h("div", { key: "c" }, "③ 常见原因：sr 配置没读到（候选根里没有 .agents\\skills\\sr-askme\\config.local.json），或锚点不在索引会话的工作区内。"),
-					h("div", { key: "d" }, "④ 目录列举限定在工作区内；文件读取不受限。")
-				])]);
-
-			const d = state.data;
-			// ── 功能详情（二级视图）──────────────────────────────
-			if (view === "detail") {
-				const f = d.features.filter((x) => x.topic === detailTopic)[0];
-				// ★ 工单 16：只把**属于当前功能**的那几份数据交给下面的组件（`__topic` 的戳）
-				const brainV = ofTopic(brain);
-				const draftV = ofTopic(draft);
-				const ledgerV = ofTopic(ledger);
-				const finalV = ofTopic(finalDoc);
-				const ifaceV = ofTopic(iface);
-				return shell([
-					head("功能详情 · " + detailTopic),
-					h("div", { key: "sub", style: { display: "flex", alignItems: "center", gap: "10px", marginBottom: "10px", flexWrap: "wrap" } }, [
-						h("button", {
-							key: "back", type: "button",
-							onClick: () => setView("dashboard"),
-							style: { font: "inherit", fontSize: "12px", padding: "3px 9px", border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer" }
-						}, "‹ 返回功能看板"),
-						f ? badge(f.docType ? f.docType + " / " + (f.status || "?") : "无定稿", f.status === "active" ? "ok" : null) : null,
-						// ★ 工单 22：身份**如实标注** —— 没有 `feature.json` 就写出来（真实数据 4 个功能现在都没有，
-						//   迁移票 21 才补），有就显示 id（改名不改它）
-						f ? h("span", {
-							key: "idn", "data-identity": f.identity && f.identity.present ? "present" : "absent",
-							style: { fontSize: "10.5px", color: C.muted, fontFamily: "monospace" }
-						}, identityLabel(f.identity)) : null,
-						f && f.latestFinal ? h("span", { key: "v", style: { fontSize: "11px", color: C.muted, fontFamily: "monospace" } }, "最终版 " + f.latestFinal) : null,
-						f && f.openPath ? h("button", {
-							key: "open", type: "button",
-							onClick: () => handleOpen(f),
-							style: { font: "inherit", fontSize: "11px", padding: "3px 9px", border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer" }
-						}, "打开最终版") : null
-					]),
-					// ★ 工单 16：**变更订阅与版本指纹**（放在最上面一行，一眼看出"屏幕上的是不是最新"）
-					h(LiveBar, { key: "live", live: live, rev: rev, onRefresh: onManualRefresh }),
-					h(NoticeBar, { key: "nt", notice: notice }),
-					// ★ 工单 12：状态块放在页签**之上** —— 切到哪一屏都能看到三阶段与"现在能用吗"
-					h(DetailStatus, { key: "st", detail: dview, feature: f, onOpenFix: () => { setDtab("final"); if (f && f.openPath) handleOpen(f); } }),
-					// ★ 工单 23：功能内部先分**工作面**（三阶段）与**资料页签**两组 ——
-					//   第一组是"这个功能该走哪一步"，第二组是"旁挂的过程/产物/界面图"（spec.md:30）。
-					h("div", { key: "stages", style: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" } }, [
-						h("span", { key: "l", style: { fontSize: "10.5px", color: C.muted, flex: "0 0 auto" } }, "工作面"),
-						h(TabBar, { key: "b", items: DETAIL_STAGES, view: dtab, onPick: setDtab })
-					]),
-					h("div", { key: "mtabs", style: { display: "flex", alignItems: "center", gap: "8px" } }, [
-						h("span", { key: "l", style: { fontSize: "10.5px", color: C.muted, flex: "0 0 auto" } }, "资料"),
-						h(TabBar, { key: "b", items: DETAIL_TABS, view: dtab, onPick: setDtab })
-					]),
-					dtab === "brainstorm"
-						? h(BrainstormWorkface, {
-							key: "bw",
-							data: brainV,
-							feature: f,
-							root: (dview && dview.root) || "",
-							srWs: d.srWs,
-							onSend: typeof brainstormRunner === "function"
-								? (kind, input) => brainstormRunner(d && d.srWs, kind, input, {
-									// 会话候选：store 快照带着 cwd / running；空则由组合根补一次 session.list
-									rows: sessionRows
-								})
-								: null,
-							onOpenSession: (sid) => probe.openSession(sid),
-							onOpen: (abs) => handleOpen(null, abs)
-						})
-						: dtab === "draft"
-						? h(DraftWorkface, {
-							key: "dw",
-							data: draftV,
-							feature: f,
-							// ★ 工单 24c：指纹 / 订阅实况进「详情」（首屏只留人话），所以这里要把 live 传下去
-							live: live,
-							root: (dview && dview.root) || "",
-							srWs: d.srWs,
-							onSend: typeof draftRunner === "function"
-								? (action, input) => draftRunner(d && d.srWs, action, input, { rows: sessionRows })
-								: null,
-							onOpenSession: (sid) => probe.openSession(sid),
-							onOpen: (abs) => handleOpen(null, abs)
-						})
-						: dtab === "ledger"
-						? h(DecisionLedger, {
-							key: "lg", ledger: ledgerV,
-							// ★ 工单 17 的能力（字段覆盖检查）：结论来自 `buildLedger(...).fieldCheck`
-							//   —— 就是 `src/pure/fieldclass.ts` 的 `checkFieldCoverage` 的返回值本身，
-							//   面板只显示它，**不重跑一遍**（否则就是第二份实现）。
-							coverage: designLedger ? designLedger.fieldCheck : null
-						})
-						: dtab === "pipeline"
-							? h(PipelinePanel, {
-								key: "pp-" + (f ? f.topic : ""),
-								feature: f, probe: probe,
-								projectRoot: props.__projectRoot,
-								// ★ 工单 07：工作会话的创建/认领走统一出口（标题 + workspace 归属 + 权限）
-								__ensureWork: props.__ensureWork,
-								rows: sessionRows,
-								useSessions: props.useSessions,
-								useSessionPendingInteraction: props.useSessionPendingInteraction
-							})
-							: dtab === "artifacts"
-								? h("div", { key: "abwrap" }, [
-									// ★ 工单 26：外部交付包 ①②③ 永远在「产物」这一屏最上面
-									//   （归档位就在 `source\` 桶里，这一页正是逐桶列产物的地方）
-									h(IntakeBar, {
-										key: "ib", data: ofTopic(ueIntake),
-										root: (dview && dview.root) || "",
-										onSend: typeof intakeRunner === "function"
-											? (key, input) => intakeRunner(key, input, { root: (dview && dview.root) || "", rows: sessionRows })
-											: null
-									}),
-									h(ArtifactBuckets, {
-										key: "ab", feature: f, detail: dview,
-										srWs: d.srWs, configRoot: d.configRoot,
-										onOpen: (abs) => handleOpen(null, abs)
-									})
-								])
-								: dtab === "ui"
-									? h(InterfacePanel, {
-										key: "if", data: ifaceV, srWs: d.srWs,
-										onOpen: (abs) => handleOpen(null, abs)
-									})
-									: dtab === "design"
-										? h(DesignLedger, { key: "dl", ledger: designLedger })
-										: dtab === "final"
-											? h(FinalDoc, {
-												key: "fd", doc: finalV,
-												// ★ 工单 28：派生物那一块（交付桶里的产物 + 侧车 + 过期判定）
-												//   数据由 `__derived` 读、判定在 `pure/derived.ts`；这一屏只显示与发起。
-												derived: ofTopic(derived),
-												onDerived: typeof derivedRunner === "function"
-													? (kind, input) => derivedRunner(d && d.srWs, kind, input, {
-														root: (dview && dview.root) || "",
-														rows: sessionRows
-													})
-													: null,
-												// ★ 工单 15：三段式发给**该功能的专属工作会话**
-												//   （cwd = `features\<主题>\`；root 由功能详情给出，最权威）
-												featureRoot: (dview && dview.root) || "",
-												onFix: (req) => fixRunner(d && d.srWs, req, {
-													root: (dview && dview.root) || "",
-													// 会话候选：store 快照带着 cwd / running；空则由组合根补一次 session.list
-													rows: sessionRows
-												}),
-												onOpenSession: (sid) => probe.openSession(sid),
-												// 图片加载失败时退化成「用默认程序打开」——走与产物清单同一条打开链路
-												onOpen: (abs) => handleOpen(null, abs)
-											})
-										: h("div", { key: "soon", style: { color: C.muted, fontSize: "12px" } }, "这一屏还没做。")
-				]);
 			}
-
-			const filtered = q ? d.features.filter((f) => f.topic.toLowerCase().indexOf(q.toLowerCase()) >= 0) : d.features;
-
-			// ★ 工单 22：新建功能的**实时校验**（纯函数、看板刚扫到的真实事实）——
-			//   显示的就是它；提交时会再拉一次最新事实重算（先校验后创建）。
-			const newFacts = {
-				dirNames: d.features.map((f) => f.topic),
-				features: d.features.map((f) => ({ topic: f.topic, root: f.root, identity: f.identity })),
-				wsPaths: (wsPaths || []).slice(),
-				compact: compactDate(Date.now()),
-				created: dashedDate(Date.now()),
-				srWs: d.srWs
-			};
-			const newPlan = planNewFeature(newTopic, newFacts, d.srWs);
-
-			return shell([
-				head("功能看板 · A1"),
-				// ① 顶栏：锚点路径（来自 sr 配置）+ 搜索
-				h("div", { key: "top", style: { display: "flex", gap: "8px", alignItems: "center", marginBottom: "12px", flexWrap: "wrap" } }, [
-					h("span", {
-						key: "p", title: d.srWs || "(未读到 sr 配置)",
-						style: {
-							fontSize: "11px", fontFamily: "monospace", color: C.muted,
-							maxWidth: "360px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
-						}
-					}, "锚点 " + (d.srWs || "(相对路径兜底)")),
-					h("input", {
-						key: "q", value: q, placeholder: "搜索功能名…",
-						onChange: (e) => setQ(e.target.value),
-						style: {
-							flex: "1 1 200px", maxWidth: "300px", fontSize: "12px", padding: "4px 8px",
-							border: "1px solid " + C.soft, borderRadius: "4px", outline: "none", background: "#fff"
-						}
-					}),
-					h("span", { key: "n", style: { fontSize: "11px", color: C.muted } },
-						filtered.length + " / " + d.features.length + " 个功能"),
-					// ★ 工单 16：看板级别的「刷新」——看板不订阅变更（只在功能里订阅），
-					//   所以这个按钮是看板唯一的"重读一遍"入口，通道降级时照旧在。
-					h("button", {
-						key: "rf", type: "button", "data-refresh": "manual",
-						onClick: () => onManualRefresh(),
-						title: "重读工作区（看板 + 当前功能）",
-						style: { font: "inherit", fontSize: "11px", padding: "3px 9px", border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer" }
-					}, "刷新看板"),
-					// ★ 工单 22：**看板上唯一的主按钮**（24c 形态纪律：一屏一个主按钮）
-					h("button", {
-						key: "nw", type: "button", "data-btn": "primary", "data-newfeature": "open",
-						onClick: () => { setNewOpen(true); setCreated(null); setNotice(null); },
-						title: "新建功能：功能目录 + 六个桶 + 身份声明，并登记成它的专属工作区",
-						style: {
-							font: "inherit", fontSize: "11.5px", padding: "4px 12px", border: "1px solid " + C.ink,
-							background: C.ink, color: "#fff", borderRadius: "4px", cursor: "pointer"
-						}
-					}, "＋ 新建功能")
-				]),
-				// ② 新建功能（表单 / 正在建 / 建好了三态，同一块地方）
-				newOpen || creating ? h(CreateFeatureForm, {
-					key: "new",
-					topic: newTopic, plan: newPlan, creating: creating, busy: newBusy,
-					onTopic: (v) => { setNewTopic(v); setNotice(null); },
-					onCancel: () => { setNewOpen(false); setNewTopic(""); },
-					onSubmit: () => submitCreate(newPlan, d.srWs, wsPaths),
-					onOpenSession: () => { const sid = (creating && creating.sid) || (created && created.sid) || ""; if (sid) probe.openSession(sid); },
-					onStopWaiting: () => stopWaiting()
-				}) : null,
-				// ③ 刚建好的那一个功能：一句"已经可以用了" + 直接进去（次按钮，主按钮仍是「＋ 新建功能」）
-				created ? h("div", {
-					key: "cd", "data-created": created.topic,
-					style: {
-						display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap",
-						border: "1px solid " + C.ok, borderLeft: "3px solid " + C.ok, borderRadius: "4px",
-						padding: "8px 11px", marginBottom: "12px", background: "#fff", fontSize: "12px"
-					}
-				}, [
-					h("span", { key: "t", style: { color: C.ok } }, "「" + created.topic + "」可以用了"),
-					h("button", {
-						key: "d", type: "button", "data-btn": "ghost", "data-go": created.topic,
-						onClick: () => { setDetailTopic(created.topic); setDtab(ENTRY_TAB); setView("detail"); },
-						style: { font: "inherit", fontSize: "11px", padding: "3px 10px", border: "1px solid " + C.soft, background: "#fff", borderRadius: "4px", cursor: "pointer" }
-					}, "进详情 ›"),
-					created.sid ? h("button", {
-						key: "s", type: "button", "data-btn": "link",
-						onClick: () => probe.openSession(created.sid),
-						style: { font: "inherit", fontSize: "11px", padding: "3px 6px", border: "1px solid transparent", background: "#fff", color: C.muted, textDecoration: "underline", cursor: "pointer" }
-					}, "打开它的工作会话") : null
-				]) : null,
-				// ② 打开结果提示（含失败时的通道诊断）
-				h(NoticeBar, { key: "nt", notice: notice }),
-				// ③ 风险条
-				h(RiskBar, { key: "risk", features: d.features, attentionOf: attentionOf }),
-				// ④ 功能卡
-				h("div", { key: "grid", style: { display: "flex", flexWrap: "wrap", gap: "10px" } },
-					filtered.length
-						? filtered.map((f) => h(FeatureCard, {
-							key: f.topic,
-							feature: f,
-							attention: attentionOf(f.topic),
-							onOpen: handleOpen,
-							// ★ 工单 23：卡的「详情 ›」进的是**第一个工作面**（头脑风暴），不是资料页签
-							onDetail: (x) => { setDetailTopic(x.topic); setDtab(ENTRY_TAB); setView("detail"); },
-							onAttention: (x) => { setDetailTopic(x.topic); setDtab("pipeline"); setView("detail"); }
-						}))
-						: [h("div", { key: "none", style: { color: C.muted, fontSize: "12px" } },
-							d.features.length === 0
-								? "还没有功能 —— 点上面的「＋ 新建功能」建第一个（一个动作建出目录 + 六个桶 + 身份声明）。"
-								: "没有匹配的功能。")]),
-				// ⑤ 来源说明
-				h("div", { key: "foot", style: { marginTop: "16px", fontSize: "11px", color: C.muted, lineHeight: 1.8 } }, [
-					h("div", { key: "a" }, "锚点：sr 配置 " + (d.configFile || "?") + (d.pathNote ? " · " + d.pathNote : "")),
-					h("div", { key: "b" }, "扫描：" + (d.srWs || SR_WS) + "\\features\\ → **" + d.counts.features + " 个功能**" +
-					" · 配置表 " + d.counts.configs +
-					(d.legacyLeft ? "　｜　旧结构还剩 " + d.legacyLeft + " 个文件（素材，确认后可删）" : "")),
-					h("div", { key: "c" }, "状态派生自定稿头部 doc_type/status，工作台不另存状态；底部 📄 链接打开最终版。"),
-					h("div", { key: "d" }, "索引会话：" + sessionSourceText(state.session) +
-						"　cwd " + (cwd || "(未解析)") +
-						(state.session && state.session.note && state.session.note.length
-							? "　｜　" + state.session.note.join("；") : "")),
-					// ★ 工单 16：自动刷新的**承诺边界**写在看板上（能看见的话术 = 面板的诚实口径）
-					h("div", { key: "e" }, "自动刷新：进功能后订阅该功能的目录变更（宿主的目标级文件监视，" +
-						"写入者不限 —— agent 工具、脚本、外部编辑器都算）；看板不订阅，用「刷新看板」或 F5。")
-				])
-			]);
+			if (!bad) {
+				notes.push("目录是**本机直接建**的（宿主目录原语 `createDirectory` 可用）。");
+				return { ok: true, done: done, message: "", next: "" };
+			}
+			// 能力不可用 ⇒ 退到②；别的硬失败（权限 / 占用 / 名字）⇒ 如实报，别装能救
+			const capMissing = /directory-picker\/unavailable|needs the browse capability|serves\s*"native"/i.test(bad.r.message + " " + bad.r.code);
+			if (!capMissing) {
+				return {
+					ok: false, done: done, root: root,
+					message: createPartialNotice(topic, root, done, bad.what, bad.r.message + "（" + bad.r.code + "）"),
+					next: "面板只建不删 —— 缺的请手工补建（命令见下），或删掉整个目录重新新建。\n" + manualScaffoldCommand(base, topic)
+				};
+			}
+			notes.push("本机目录选择器只有 **native**（`createDirectory` 只存在于 browse 后端）⇒ 改让**索引会话**跑一条 PowerShell 建目录。");
+		} else {
+			notes.push("拿不到 `uiWorkspace.createDirectory` ⇒ 改让**索引会话**跑一条 PowerShell 建目录。");
 		}
 
-		// ════════════════════════════════════════════════════════════════
-		// 五、插件
-		// ════════════════════════════════════════════════════════════════
+		/** ② 让索引会话建（Go 通用路径），面板**回读核对** */
+		if (!indexSid) {
+			return {
+				ok: false, done: done, root: root,
+				message: "没有可用的会话来建目录（面板要借一条 cwd 覆盖 SR 工作区的会话跑这条命令）。",
+				next: "先在左侧随便建一条会话，或手工建目录：\n" + manualScaffoldCommand(base, topic)
+			};
+		}
+		const pr = await port.prompt(indexSid, buildScaffoldInstruction(base, topic));
+		if (!pr.ok) {
+			return {
+				ok: false, done: done, root: root,
+				message: "把建目录的指令发给索引会话失败：" + humanError(pr),
+				next: "手工建目录（复制即用；建完再点一次〔建立〕，面板会认出它接着往下走）：\n" + manualScaffoldCommand(base, topic)
+			};
+		}
+		const verified = await waitForScaffold(port, root, buckets, wait);
+		if (!verified.ok) {
+			return {
+				ok: false, done: done, root: root,
+				message: "已让索引会话去建目录，但**回读没核对上**：" + verified.why +
+					"（目录现在" + (verified.exists ? "在，但缺：" + verified.missing.join("、") : "还不存在") + "）",
+				next: "① 打开那条索引会话看它跑到哪了；② 或直接手工建（复制即用），建完再点一次〔建立〕：\n" +
+					manualScaffoldCommand(base, topic)
+			};
+		}
+		notes.push("目录由**索引会话**跑 PowerShell 建的（面板不写盘），已回读核对到 " + verified.entries.length + " 个条目。");
+		return { ok: true, done: ["features\\", topic + "\\"].concat(verified.entries.map((n) => n + "\\")), message: "", next: "" };
+	};
+
+	/**
+	 * 轮询等"那几个桶真的出现了"（给会话里的 agent 一点时间）。
+	 * ★ **回读是唯一判据** —— 会话说"建好了"不算，`listDir` 看得到才算。
+	 * ★ 预算：真机上会话要跑一次 LLM 往返，给一分钟；用例里用 `scaffoldWait` 压到毫秒级。
+	 */
+	const SCAFFOLD_WAIT = { tries: 40, delayMs: 1500 };
+	const waitForScaffold = async (port, root, buckets, wait) => {
+		const w = Object.assign({}, SCAFFOLD_WAIT, wait || {});
+		const need = buckets.map((b) => String(b).toLowerCase());
+		let last = { exists: false, missing: need };
+		for (let i = 0; i < w.tries; i++) {
+			const st = await inspectFeatureDir(port, root);
+			const have = new Set(st.entries.map((e) => String(e.name).toLowerCase()));
+			const missing = need.filter((b) => !have.has(b));
+			last = { exists: st.exists, missing: missing };
+			if (st.exists && missing.length === 0) {
+				return { ok: true, entries: st.entries.map((e) => e.name), exists: true, missing: [], why: "" };
+			}
+			await new Promise((r) => setTimeout(r, w.delayMs));
+		}
+		return { ok: false, entries: [], exists: last.exists, missing: last.missing, why: "等了 " + Math.round((w.tries * w.delayMs) / 1000) + " 秒还没建齐" };
+	};
+
+	/**
+	 * ═══ 新建功能（v5 的机制核心）═══
+	 * 建目录 → 4 个桶 → 专属工作区 → 工作会话（策划模式）。
+	 *
+	 * ★ 建目录有**三条路**，按能力退（2026-10-09 实测缺陷换来的）：
+	 *   ① `uiWorkspace.createDirectory` —— 只在目录选择器的 **browse** 后端存在；
+	 *   ② 让**索引会话**跑一条 PowerShell（`New-Item -Force` 幂等）+ 面板回读核对 —— 通用；
+	 *   ③ 都不行 ⇒ 把逐字命令给用户，他建完再点一次〔建立〕（面板认出"空脚手架"就接着往下走）。
+	 *   为什么 Windows 上①必然没有：`directory-picker-auto` 的规则里 `win32 → native`，
+	 *   而 `createDirectory` 在宿主侧被 `requireCapability("browse", …)` 挡着。
+	 *   判据与理由写在 `pure/createfeature.ts` 的"建目录：三条路"那一节。
+	 */
+	const createFeature = async (topic, o) => {
+		const opts = o || {};
+		const port = portOf(opts.sid || "");
+		const facts = await loadCreateFacts(port, { srWs: srWsCache });
+		const base = String(srWsCache).replace(/[\\/]+$/, "");
+		const root = featureRootFor(base, String(topic == null ? "" : topic));
 
 		/**
-		 * ★ Cordis 要求**服务必须声明注入**；未注入的服务**访问即同步抛错**。
-		 * 但反过来：把可选依赖写进 inject，一旦它没被提供，**整个插件就不激活（面板消失）**。
-		 * 折中：核心服务（slots/remote）写进 inject 保证插件一定能装上；
-		 * 可选依赖（sessions/workspaces/uiWorkspace）用 `ctx.get(name)` 取——返回 undefined 而不抛，
-		 * 功能降级但插件照常工作。
+		 * 「目录已经在」的两种情形要分开：
+		 *   · **空脚手架**（只有几个桶、一个文件都没有，含"建到一半"）⇒ 接着往下建工作区与会话；
+		 *   · **有内容** ⇒ 是真功能，照旧拒绝重名（`planNewFeature` 的 `dir-exists`）。
 		 */
-		const inject = [
-			"slots", "remote",
-			"remote.workspaceFiles", "remote.session",
-			"remote.agentPresets", "remote.commands", "remote.workspace",
-			"remote.directoryPicker", "remote.fileUploads"
-		];
+		const state = await inspectFeatureDir(port, root, opts.signal);
+		const resumeOnScaffold = state.exists && state.bare;
 
-		/** 安全取一个可选服务（可能为 undefined，不抛） */
-		const svc = (ctx, name) => {
-			try { return ctx.get(name); } catch (e) { return void 0; }
-		};
+		const plan = planNewFeature(topic, { dirNames: resumeOnScaffold ? [] : facts.dirNames, wsPaths: opts.wsPaths || [], srWs: base });
+		if (facts.note) plan.message = facts.note + " " + plan.message;
+		if (!plan.ok) return { ok: false, message: plan.message, next: plan.next, plan: plan };
 
-		/** 把一次 Remote 调用的结果原样收成可显示对象（同步抛错也接住） */
-		const safeCall = (name, fn) => {
-			let p;
-			try { p = Promise.resolve(fn()); }
-			catch (e) {
-				return Promise.resolve({ name: name, ok: false, error: { message: "同步抛错 " + String((e && e.message) || e) } });
+		const notes = [];
+		const done = [];
+		if (resumeOnScaffold) {
+			notes.push("这个功能目录已经在（里面**只有桶、没有任何文件**）—— 按现成的接着建工作区与会话，不重复建目录。");
+			for (const e of state.entries) done.push(e.name + "\\");
+		} else {
+			const scaffold = await scaffoldDirs(port, base, plan.topic, plan.buckets, opts.sid, opts.signal, notes, opts.scaffoldWait);
+			if (!scaffold.ok) {
+				return {
+					ok: false, plan: plan, root: plan.root, topic: plan.topic, notes: notes,
+					message: scaffold.message,
+					next: scaffold.next
+				};
 			}
-			return p.then(
-				(r) => ({ name: name, ok: !!(r && r.ok), value: r && r.value, error: r && r.error }),
-				(e) => ({ name: name, ok: false, error: { message: String((e && e.message) || e) } })
-			);
-		};
-
-		/**
-		 * ★ 插件配置是 apply 的**第二个参数**（cordis 核心：`runtime.callback(this.ctx, this.config)`）。
-		 *   从 ctx 上取 config 会抛 `cannot get property "config" without inject`——config 不是服务。
-		 */
-		function apply(ctx, config) {
-			const read = (sid, path, range, signal) => ctx.remote.workspaceFiles.read(sid, path, range, signal);
-			// 可选配置：sr 配置文件的路径。不给就用会话相对的默认候选。
-			const cfg = config || {};
-			const configPath = cfg.configPath || cfg.srConfigPath || "";
-			/** DSH 工作区根：会话要建在它下面，才会落进左侧对应的分组而不是「未分组」 */
-			const projectRoot = cfg.projectRoot || "";
-			const loader = (sid, cwd, signal, extraPaths) => loadDashboard(ctx, read, sid, cwd, configPath, signal, extraPaths);
-
-			/**
-			 * ★ 工单 16 · **版本袋**：给 `read` 包一层，凡成功读到文件就记下
-			 *   `绝对路径 → version`。这一袋就是"屏幕上那份内容到底读的是哪一版"的凭据：
-			 *   版本指纹由它算、"同一份内容不再重读"（自激防护）拿它比对。
-			 * ★ 收版本是**组合根**的事（载入层只吃 port、不认识 version），所以包在这里，
-			 *   而不是改四个加载器的签名。
-			 */
-			const readWith = (bag) => (bag
-				? (sid, p, range, signal) => read(sid, p, range, signal).then((r) => {
-					if (r && r.ok === true && r.value && typeof r.value.version === "string" && r.value.version !== "") {
-						bag[String(r.value.absolutePath || p)] = r.value.version;
-					}
-					return r;
-				})
-				: read);
-
-			const ledgerLoader = (sid, root, skillsRoot, signal, bag) =>
-				loadLedger(ctx, readWith(bag), sid, root, skillsRoot, signal);
-			const interfaceLoader = (sid, absPath, signal, bag) =>
-				loadInterface(readWith(bag), sid, absPath, signal);
-			/** 定稿工作面（§6.2）：收**绝对路径**（= 功能的 openPath） */
-			const finalLoader = (sid, absPath, signal, bag) => loadFinal(readWith(bag), sid, absPath, signal);
-			/**
-			 * ★ 工单 12 · 功能详情：产物清单（按桶）+ 三阶段 + 定稿有效性 + V 校验清单。
-			 * 收**功能根目录**（`features\<主题>\`）—— 功能 = 目录，所以不再需要 topicOf 过滤。
-			 * 这里只把 ctx 包成端口（`portOf`），实现全在 `src/load/feature.ts` + `src/pure/artifacts.ts`。
-			 * ★ 工单 16：`portOf` 的 `read` 换成 `readWith(bag)` —— 端口照旧只认 `{listDir, readText}`，
-			 *   版本收集发生在它下面一层。
-			 */
-			const detailLoader = (sid, root, signal, bag) =>
-				loadFeatureDetail(portOf(ctx, sid, readWith(bag)), { root: root, signal: signal });
-			/**
-			 * ★ 工单 23 · 头脑风暴工作面：把产物清单里 `analysis` 组交给加载器（只读那一个桶），
-			 *   出口判据那句话也是搬 `detail.stage`。这里只做编排，判据全在 `src/load/brainstorm.ts`
-			 *   + `src/pure/analysisdoc.ts`（有测试）。
-			 */
-			const brainstormLoader = (sid, opts, signal, bag) =>
-				loadBrainstorm(portOf(ctx, sid, readWith(bag)), Object.assign({}, opts, { signal: signal }));
-			/**
-			 * ★ 工单 24 · 文档生成工作面：把 `gdd\` 与 `evidence\` 的产物清单交给加载器（只读那两个桶），
-			 *   配置表**存在性**用看板按主题挂上来的真实文件名（既有通道，不重新列配置目录）。
-			 *   判据全在 `src/load/draft.ts` + `src/pure/drafttree.ts` / `draftstep.ts`（有测试）。
-			 */
-			const draftLoader = (sid, opts, signal, bag) =>
-				loadDraftWorkface(portOf(ctx, sid, readWith(bag)), Object.assign({}, opts, { signal: signal }));
-			/**
-			 * ★ 工单 28 · 派生物与过期检测：把**交付桶**的文件清单 + **当前有效定稿的版本指纹**
-			 *   交给加载器；它只读每份产物对应的 provenance 侧车（只读，不写）。
-			 *   判定全在 `src/pure/derived.ts`（有测试）；这里只把 ctx 包成端口。
-			 */
-			const derivedLoader = (sid, opts, signal, bag) =>
-				loadDerived(portOf(ctx, sid, readWith(bag)), Object.assign({}, opts, { signal: signal }));
-			/**
-			 * ★ 工单 26 · 外部交付包 ①②③（读工作区根的 zip + `source\UE交付_<日期>\` 里的 manifest / 回写文档）。
-			 *   判定全在 `src/pure/ueintake.ts`（有测试）；这里只把 ctx 包成端口。
-			 */
-			const ueIntakeLoader = (sid, opts, signal, bag) =>
-				loadUeIntake(portOf(ctx, sid, readWith(bag)), Object.assign({}, opts, { signal: signal }));
-			// ════════════════════════════════════════════════════════════════
-			// ★ 工单 16 · 给面板用的两条**官方通道**（组合根是唯一知道 ctx 的地方）
-			//   · `stat`     —— 版本指纹 / 切回面板与低频轮询时的核对（正确性底线）
-			//   · `changes`  —— 变更订阅（自动刷新的增强）
-			// ════════════════════════════════════════════════════════════════
-
-			/** `remote.workspaceFiles` 命名空间（未注入/宿主没提供时返回 null，不抛） */
-			const workspaceFilesNs = () => {
-				try {
-					const ns = ctx.remote && ctx.remote.workspaceFiles;
-					return ns || null;
-				} catch (e) { return null; }
-			};
-
-			/**
-			 * 批量 `stat`：一条 `remote.workspaceFiles.stat(sessionId, path, signal)`
-			 * → `{absolutePath, version, bytes?}`（`version` 是**不透明**新鲜度串，只比对不解析）。
-			 *
-			 * 用来做两件事：① 版本指纹的**完整**凭据（清单里每个文件都要有版本）；
-			 * ② 切回面板 / 切功能 / 切页签 / 低频轮询时的核对 —— 这条**不依赖帧通道**，
-			 * 所以它是"我读到的是不是最新"的正确性底线。
-			 *
-			 * ★ 单个文件失败（刚好被删 / 读不到）**不拖垮整批**：它不进结果表，
-			 *   指纹那边会如实反映"这个文件拿不到版本"（`fingerprintOf` 的 `missing`）。
-			 */
-			const statMany = async (sid, paths, signal) => {
-				const out = {};
-				const ns = workspaceFilesNs();
-				if (!ns || typeof ns.stat !== "function") return out;
-				for (const p of (paths || [])) {
-					if (signal && signal.aborted) break;
-					try {
-						const r = await ns.stat(sid, p, signal);
-						if (r && r.ok === true && r.value && typeof r.value.version === "string" && r.value.version !== "") {
-							out[String(r.value.absolutePath || p)] = r.value.version;
-						}
-					} catch (e) { /* 单个失败不算整批失败 */ }
-				}
-				return out;
-			};
-
-			/**
-			 * ═══ 变更订阅：一个目标一条流（官方 `changes`）═══
-			 *
-			 * `remote.workspaceFiles.changes(sessionId, path, signal)` → `AsyncIterable`：
-			 *   `{kind:'ready'}` / `{kind:'change', change:{absolutePath, version}}`
-			 *   / `{kind:'change', change:{absolutePath, absent:true}}`。
-			 *
-			 * ★ 0.2.0 的实测口径（`_16-channel-evidence.txt`，宿主级探针跑的就是装在这台机器上的官方实现）：
-			 *   宿主侧 `WorkspaceChangeFeed.follow()` → `ctx.fs.watch()` 是**目标定向的 OS 监视**
-			 *   （`dsh-fs-local` 用 chokidar，`depth: 0`）⇒
-			 *     · **任何写入者都会发帧**（tool-fs 的 write/edit、会话里的 `pwsh`、外部编辑器保存、原子替换）；
-			 *     · 覆盖率 = 被订阅目标的**直接子项**（两层深的写入不发帧）⇒ 目录必须**逐个**订阅；
-			 *     · 一次原子替换会产生两条帧（目录一条、文件一条）⇒ 上层必须去抖合批。
-			 * ★ 失败**不吞**（四种都如实回调，界面据此降级成"用刷新按钮"）：
-			 *   ① 命名空间/方法不可用 ② 调用同步抛错或没返回可迭代 ③ 迭代中报错 ④ 流被宿主结束。
-			 *
-			 * @returns `{ dispose }` —— 面板离开功能/卸载时调它（外加 `signal.abort()`，双保险）
-			 */
-			const watchTargets = (sid, targets, onEvent, signal) => {
-				const iters = [];
-				const ns = workspaceFilesNs();
-				if (!ns || typeof ns.changes !== "function") {
-					onEvent({ kind: "down", reason: "remote.workspaceFiles.changes 不可用（没注入或宿主没提供）" });
-					return { dispose: () => {} };
-				}
-				for (const target of (targets || []).slice()) {
-					const run = async () => {
-						let iter = null;
-						try {
-							iter = ns.changes(sid, target, signal);
-							if (!iter || typeof iter[Symbol.asyncIterator] !== "function") {
-								onEvent({ kind: "down", reason: "changes 没有返回可迭代对象（宿主版本可能不匹配）" });
-								return;
-							}
-						} catch (e) {
-							onEvent({ kind: "down", reason: "调 changes 就抛错：" + String((e && e.message) || e) });
-							return;
-						}
-						iters.push(iter);
-						try {
-							for await (const frame of iter) {
-								if (signal && signal.aborted) break;
-								onEvent({ kind: "frame", target: target, frame: frame });
-							}
-							if (!signal || !signal.aborted) onEvent({ kind: "end", target: target });
-						} catch (e) {
-							if (signal && signal.aborted) return;
-							const err = (e && (e.code || e.message)) || e;
-							onEvent({ kind: "error", target: target, error: String(err) });
-						}
-					};
-					void run();
-				}
-				return {
-					dispose: () => {
-						for (const it of iters) {
-							try { if (it && typeof it.return === "function") void it.return(); } catch (e) { /* 已经关了 */ }
-						}
-					}
-				};
-			};
-
-			/**
-			 * ═══ 工单 07 · 会话地基：三类会话，一套「认领 → 新建」流程 ═══
-			 *
-			 * 三层会话（CONTEXT.md「索引会话 / 工作会话」）与它们的**所有权凭据**：
-			 *
-			 * | 会话 | cwd | 标题 | 认领凭据 | 收指令？ |
-			 * | --- | --- | --- | --- | --- |
-			 * | 索引会话 | SR workspace 根 | `策划工作台·索引（<工作区名>）` | 标题前缀 / 自己写的缓存 | ✗（只读+订阅） |
-			 * | 功能工作会话 | `features\<主题>\` | `策划工作台·工作（<主题>）` | 标题前缀 / 功能缓存 | ✓ |
-			 * | 无归属工作会话 | SR workspace 根 | `策划工作台·工作（SR 工作区）` | 标题前缀 | ✓ |
-			 *
-			 * ★ 为什么所有权只能靠**标题 + 自己写的缓存**（工单第 3 条）：会话列表里
-			 *   `agentPreset` 不下发，而"cwd 相同/覆盖"根本不是所有权证据 ——
-			 *   用户自己的会话 cwd = `D:\TimeMachine`，它**是** SR 根的祖先目录，
-			 *   一样"覆盖 sr 根"。旧版本按"cwd 覆盖"认领，于是把**用户的会话**当成了
-			 *   面板的扫描口径（2026-10-08 实测）。现在：cwd 只是"**能不能用**"的条件
-			 *   （`list` 限定在会话工作区内），"是不是我的"只看标题与缓存。
-			 */
-
-			/**
-			 * 单航班锁（工单第 5 条：连点两次 / 同一页两次挂载 ⇒ 只建一条）。
-			 *
-			 * ★ 为什么必须有：`ensureFeatureWorkSession` 是"查缓存 → 查列表 → 建"的三段异步 —
-			 *   两次调用交错时会**都**走到"建"，于是堆出两条同名会话（改前实测形状）。
-			 *   同一个 key 的后来者直接**复用同一个 promise**（连结果对象都是同一个）。
-			 * ★ 它只在**一个页面实例内**有效（模块级 Map）。跨标签页只靠"每次建之前先拉一次
-			 *   列表现场认领"收敛：真正的并发首建（两个标签页同一毫秒）无法在客户端彻底排除，
-			 *   见报告「残留风险」；这里至少有两条防线 —— 认领优先、重复时收敛到**最新那条**。
-			 */
-			const INFLIGHT = new Map();
-			const singleFlight = (key, fn) => {
-				const prev = INFLIGHT.get(key);
-				if (prev) return prev;
-				const p = Promise.resolve()
-					.then(fn)
-					.then(
-						(v) => { INFLIGHT.delete(key); return v; },
-						(e) => { INFLIGHT.delete(key); throw e; }
-					);
-				INFLIGHT.set(key, p);
-				return p;
-			};
-
-			/**
-			 * 本机的权限预设目录（`remote.permissionPresets.catalog()`）。
-			 * 返回 promise；**拿不到就 `null`** —— 调用方按最坏情况处理（切一次），不装"我知道"。
-			 * ★ 一次页面只读一次（它在一页里不会变），结果缓存在这个变量里。
-			 */
-			let permCatalog = null;
-			let permCatalogDone = false;
-			const permissionCatalog = () => {
-				if (permCatalogDone) return Promise.resolve(permCatalog);
-				let p = null;
-				try {
-					const ns = (ctx && ctx.remote) || {};
-					const svc = ns.permissionPresets;
-					p = svc && typeof svc.catalog === "function" ? svc.catalog() : null;
-				} catch (e) { p = null; }
-				return Promise.resolve(p).then(
-					(v) => {
-						permCatalogDone = true;
-						permCatalog = (v && v.ok === true) ? v.value : (v && typeof v === "object" && v.ok === undefined ? v : null);
-						return permCatalog;
-					},
-					() => { permCatalogDone = true; permCatalog = null; return null; }
-				);
-			};
-
-			/**
-			 * 把一条会话切到「完全权限」并**读回**结果（工单第 7 条）。
-			 *
-			 * 通道：官方注册的斜杠命令 `/permission <preset>`（依据见纯函数 `permissionCommandLine`）
-			 * —— `commands.execute(sid, line, [])`，与官方 plan 插件同一用法。
-			 * 读回：命令返回后**再拉一次会话列表**，读这条会话的 `permissions` 投影 ——
-			 * "切没切成功"以读回为准（`permissionResultNote`），不是"命令没报错就算了"。
-			 *
-			 * @param sid   要切的那条会话
-			 * @param plan  `permissionPlanOf(catalog)` 的结论（`needed:false` 时原样返回它那句人话）
-			 * @returns 一句给人看的话（空 = 没什么可说）
-			 */
-			const ensureFullAccess = async (sid, plan, signal) => {
-				const p = plan || { needed: true, preset: PERMISSION_FULL, note: "" };
-				if (!sid || !p.needed) return p.note || "";
-				const r = await probe.exec(sid, permissionCommandLine(p.preset));
-				const execText = r && r.ok
-					? ((r.value && (r.value.text || r.value.kind)) || "")
-					: humanError(r);
-				let back = "";
-				try {
-					const L = await probe.listSessions(signal);
-					if (L.ok) {
-						const found = rowsFromList(L.value).filter((x) => x.id === sid)[0];
-						back = presetOfRow(found);
-					}
-				} catch (e) { back = ""; }
-				return permissionResultNote(!!(r && r.ok), execText, back);
-			};
-
-			/**
-			 * 低层：在 `root` 这个目录上**建一条带可识别标题的会话**（工作区 → 会话 → 改名 → 权限）。
-			 * ★ 顺序里踩过的坑只留一处（开发笔记坑 8）：`session.create` 的 `workspaceId` 与 `cwd`
-			 *   **互斥** —— 拿不到 workspaceId 时才退回给 cwd（会话会落进「未分组」，但可用）。
-			 * ★ 工单 07：三类会话**都走这里**（唯一的建会话出口），于是"按 workspace 归属建"
-			 *   与"建完切权限"只有一份实现 —— 不会某一条路漏掉。
-			 */
-			const createSessionAt = async (root, title, preset, opts) => {
-				const o = opts || {};
-				const note = [];
-				const ws = await probe.ensureWorkspace(root);
-				const wsId = ws.ok && ws.value && ws.value.workspace ? ws.value.workspace.workspaceId : "";
-				if (!ws.ok) note.push("按路径登记工作区失败（改用 cwd 建会话）：" + humanError(ws));
-				const cr = await probe.create(wsId, root, preset || "sr-workbench");
-				if (!cr.ok) return { sid: "", error: humanError(cr), outcome: cr, note: note };
-				const sid = idText(cr.value && cr.value.sessionId);
-				if (!sid) return { sid: "", error: "会话已创建，但拿不到 sessionId。", outcome: cr, note: note };
-				if (title) {
-					const rn = await probe.renameSession(sid, title);
-					if (!rn.ok) note.push("会话建好了但改名失败（下次按缓存认回来）：" + humanError(rn));
-				}
-				// ★ 工单 07 第 7 条：**会收到指令的**工作会话要能写功能文件夹之外的产出
-				//   （配置支线写 config_root、gtgenerator 工作目录）⇒ 建完按本机默认预设决定要不要切。
-				//   ★ 索引会话不切（它只被读、被订阅，不接任何指令）—— 权限面越小越好。
-				if (o.fullAccess) {
-					const cat = await permissionCatalog();
-					const perm = await ensureFullAccess(sid, permissionPlanOf(cat), o.signal);
-					if (perm) note.push(perm);
-				}
-				// ★ 建完补一次「并进客户端 store」（官方那两刀）——不补的话侧边栏要按 F5 才看得见
-				//   （2026-09-30 实测缺陷；判定与理由见 `syncSidebarStores` 的注释）。
-				//   顺序：先切权限、再并 store ⇒ 侧边栏那一行连权限投影一起就是新的。
-				const sync = await syncSidebarStores(root);
-				for (const n of sync.notes) note.push(n);
-				return { sid: sid, error: "", outcome: cr, note: note, title: title || "" };
-			};
-
-			/**
-			 * ═══ 该功能的**专属工作会话**（工单 15 · 规格「三层会话」）═══
-			 *
-			 * 与索引会话**分工不同、因此分开**：
-			 *   · 索引会话：cwd = SR workspace 根，只负责扫描看板（`list` 限定在会话工作区内）；
-			 *   · 工作会话：cwd = `features\<主题>\`（功能专属工作区），**面板发出的指令都发给它**
-			 *     —— 这样"干活"不占用户自己的对话（用户故事 23）。
-			 *
-			 * 认领顺序（三家都不是"每次刷新新建一条"，用户故事 27）：
-			 *   内存（同一次页面会话内）→ localStorage 缓存 → **标题认领**（`策划工作台·工作（主题）`）
-			 *   → 都没有才新建（建完一定 `rename`，下次就靠标题认回来）。
-			 * 判定规则全在纯函数 `pickWorkSession` 里（含"绝不认用户的会话"这条纪律）。
-			 */
-			const ensureFeatureWorkSession = async (root, rowsIn, opts) => {
-				const o = opts || {};
-				// ★ 单航班锁（工单 07 第 5 条）：同一个目录同时只跑一个"认领 → 新建"流程。
-				//   连点两次发送 / 同一页两次挂载都复用同一个 promise ⇒ **不会堆两条同名会话**。
-				const key0 = normPath(root);
-				if (key0 === "") return { ok: false, sid: "", error: "算不出这个功能的工作目录。", root: root, note: [] };
-				return await singleFlight("work:" + key0, async () => {
-					try {
-						return await withFeatureWorkSession(root, rowsIn, o);
-					} catch (e) {
-						return { ok: false, sid: "", error: "认领/创建工作会话失败：" + String((e && e.message) || e), root: root, note: [] };
-					}
-				});
-			};
-
-			/** 上面那把锁里的正文（单独一个函数只为"抛错也要把锁解开"，语义与 15 那一版一致） */
-			const withFeatureWorkSession = async (root, rowsIn, o) => {
-				const note = [];
-				// ★ 工单 07：标题可覆盖 —— 「无归属工作会话」（资产索引 / 收件箱）用
-				//   `WORK_ROOT_TITLE`，功能工作会话用 `workTitleFor(root)`。
-				const title = o.title || workTitleFor(root);
-				const key = workKey("sr-workbench", root);
-				// ★ 归档集（侧边栏看不见的会话**不算可用**）—— 认了它 = 指令发进去、界面什么也没有
-				//   （2026-09-30 实测缺陷；取值与降级见 `sidebarArchived`）。
-				const arch = sidebarArchived();
-				if (arch.ids === null) note.push(NO_ARCHIVE_INFO_NOTE + "（" + arch.reason + "）");
-				// 两个"上次用的那条"（内存 / localStorage）里，只要有一条已被归档，就都不算了：
-				// 归档 ≠ 删除，它还在列表里、还能被 prompt，但用户**看不见**它 —— 那正是本缺陷的形状。
-				const staleMemory = o.fresh ? "" : (WORK_SESSIONS.get(key) || "");
-				const staleCache = o.fresh ? "" : workCacheGet(workCacheRaw(), root);
-				if (isArchivedId(arch.ids, staleMemory) || isArchivedId(arch.ids, staleCache)) {
-					WORK_SESSIONS.delete(key);
-					workCacheSet(root, null);
-					note.push(ARCHIVED_CACHED_NOTE);
-				}
-				if (o.fresh) {
-					WORK_SESSIONS.delete(key);
-					workCacheSet(root, null);
-				} else if (staleMemory !== "" && !isArchivedId(arch.ids, staleMemory)) {
-					return { ok: true, sid: staleMemory, source: "memory", title: title, root: root, running: false, note: note };
-				}
-				// 候选：store 快照先（带着 cwd / running）——
-				// ★ 认不着时再补一次 `remote.session.list`：store 行的 `title` 要等 host 投影下来
-				//   （`SessionSummary.title` 是 "absent until the host projects one"），
-				//   而列表里的标题在 `projections.values.title`。少了这一步，"清掉缓存"之后
-				//   会看不见自己起过名的会话 ⇒ 每次刷新又新建一条（用户故事 27）。
-				//   ★ 但列表**不按归档过滤**（`SessionListRequest` 只有可选 cursor）——所以两条
-				//   通道的候选都要过归档这一关（`pickWorkSession` 的 `archived` 参数）。
-				let rows = (rowsIn || []).filter((r) => r && r.id && r.id !== o.exclude);
-				const cached = isArchivedId(arch.ids, staleCache) ? "" : staleCache;
-				let hit = pickWorkSession(rows, root, { cachedId: cached, archived: arch.ids });
-				if (!hit) {
-					const L = await probe.listSessions(o.signal);
-					if (L.ok) {
-						rows = mergeRows(rows, rowsFromList(L.value).filter((r) => r.id !== o.exclude));
-						hit = pickWorkSession(rows, root, { cachedId: cached, archived: arch.ids });
-					} else if (rows.length === 0) {
-						note.push("会话列表读取失败：" + humanError(L));
-					}
-				}
-				if (hit) {
-					setWorkSession(key, hit.id);
-					workCacheSet(root, hit.id);
-					// ★ 老会话的权限预设**不是**完全权限时补切一刀（工单 07 第 7 条）：
-					//   只在"读到了预设且它不是完全权限"时才动手 —— 读不到就不动
-					//   （否则每次发送都会往会话日志里塞一条命令）。
-					if (needsFullAccess(hit.row.preset)) {
-						const perm = await ensureFullAccess(hit.id, { needed: true, preset: PERMISSION_FULL, note: "" }, o.signal);
-						if (perm) note.push(perm);
-					}
-					if (hit.others > 0) {
-						note.push("侧边栏里有 " + (hit.others + 1) + " 条「" + title + "」（多半是并行刷新时各建了一条）：" +
-							"这次用**最近更新的那条**（" + hit.id + "），其余几条可在侧边栏归档。");
-					}
-					return {
-						ok: true, sid: hit.id, source: hit.source, root: root,
-						title: titleOf(hit.row) || title, running: !!hit.row.running, row: hit.row, note: note
-					};
-				}
-				// ★ 会收指令的工作会话：建完切「完全权限」（理由与通道见 `createSessionAt`）
-				const made = await createSessionAt(root, title, "sr-workbench", { fullAccess: true, signal: o.signal });
-				for (const n of made.note) note.push(n);
-				if (made.error) return { ok: false, sid: "", error: made.error, outcome: made.outcome, root: root, note: note };
-				setWorkSession(key, made.sid);
-				workCacheSet(root, made.sid);
-				return { ok: true, sid: made.sid, source: "created", root: root, title: made.title, running: false, note: note };
-			};
-
-			/**
-			 * 在（复用的）工作会话里跑一条指令。
-			 * ★ 所有"改文件"的动作都走这里 —— 工作台在 Remote 层没有写能力，
-			 *   只能把意图交给 agent，由它用工具去写。
-			 */
-			/**
-			 * 确保有一个可用的「无归属工作会话」（不属于任何功能的入口专用：
-			 * 资产索引刷新 / 收件箱导入 / 人工补充）。
-			 *
-			 * ★ 工单 07 第 2/3 条把这一条也并进了统一链路：
-			 *   · 归属：`createSessionAt` 里先 `workspace.create({path = srWs})` 再
-			 *     `session.create({workspaceId})` —— 不再用"当前选中会话所属的工作区"
-			 *     （那会让它落进用户当时所在的分组，或干脆落进「未分组」）；
-			 *   · 标题：`策划工作台·工作（SR 工作区）` —— **认领凭据**。
-			 *     改前这条会话没有标题、也没有 localStorage 缓存（只有内存），
-			 *     于是**每次刷新页面后第一次点"刷新资产索引"都会新建一条**（实测形状：会话数只增不减）。
-			 *   · 权限：建完切「完全权限」（它会把索引写到 srWs 之外的地方，例如 gtgenerator 工作目录）。
-			 *
-			 * @returns `{ sid, error, note, source }`
-			 */
-			const ensureWorkSession = async (srWs) => {
-				try {
-					const root = String(srWs || "").replace(/[\\/]+$/, "");
-					if (root === "") return { sid: "", error: "拿不到 sr 工作区路径（工作台锚点配置读不到）。", note: [] };
-					const got = await ensureFeatureWorkSession(root, [], { title: WORK_ROOT_TITLE });
-					if (!got || !got.ok) {
-						return { sid: "", error: (got && got.error) || "拿不到工作会话。", note: (got && got.note) || [] };
-					}
-					return { sid: got.sid, error: "", note: got.note || [], source: got.source };
-				} catch (e) {
-					return { sid: "", error: "建会话失败：" + String((e && e.message) || e), note: [] };
-				}
-			};
-
-			/**
-			 * ═══ 面板唯一的「发进该功能的专属工作会话」链路（工单 15 立的，工单 23 复用的就是这一条）═══
-			 *
-			 *   认领 → （会话没了就）自愈重建 → **重发一次**；失败一律给「可读错误 + 下一步」。
-			 *   `fixRunner`（就地改这条）与 `brainstormRunner`（头脑风暴四入口）**共用这一段** ——
-			 *   两条路发出的东西除正文外一模一样（同一会话、同一 mode、同一自愈、同一错误话术），
-			 *   也**不会各自长出一个发送通道**（工单 23 的硬要求）。
-			 *
-			 * @param root 功能根（cwd = `features\<主题>\`）
-			 * @param text 要发的正文（调用方用纯函数组装，卡上显示的就是它）
-			 * @param c    `{ rows }` 会话候选 · `{ signal }`
-			 * @returns `{ ok, sid, sent, healed, queued, target, message?, next?, note? }`
-			 */
-			const sendFeatureInstruction = async (root, text, c) => {
-				const cc = c || {};
-				const targetOf = (got) => ({
-					root: root, title: (got && got.title) || workTitleFor(root),
-					source: (got && got.source) || "", running: !!(got && got.running)
-				});
-				const attempt = async (fresh, exclude) => {
-					const got = await ensureFeatureWorkSession(root, cc.rows, {
-						fresh: fresh, exclude: exclude, signal: cc.signal
-					});
-					if (!got.ok) return { got: got, r: null };
-					const r = await probe.prompt(got.sid, text);
-					return { got: got, r: r };
-				};
-
-				let a = await attempt(false, "");
-				// ★ 自愈：那条会话**已经不在**（session/not-found）→ 清缓存、重建一条、**重发一次**
-				let healed = false;
-				if (a.got && a.got.ok && a.r && a.r.ok !== true && isSessionGone(a.r)) {
-					a = await attempt(true, a.got.sid);
-					healed = true;
-				}
-				if (!a.got.ok) {
-					const f = explainSendFailure(a.got.outcome || { message: a.got.error });
-					return {
-						ok: false, sid: "", sent: text, target: targetOf(a.got), healed: healed,
-						message: f.message, next: f.next, note: f.message + "　" + f.next
-					};
-				}
-				if (!a.r || a.r.ok !== true) {
-					const f = explainSendFailure(a.r);
-					return {
-						ok: false, sid: a.got.sid, sent: text, target: targetOf(a.got), healed: healed,
-						message: f.message, next: f.next, note: f.message + "　" + f.next
-					};
-				}
-				return {
-					ok: true, sid: a.got.sid, sent: text, healed: healed,
-					queued: !!a.got.running, target: targetOf(a.got),
-					// ★ 建完的降级说明（例如"取不到官方 workspaces 客户端服务 ⇒ 这次要刷新页面才看得见"）
-					//   一并显示 —— 缺陷修复的诚实口径：**不许装成"侧边栏已经刷新了"**。
-					note: "已交给工作会话。" + (a.got.running ? "它正在跑别的活，这条指令排在队列里。" : "") +
-						(a.got.note && a.got.note.length ? "　" + a.got.note.join("；") : "")
-				};
-			};
-
-			/**
-			 * ═══ 工单 22 · 「新建功能」的三条通道（面板在这条路上**不写盘**）═══
-			 *
-			 *   ① `createFactsRunner`   —— 建之前的**只读事实**（`src/load/create.ts`：列 `features\`
-			 *      + 逐个读 `feature.json`）。提交时重新拉一次 ⇒ "先校验后创建"用的是**当下**的事实，
-			 *      不是看板屏幕上那份可能已经旧了的。
-			 *   ② `createFeatureRunner` —— 把**算好的指令**发给「无归属工作会话」（cwd = SR 工作区根，
-			 *      工单 07 建的那条）。为什么是它：功能专属工作区**此刻还不存在**，而这条指令的工作
-			 *      就是把那个目录建出来；这条会话本来就叫「策划工作台·工作（SR 工作区）」。
-			 *   ③ `readBackRunner`      —— 建之后的**窄回读**（列功能根 + 读 `feature.json`，两次调用）。
-			 *      判定（桶齐不齐 / 身份认不认得出 / id 是不是算好那个）在纯函数 `verifyCreated` 里。
-			 *
-			 * ★ 回读**不是**"看一眼就当成了"：`feature.json` 不在、桶缺、id 对不上，都如实说，
-			 *   绝不当作建好（`verifyCreated` 的五个状态）。
-			 */
-			const createFactsRunner = (sid, srWs, signal) => loadCreateFacts(portOf(ctx, sid, read), { srWs: srWs, signal: signal });
-			const readBackRunner = (sid, root, expectId, signal) => readBackCreated(portOf(ctx, sid, read), root, expectId, signal);
-
-			const createFeatureRunner = async (plan, opts) => {
-				const o = opts || {};
-				const text = String((plan && plan.instruction) || "");
-				if (!plan || !plan.ok || text === "") {
-					return {
-						ok: false, sid: "", sent: text,
-						message: (plan && plan.message) || "这条新建指令是空的（面板没算出来）。",
-						next: (plan && plan.next) || "刷新页面，重新输一次主题名。"
-					};
-				}
-				const got = await ensureWorkSession(o.srWs);
-				if (!got.sid) {
-					return {
-						ok: false, sid: "", sent: text,
-						message: "拿不到「SR 工作区」的工作会话：" + (got.error || "原因未知"),
-						next: "先确认会话列表能用（侧边栏有没有会话都行），再点一次「建立」。"
-					};
-				}
-				const r = await probe.prompt(got.sid, text);
-				if (!r || r.ok !== true) {
-					const f = explainSendFailure(r);
-					return { ok: false, sid: got.sid, sent: text, message: f.message, next: f.next };
-				}
-				return {
-					ok: true, sid: got.sid, sent: text,
-					target: { root: o.srWs || "", title: WORK_ROOT_TITLE, source: got.source || "" },
-					note: (got.note || []).filter(Boolean).join("；")
-				};
-			};
-
-			/**
-			 * 「就地改这条」（设计 §6.3 条目引用 + §6.4.1 影响范围）。
-			 *
-			 * ★ 面板不写文件 —— 它只把「改哪儿、改成什么」说到 agent 不用再找的程度：
-			 *   带**条目引用**（§5 UI-M1 UE3）+ **现状原文**（行号会漂，原文不会）
-			 *   + **面板扫出的结构引用**（让 agent 少一步搜索）。
-			 * ★ 语义影响仍然交给 sr-gdd-fix 的 D11 影响面闭合 —— 面板不越界（文本里写着）。
-			 * ★ 文本由 `buildFixInstruction`（`src/pure/instruction.ts`）拼 —— 与定位卡上
-			 *   **给用户看的那段逐字相同**（工单 14：先看后发，看到的就是要发的）。
-			 * ★ 发到**该功能的专属工作会话**（cwd = `features\<主题>\`，工单 15）——
-			 *   发送本身走 `sendFeatureInstruction`（工单 23 抽出的那一段，两条路共用）。
-			 *
-			 * @param srWs  SR 工作区根（拿不到功能根时的最后兜底）
-			 * @param req   `{ path, ref, before, intent, impact }`
-			 * @param extra `{ root }` 功能根（详情页给的更权威）· `{ rows }` 会话候选
-			 * @returns `{ ok, sid, sent, healed, queued, target, message?, next?, note? }`
-			 */
-			const fixRunner = async (srWs, req, extra) => {
-				const c = extra || {};
-				if (!req || !req.path || !req.ref) return { ok: false, note: "缺少定稿路径或条目引用。" };
-				const text = buildFixInstruction({
-					path: req.path, ref: req.ref, before: req.before, intent: req.intent, impact: req.impact
-				});
-				// 功能根：详情页给的更权威；否则从 `features\<主题>\gdd\…` 反推
-				const root = c.root || featureRootOf(req.path) || srWs || "";
-				if (!root) {
-					return {
-						ok: false, sent: text,
-						message: "算不出这条定稿属于哪个功能目录。",
-						next: "从「功能详情 › 定稿」页签进来再发一次（工作会话要建在 `features\\<主题>\\` 下）。",
-						note: "算不出这条定稿属于哪个功能目录。"
-					};
-				}
-				return sendFeatureInstruction(root, text, c);
-			};
-
-			/**
-			 * ★ 工单 23 · 头脑风暴四入口的出口：**复用**上面那条链路，只是正文由四入口各自的
-			 *   组装器给出（`INTAKE.buildBrainstormInstruction`，与卡上预览逐字相同）。
-			 *
-			 * ★ 缺前提**不发**（也不静默）：把 `blocked` + `next` 原样回给界面 —— 界面显示的
-			 *   与这里判定的是同一份（判定只在纯函数里）。
-			 * ★ 指令正文由界面传进来（`input.text`）—— 这样"卡上看到的 = 发出去的"是**同一段字符串**，
-			 *   不存在"再组装一次、拼出第二份"的可能（工单 15 的验收口径，这里照做）。
-			 *
-			 * @returns `{ ok, sid, sent, healed, queued, target, message?, next?, note? }` 或
-			 *          `{ ok:false, blocked, next, sent:"" }`（缺前提）
-			 */
-			const brainstormRunner = async (srWs, kind, input, extra) => {
-				const c = extra || {};
-				const inp = input || {};
-				const root = String(inp.root || c.root || "").replace(/\\+$/, "");
-				if (!root) {
-					return {
-						ok: false, sent: "",
-						blocked: "拿不到这个功能的功能目录（`features\\<主题>\\`）。",
-						next: "从「功能详情 › 头脑风暴」进来再发一次 —— 指令要发给该功能的专属工作会话（cwd = 功能目录）。"
-					};
-				}
-				// 正文以界面传的那一段为准（逐字）；万一是别的调用方，退回自己组装一次
-				let text = String(inp.text || "");
-				if (text === "") {
-					const built = INTAKE.buildBrainstormInstruction(kind, Object.assign({}, inp, { root: root }));
-					if (built.blocked) return { ok: false, sent: "", blocked: built.blocked, next: built.next || "" };
-					text = built.instruction;
-				}
-				return sendFeatureInstruction(root, text, c);
-			};
-
-			/**
-			 * ★ 工单 24 · 文档生成三个动作的出口：**复用** `sendFeatureInstruction`（工单 15 立的、
-			 *   工单 23 抽出的那一条），只是正文由 `buildDraftInstruction` 给出（与卡上预览逐字相同）。
-			 *
-			 * ★ 与 `brainstormRunner` 的**唯一区别**：这里**不重算正文** —— 正文以界面传进来的那一段为准
-			 *   （`input.text`）；只有"别的调用方直接调"时才退回自己组装一次。缺前提（`built.blocked`）
-			 *   由界面拦下并显示，这一层不发。
-			 *
-			 * @returns `{ ok, sid, sent, healed, queued, target, message?, next?, note? }`
-			 */
-			const draftRunner = async (srWs, action, input, extra) => {
-				const c = extra || {};
-				const inp = input || {};
-				const root = String(inp.root || c.root || "").replace(/\\+$/, "");
-				if (!root) {
-					return {
-						ok: false, sent: "",
-						blocked: "拿不到这个功能的功能目录（`features\\<主题>\\`）。",
-						next: "从「功能详情 › 文档生成」进来再发一次 —— 指令要发给该功能的专属工作会话（cwd = 功能目录）。"
-					};
-				}
-				const text = String(inp.text || "");
-				if (text === "") {
-					return { ok: false, sent: "", blocked: "这条指令是空的（界面没有把组装好的正文传过来）。", next: "刷新页面再试一次；仍失败就把这条发给开发者。" };
-				}
-				return sendFeatureInstruction(root, text, c);
-			};
-
-			/**
-			 * ★ 工单 28 · 两个派生动作的出口：**复用** `sendFeatureInstruction`（工单 15 立的、
-			 *   工单 23 抽出的那一条），只是正文由界面传进来（与预览逐字相同）。
-			 *
-			 * ★ 与 `draftRunner` 的**唯一区别**：缺前提（没有可派生的定稿 / 拿不到指纹）在**界面那一层**
-			 *   就用 `blocked` 拦下并显示（连预览都不出），这一层只做"正文非空 + 功能根拿得到"两道校验，
-			 *   再走那条既有链路发出去。**不新开任何发送通道。**
-			 *
-			 * @returns `{ ok, sid, sent, healed, queued, target, message?, next?, note? }`
-			 */
-			const derivedRunner = async (srWs, kind, input, extra) => {
-				const c = extra || {};
-				const inp = input || {};
-				const root = String(inp.root || c.root || "").replace(/\\+$/, "");
-				if (!root) {
-					return {
-						ok: false, sent: "",
-						blocked: "拿不到这个功能的功能目录（`features\\<主题>\\`）。",
-						next: "从「功能详情 › 定稿修订」进来再发一次 —— 指令要发给该功能的专属工作会话（cwd = 功能目录）。"
-					};
-				}
-				const text = String(inp.text || "");
-				if (text === "") {
-					return { ok: false, sent: "", blocked: "这条指令是空的（界面没有把组装好的正文传过来）。", next: "刷新页面再试一次；仍失败就把这条发给开发者。" };
-				}
-				return sendFeatureInstruction(root, text, c);
-			};
-
-			/**
-			 * ★ 工单 26 · 外部交付包两个动作的出口（归档 / 按包换线框图）。
-			 *
-			 * **复用同一条链路**：`sendFeatureInstruction`（工单 15 立的、23 抽出的那一条），
-			 * 正文由界面传进来（与预览逐字相同）。这一层只做"正文非空 + 功能根拿得到"两道校验 ——
-			 * 与 `derivedRunner` 同一个形状，**不新开任何发送通道**。
-			 *
-			 * ★ 线框图那一条**不是**在这里重写正文：正文来自 `pure/ueintake.buildWireframeRequest`，
-			 * 它转手交给 `draftstep.buildDraftInstruction({action:"wireframe"})` —— 与「文档生成 › 线框图」
-			 * 手动入口**同一处组装**（工单 26 第 5 条）。
-			 *
-			 * @returns `{ ok, sid, sent, healed, queued, target, message?, next?, note? }`
-			 */
-			const intakeRunner = async (kind, input, extra) => {
-				const c = extra || {};
-				const inp = input || {};
-				const root = String(inp.root || c.root || "").replace(/\\+$/, "");
-				if (!root) {
-					return {
-						ok: false, sent: "",
-						blocked: "拿不到这个功能的功能目录（`features\\<主题>\\`）。",
-						next: "从「功能详情 › 产物」进来再发一次 —— 指令要发给该功能的专属工作会话（cwd = 功能目录）。"
-					};
-				}
-				const text = String(inp.text || "");
-				if (text === "") {
-					return {
-						ok: false, sent: "",
-						blocked: "这条指令是空的（界面没有把组装好的正文传过来）—— 动作：" + String(kind || "?") + "。",
-						next: "刷新页面再试一次；仍失败就把这条发给开发者。"
-					};
-				}
-				return sendFeatureInstruction(root, text, c);
-			};
-
-			/**
-			 * 用系统默认程序打开一个工作区文件。
-			 * ★ host 的 openWorkspacePath(request, signal) 会调 signal.throwIfAborted()，
-			 *   signal 是**必传**的；不给会抛 TypeError。
-			 * request 不带 sessionId，故传绝对路径。
-			 */
-			/**
-			 * 直接调 host 的 openWorkspacePath —— **不加超时**，由调用方统一包超时。
-			 * ★ host 的 openWorkspacePath(request, signal) 会调 signal.throwIfAborted()，
-			 *   signal 是**必传**的；不给会抛 TypeError。
-			 * request 不带 sessionId，故传绝对路径。
-			 */
-			const remoteOpen = (req, label) => {
-				// ★ 访问 ctx.remote.session 本身就可能同步抛错（未注入）——必须包起来
-				let sessionNs;
-				try { sessionNs = ctx.remote && ctx.remote.session; }
-				catch (e) {
-					return Promise.reject(new Error(
-						label + "：remote.session 未注入（" + String((e && e.message) || e) + "）"
-					));
-				}
-				if (!sessionNs || typeof sessionNs.openWorkspacePath !== "function") {
-					return Promise.reject(new Error(
-						label + "：remote.session.openWorkspacePath 不可用 · 可用命名空间：" +
-						Object.keys(ctx.remote || {}).join(", ")
-					));
-				}
-				const ac = new AbortController();
-				return Promise.resolve(sessionNs.openWorkspacePath(req, ac.signal)).then((r) => {
-					if (!r || r.ok !== true) {
-						const e = r && r.error;
-						throw new Error(label + "：" + ((e && (e.message || e.code)) || "返回失败"));
-					}
-					return true;
-				});
-			};
-
-			/**
-			 * 诊断：打开失败时把通道实况探出来（不再盲猜）。
-			 * 返回可读文本，直接显示在面板上。
-			 */
-			const diagnose = async () => {
-				const L = [];
-				try { L.push("remote 命名空间：" + Object.keys(ctx.remote || {}).join(", ")); }
-				catch (e) { L.push("列命名空间抛错：" + String((e && e.message) || e)); }
-				let s = null;
-				try { s = ctx.remote && ctx.remote.session; }
-				catch (e) { L.push("访问 remote.session 抛错：" + String((e && e.message) || e)); }
-				L.push("typeof remote.session = " + typeof s);
-				if (!s) return L.join("\n");
-				L.push("typeof session.openWorkspacePath = " + typeof s.openWorkspacePath);
-				L.push("typeof session.canOpenWorkspacePath = " + typeof s.canOpenWorkspacePath);
-				try {
-					if (typeof s.canOpenWorkspacePath === "function") {
-						const r = await s.canOpenWorkspacePath();
-						L.push("canOpenWorkspacePath() = " + (r && r.ok === true ? String(r.value) : "失败 " + JSON.stringify(r && r.error)));
-					}
-				} catch (e) { L.push("canOpenWorkspacePath() 抛错：" + String((e && e.message) || e)); }
-				try {
-					if (typeof s.workspaceDesktop === "function") {
-						const r = await s.workspaceDesktop();
-						L.push("workspaceDesktop() = " + JSON.stringify(r && r.ok === true ? r.value : (r && r.error)));
-					} else L.push("workspaceDesktop：客户端无此方法");
-				} catch (e) { L.push("workspaceDesktop() 抛错：" + String((e && e.message) || e)); }
-				return L.join("\n");
-			};
-
-			/**
-			 * A2 通道探测：把「列预设 / 列斜杠命令 / 建 sr 工作会话 / 执行命令」四步
-			 * 的结果原样报出来。**先确认通道，再搭界面。**
-			 */
-			/**
-			 * 取「列表型」服务的 snapshot store —— **两个版本都认**：
-			 *   · 0.1.5：服务名 `sessions` / `workspaces`
-			 *   · 0.2.0：同一批服务还在（`dsh-api-*-controller` 的客户端半侧），
-			 *     另外多了 UI 域服务 `uiSession` / `uiWorkspace`（面板 slot 侧用它拿 hook）。
-			 * 两个版本都返回 `{ getSnapshot, subscribe }`，所以判据是"有 list.getSnapshot"。
-			 */
-			const storeOf = (svcName, ownerName) => {
-				const direct = svc(ctx, svcName);
-				if (direct && direct.list && typeof direct.list.getSnapshot === "function") return direct.list;
-				const owner = svc(ctx, ownerName);
-				const inner = owner && owner[svcName];
-				if (inner && inner.list && typeof inner.list.getSnapshot === "function") return inner.list;
-				return null;
-			};
-
-			/**
-			 * ═══ 侧边栏的「已归档」集（2026-09-30 实测缺陷修复）════════════════════════
-			 *
-			 * 缺陷：面板认领会话时**不看归档状态**，于是认领了一条"已归档（侧边栏不可见）"
-			 * 的会话 —— 指令发进去了（会话日志 13:35 仍有写入），用户却什么也看不到，
-			 * 判定"面板没反应，F5 都不出现"。
-			 *
-			 * 归档 = **工作区层的显示过滤**，不是删除：归档的会话照样出现在 `remote.session.list`
-			 * 里（`SessionListRequest` 只有可选 `cursor`，列表**不按归档过滤**，
-			 * `dsh-api-session-controller/lib/types/types.d.ts:262`），
-			 * 只是官方侧边栏按 `archivedSessionIds` 把行藏起来（`ArchivedFilter`）。
-			 * 所以"能不能被认领"不能只看它在不在列表里 —— **必须看它在界面上可不可见**。
-			 *
-			 * 唯一权威读口子就是官方客户端 workspace store 的快照
-			 * （`ClientWorkspaceModel.buildSnapshot()` 里的 `archivedSessionIds`，
-			 * `dsh-api-workspace-controller/lib/types/client/model.d.ts:12`；
-			 * 官方半侧自己也是这么用的：`dsh-client-ui-workspace/lib/client.js:801` 挑空白会话时排除它）。
-			 * 我们**只读**它 —— 不 patch 官方半侧、不自己维护一份归档表。
-			 *
-			 * ★ 拿不到时（服务没提供 / 快照形状变了）**如实降级**，绝不静默假装知道：
-			 *   返回 `ids: null`，调用方把 `NO_ARCHIVE_INFO_NOTE` 显示到面板上。
-			 *   降级行为 = **退回旧行为**（不做排除，照旧认领），因为"排除"这件事此刻无从判定；
-			 *   代价与补救写在提示里（去侧边栏「已归档」里取消归档）。
-			 *
-			 * @returns `{ ids, reason }` —— `ids: string[] | null`（`null` = 拿不到）
-			 */
-			const sidebarArchived = () => {
-				try {
-					const store = storeOf("workspaces", "uiWorkspace");
-					if (!store) return { ids: null, reason: "取不到官方 workspaces 客户端服务" };
-					const ids = archivedFromSnapshot(store.getSnapshot());
-					if (ids === null) return { ids: null, reason: "快照里没有 archivedSessionIds" };
-					return { ids: ids, reason: "" };
-				} catch (e) {
-					return { ids: null, reason: String((e && e.message) || e) };
-				}
-			};
-
-			/**
-			 * 「用户当前选中的会话」。
-			 * ★ **0.2.0 没有 `state.current` 了** —— 官方 `dsh-client-ui-layout` 与
-			 *   `dsh-client-ui-workspace` 一律用 `byId[id].retainedBy.mainView > 0` 算"当前会话"。
-			 *   0.1.5 时代面板读的 `sessions.current` 在 0.2.0 恒为 undefined —— 这正是
-			 *   「面板永远显示'先在左侧选一个会话'」的直接原因（看板自己已不再依赖它，
-			 *   见 `resolveIndexSession`；这里只服务于"工作会话落进哪个工作区分组"）。
-			 */
-			const currentSessionId = () => {
-				const store = storeOf("sessions", "uiSession");
-				if (!store) return "";
-				let snap = null;
-				try { snap = store.getSnapshot(); } catch (e) { return ""; }
-				if (!snap) return "";
-				if (typeof snap.current === "string" && snap.current) return snap.current;   // 0.1.5
-				const byId = snap.byId || {};
-				for (const id of Object.keys(byId)) {
-					const row = byId[id];
-					if (row && row.retainedBy && Number(row.retainedBy.mainView) > 0) return id;
-				}
-				return "";
-			};
-
-			const workspaceInfo = () => {
-				try {
-					const store = storeOf("workspaces", "uiWorkspace");
-					if (!store) return { id: "", title: "", path: "", error: "workspaces 服务不可用" };
-					const ws = store.getSnapshot();
-					const cur = currentSessionId();
-					if (!cur) return { id: "", title: "", path: "" };
-					const hit = (ws.items || []).filter(
-						(it) => it && Array.isArray(it.sessionIds) && it.sessionIds.indexOf(cur) >= 0
-					)[0];
-					return hit
-						? { id: hit.workspaceId, title: hit.title || "", path: hit.path || "" }
-						: { id: "", title: "", path: "" };
-				} catch (e) {
-					return { id: "", title: "", path: "", error: String((e && e.message) || e) };
-				}
-			};
-
-			/**
-			 * ═══ 建完就把新工作区 / 新会话并进**客户端 store**（侧边栏立刻看得见）═══
-			 *
-			 * 缺陷（2026-09-30 实测）：面板建完工作区 + 会话之后，侧边栏**要按 F5 才出现**
-			 * 那个工作区分组与新会话行。根因：面板走的是**裸 Remote**
-			 * （`remote.workspace.create` / `remote.session.create` / `remote.session.rename`），
-			 * 只把结果返回给调用方，**没人把它并进客户端 store** —— 而侧边栏读的正是那两个 store。
-			 * 官方「新会话」按钮之所以建完立刻看得见，是因为它走的是**官方客户端服务**那条路
-			 * （`dsh-client-ui-workspace/lib/client.js:846 startSession` → `:808 sessions.create`）。
-			 *
-			 * 所以这里照抄官方那两刀（**不自己写 store 写入**）：
-			 *   ① `workspaces.create({path})`
-			 *      —— `dsh-api-workspace-controller/lib/client.js:393 create` →
-			 *         `:51 ClientWorkspaceModel.create` → `:53 upsert(result.value.workspace)`。
-			 *         官方的「新增工作区」也是调它（`dsh-client-ui-workspace/lib/client.js:4282`）。
-			 *         按路径查是**幂等**的：已存在就返回当前视图（连 `sessionIds` 一起，所以新会话
-			 *         会被这个分组认领，不再落进「未分组」）。
-			 *   ② `sessions.refresh()`
-			 *      —— `dsh-api-session-controller/lib/client.js:3258 refresh` →
-			 *         `:2603 SessionManager.refreshList`（`session.list` 拉一次基线，
-			 *         连 `projections.values.title` 一起装上 —— 就是我们刚 `rename` 的那个标题）。
-			 *         客户端**重连时官方自己**也是这么重建基线的（同文件 `:2923 handleConnected`）。
-			 *
-			 * ★ 为什么不直接用官方的 `sessions.create`（它自带 placeholder 合并）：它**丢 `agentPreset`**
-			 *   （同文件 `:2680-2686` 的 payload 只带 workspaceId/sessionId 或 cwd/sessionId，
-			 *   而 `SessionCreateRequest.agentPreset` 是 host 支持的字段，见该包 `types.d.ts:283`）。
-			 *   工作台的工作会话必须带 `sr-workbench` 这个预设，所以创建仍旧走裸 Remote，
-			 *   建完再用官方这两刀把 store 补齐 —— 这是**正规口子**（官方自己的"重拉基线"入口）。
-			 *
-			 * ★ 探服务用 `ctx.get`（不是 inject）：这两个服务任何一个没被提供时，写进 inject
-			 *   会让**整个插件不激活**；探不到就按 `planSidebarSync` 如实降级并说清"要刷新页面"。
-			 *
-			 * @param path 这次会话建在哪个目录（工作区分组按它认领）；`""` = 无归属（未分组）
-			 * @returns `{ plan, notes }` —— notes 是**给人看**的降级说明（空数组 = 都做到了）
-			 */
-			const syncSidebarStores = async (path) => {
-				let workspacesSvc = null;
-				let sessionsSvc = null;
-				try { workspacesSvc = svc(ctx, "workspaces"); } catch (e) { workspacesSvc = null; }
-				try { sessionsSvc = svc(ctx, "sessions"); } catch (e) { sessionsSvc = null; }
-				const plan = planSidebarSync({
-					path: path || "",
-					services: {
-						workspaces: !!(workspacesSvc && typeof workspacesSvc.create === "function"),
-						sessions: !!(sessionsSvc && typeof sessionsSvc.refresh === "function")
-					}
-				});
-				const notes = plan.notes.slice();
-				if (!sidebarSyncNeeded(plan)) return { plan: plan, notes: notes };
-				// ★ 官方客户端服务**直接返回值 / 直接抛错**（不是 Remote 的 `{ok,value,error}` 形状），
-				//   所以不能过 `safeCall`（它会把这些返回值判成 ok:false）—— 这里另包一层。
-				const tryCall = async (name, fn) => {
-					try { return { name: name, ok: true, value: await fn() }; }
-					catch (e) { return { name: name, ok: false, error: { message: String((e && e.message) || e) } }; }
-				};
-				for (const step of plan.steps) {
-					if (step === "workspaces.create") {
-						const r = await tryCall("workspaces.create", () => workspacesSvc.create({ path: plan.resolvePath }));
-						if (!r.ok) notes.push("工作区分组没能即时并进侧边栏（" + humanError(r) + "）。");
-					} else {
-						const r = await tryCall("sessions.refresh", () => sessionsSvc.refresh());
-						if (!r.ok) notes.push("会话行没能即时并进侧边栏（" + humanError(r) + "）。");
-					}
-				}
-				return { plan: plan, notes: notes };
-			};
-
-			const probe = {
-				/** 建完补一次「并进客户端 store」（侧边栏立刻看得见）—— 唯一实现在组合根，组件只调它 */
-				syncSidebar: (path) => syncSidebarStores(path),
-				presets: () => safeCall("agentPresets.list", () => ctx.remote.agentPresets.list()),
-				commands: (sid) => safeCall("commands.list", () => ctx.remote.commands.list(sid)),
-				/**
-				 * 列会话（0.2.0 仍有 `session/list`；`SessionListRequest` 现在只有可选的 `cursor`）。
-				 * ★ 返回的 `items[].projections.values.title` 就是持久标题（host 把 `title`
-				 *   注册成投影后随列表一起下发）。0.1.5 的 `title` 在行上。
-				 */
-				listSessions: (signal) => safeCall("session.list",
-					() => ctx.remote.session.list({}, signal)),
-				/** 给会话改名 —— 索引会话的「可识别标题」凭据（`{ sessionId, title }`） */
-				renameSession: (sid, title) => safeCall("session.rename",
-					() => ctx.remote.session.rename({ sessionId: sid, title: title })),
-				/** 按路径查/建工作区 —— 已存在时返回 created:false 并给出 workspaceId */
-				ensureWorkspace: (path) => safeCall("workspace.create",
-					() => ctx.remote.workspace.create({ path: path })),
-				create: (workspaceId, cwd, preset) => safeCall("session.create", () => {
-					// ★ host 明确拒绝同时给 workspaceId 与 cwd：
-					//   "session.create accepts workspaceId or cwd, not both"（gateway/bad-request）
-					//   给了 workspaceId 就用工作区自己的 path 当 cwd。
-					const req = workspaceId
-						? { workspaceId: workspaceId, agentPreset: preset }
-						: { cwd: cwd || void 0, agentPreset: preset };
-					return ctx.remote.session.create(req);
-				}),
-				exec: (sid, line) => safeCall("commands.execute",
-					() => ctx.remote.commands.execute(sid, line, [])),
-				prompt: (sid, text) => safeCall("session.prompt", () => ctx.remote.session.prompt({
-					requestId: "wb-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
-					sessionId: sid,
-					mode: "queue",
-					// ★ 不挂 file block：面板发出的指令只有正文，附件由 agent 按路径去读
-					content: [{ type: "text", text: text }]
-				})),
-				workspaceInfo: workspaceInfo,
-				/** 跳到某个会话（DSH 自己的服务；会把中栏切回对话） */
-				openSession: (sid) => {
-					try {
-						if (!sid) return { ok: false, error: { message: "没有会话 id" } };
-						const uw = svc(ctx, "uiWorkspace");
-						if (!uw || typeof uw.openSession !== "function") {
-							return { ok: false, error: { message: "uiWorkspace 服务不可用" } };
-						}
-						uw.openSession(sid);
-						return { ok: true, value: { opened: true } };
-					} catch (e) {
-						return { ok: false, error: { message: String((e && e.message) || e) } };
-					}
-				}
-			};
-
-			// ════════════════════════════════════════════════════════════════
-			// 索引会话（工单 32 · 0.2.0 兼容）
-			// ════════════════════════════════════════════════════════════════
-
-			/**
-			 * 本机兜底工作区根。
-			 * ★ 浏览器半侧**收不到**插件 config（开发笔记坑 7），所以 `configPath` / `projectRoot`
-			 *   在浏览器里都是空的 —— 绝对路径只能自己推。候选根（见下）来自
-			 *   ① 工作区列表 ② 每个会话的 cwd ③ 这个兜底。
-			 */
-			const DEFAULT_ROOT = "D:\\TimeMachine";
-			/** 索引会话用的预设（随包分发，见 cordis.patch.yml 的 sr-workbench 行） */
-			const INDEX_PRESET = "sr-workbench";
-
-			/**
-			 * 上一次用的索引会话。形状与判定**全在纯函数里**
-			 * （`indexCacheParse` / `indexCacheOwned` / `indexCacheSerialize`），这里只碰 localStorage。
-			 * ★ 关键：只有**面板自己写的**（`mine:true`）缓存才算所有权凭据 ——
-			 *   旧版本（工单 32）在"cwd 覆盖 sr 根"命中时也写过缓存，而那可能正是**用户的会话**。
-			 */
-			const cacheRaw = () => {
-				try {
-					if (typeof localStorage === "undefined" || !localStorage) return null;
-					return localStorage.getItem(indexCacheKey());
-				} catch (e) { return null; }
-			};
-			/** 只在**自己建完**（或认领到自己的那条）之后写 —— 这就是 `mine` 的来源 */
-			const cacheWrite = (srWs, sid, title) => {
-				try {
-					if (typeof localStorage === "undefined" || !localStorage) return;
-					localStorage.setItem(indexCacheKey(), indexCacheSerialize(srWs, sid, title || ""));
-				} catch (e) { /* 无缓存也能用（只是下次多认一次） */ }
-			};
-
-			/**
-			 * ═══ 工作会话的缓存（工单 15）═══
-			 * 索引会话一条工作区一个（`sr-wb.index.v1`）；工作会话**一个功能一条**，
-			 * 所以值是一张"功能根 → 会话 id"的表。读/写/删的**判定全在纯函数里**
-			 * （`workCacheGet` / `workCachePut` / `workCacheDrop`，坏 JSON 一律当空表），
-			 * 这里只负责碰 localStorage。
-			 */
-			const workCacheRaw = () => {
-				try {
-					if (typeof localStorage === "undefined" || !localStorage) return null;
-					return localStorage.getItem(workCacheKey());
-				} catch (e) { return null; }
-			};
-			/** 写/删一条（`sid` 传 null = 删掉这个功能的记录，会话失效自愈时用） */
-			const workCacheSet = (root, sid) => {
-				try {
-					if (typeof localStorage === "undefined" || !localStorage) return;
-					const raw = workCacheRaw();
-					const next = sid === null || sid === void 0
-						? workCacheDrop(raw, root)
-						: workCachePut(raw, root, sid);
-					localStorage.setItem(workCacheKey(), next);
-				} catch (e) { /* 无缓存也能用（只是下次多认一次） */ }
-			};
-
-			/** 从配置路径反推 skills 根（形状：`<X>/.agents/skills`） */
-			const skillsRootOf = (p) => String(p).replace(/[\\/]sr-askme[\\/]config\.local\.json$/i, "");
-
-			/**
-			 * 解析「索引会话」—— 面板**自己持有**它（ADR 0005 / 工单 07）。
-			 *
-			 * 顺序（每步都有理由，别简化）：
-			 *   1. 先借一条**任何可用**的会话：只为读 sr 配置 —— `read` 不受工作区限制（坑 3）。
-			 *      ★ "借"只在这**一步**允许，而且它只被 `read` 用：不显示、不订阅、不发指令。
-			 *   2. 按候选根读 `config.local.json`（绝对值优先）→ 拿到绝对锚点 `sr_workspace`。
-			 *   3. **正式认领**：只有**面板自己的**会话才算（标题以 `策划工作台·索引` 开头，或
-			 *      自己写下的缓存），且必须**能列出 root**（`workspaceFiles.list` 限定在会话工作区内）。
-			 *      认不着时的顺序是"**先拉一次 `session.list`** → 再认 → 都没有才新建"——
-			 *      少了那一次 list 就会"每次刷新新建一条"：刷新后客户端 store 里
-			 *      `title` 还没投影下来（`SessionSummary.title` 是 absent until the host projects one），
-			 *      而标题正是唯一的认领凭据。
-			 *   4. 新建 = `createSessionAt(root, 索引标题, preset)` —— 与工作会话**同一条出口**
-			 *      （`workspace/create` → `session.create({workspaceId})` → `rename` → 并 store），
-			 *      所以它同样**不会落进「未分组」**、同样建完侧边栏立刻看得见。
-			 *      ★ 索引会话**不切权限预设**：它只被读、被订阅，不接任何指令（权限面越小越好）。
-			 *
-			 * ★ 为什么"cwd 覆盖 sr 根"**不再**是认领条件：用户自己的会话 cwd = `D:\TimeMachine`
-			 *   正是 sr 根的祖先目录 —— 旧版本就是这样把**用户的会话**当成了面板的扫描口径
-			 *   （2026-10-08 实测：`source = "cwd"`，sid 指向用户会话）。
-			 *
-			 * 返回：`{ ok, sid, cwd, root, srWs, source, extraPaths, configFile, skillsRoot, configRoot, note }`
-			 */
-			const resolveIndexSession = async (opts) => {
-				const o = opts || {};
-				const signal = o.signal;
-				const note = [];
-				let rows = (o.rows || []).filter((r) => r && r.id);
-				const storeRowCount = rows.length;
-				// ★ 归档集：认领索引会话时也要排除（侧边栏看不见的会话不算可用）。
-				const arch = sidebarArchived();
-				if (arch.ids === null) note.push(NO_ARCHIVE_INFO_NOTE + "（" + arch.reason + "）");
-				// ★ 缓存：只认"面板自己写的"那条当所有权凭据（旧版本写的不算 —— 见 cacheRaw 的注释）
-				const cached = indexCacheParse(cacheRaw());
-				const cachedMine = indexCacheOwned(cached);
-				if (cached && !cachedMine) note.push(FOREIGN_CACHE_NOTE);
-				const cachedSid = cached && cached.sid ? String(cached.sid) : "";
-				const cachedArchived = isArchivedId(arch.ids, cachedSid);
-				if (cachedMine && cachedArchived) note.push(ARCHIVED_CACHED_NOTE);
-				// 正式认领只认"自己写的缓存"；boot 那一步（只读配置）可以用任何一条
-				const ownCachedSid = cachedMine && !cachedArchived ? cachedSid : "";
-
-				// 候选根：显式提示 → 工作区列表 → 会话 cwd → 本机兜底
-				const roots = [];
-				if (o.rootHint) roots.push(o.rootHint);
-				for (const p of (o.wsPaths || [])) roots.push(p);
-				for (const r of rows) if (r.cwd) roots.push(r.cwd);
-				roots.push(DEFAULT_ROOT);
-
-				// 0) 客户端 store 空时补一次远程列表（0.2.0 仍有 session/list）
-				let listOk = rows.length > 0;
-				if (rows.length === 0) {
-					const L = await probe.listSessions(signal);
-					if (L.ok) { rows = rowsFromList(L.value); listOk = true; }
-					else note.push("会话列表读取失败：" + humanError(L));
-				}
-
-				// 1) 读配置只需要"一条能读文件的会话"
-				//   ★ 这一步**不排除归档**（也有意与下面的正式认领不同）：它只被 `read` 用，
-				//     不显示、更不发指令 —— 用户看不见它不影响任何结果；反过来排除它会在
-				//     "用户把会话都归档了"时读不到 sr 配置、把锚点退回默认根。只是缓存里那条
-				//     已归档时不再指名它。
-				const boot = pickIndexSession(rows, "", {
-					cachedId: cachedArchived ? "" : cachedSid, allowForeign: true, borrow: true
-				});
-
-				// 2) 读 sr 配置 → 绝对锚点
-				const cands = configPathCandidates(roots);
-				let cfgPath = "";
-				let cfg = null;
-				if (boot) {
-					for (const p of cands) {
-						const text = await readAllText(read, boot.id, p, signal, 200);
-						if (!text) continue;
-						try {
-							const parsed = JSON.parse(text);
-							if (parsed && parsed.sr_workspace) { cfg = parsed; cfgPath = p; break; }
-						} catch (e) { /* 换下一个候选 */ }
-					}
-				}
-				const srWs = cfg ? String(cfg.sr_workspace).replace(/[\\/]+$/, "") : "";
-				const root = srWs || o.rootHint || DEFAULT_ROOT;
-				const cfgRoot = cfg ? String(cfg.config_root || "").replace(/[\\/]+$/, "") : "";
-				if (!cfg) note.push("没读到 sr 配置（试过 " + cands.length + " 个候选路径），锚点退回 " + root);
-				if (storeRowCount === 0) note.push("客户端会话快照为空，已走 remote.session.list。");
-
-				/**
-				 * ★ 列举会话（工单 07）：索引会话的 cwd = SR 工作区根 ⇒ 它**列不出** SR 工作区之外的目录
-				 *   （host 把目录列举圈定在会话 cwd 之内）。`config_root` 就在外面，而看板的配置表清单、
-				 *   配置支线的"工作簿有没有同名文件"都要列它 —— 所以这里借一条 **cwd 覆盖它** 的只读会话。
-				 *   ★ 只是**列举**用的兜底：不订阅、不发指令、不显示；认领的纪律（标题 + 自己写的缓存）不变。
-				 *   ★ 挑的时机在**下面那次 session.list 合并之后**（候选行的 cwd 齐全了再挑，免得漏掉候选）。
-				 */
-				const pickLister = () => {
-					LIST_SID = "";
-					if (cfgRoot === "" || containsPath(root, cfgRoot)) return;
-					const lh = pickListingSession(rows, cfgRoot, { archived: arch.ids });
-					if (lh) LIST_SID = lh.id;
-					else note.push(noListingSessionNote(cfgRoot));
-				};
-
-				// 3) 正式认领：**先 store 行 → 认不着就拉一次列表 → 再认**（标题是投影，可能还没下来）
-				const pickOwn = () => pickIndexSession(rows, root, { cachedId: ownCachedSid, archived: arch.ids });
-				let hit = pickOwn();
-				if (!hit) {
-					const L = await probe.listSessions(signal);
-					if (L.ok) {
-						rows = mergeRows(rows, rowsFromList(L.value));
-						listOk = true;
-						hit = pickOwn();
-					} else {
-						note.push("会话列表读取失败：" + humanError(L));
-					}
-				}
-				pickLister();
-				if (hit) {
-					if (hit.others > 0) {
-						note.push("侧边栏里有 " + (hit.others + 1) + " 条索引会话（多半是并行刷新时各建了一条）：" +
-							"这次用**最近更新的那条**（" + hit.id + "），其余几条可在侧边栏归档。");
-					}
-					// 自己的旧条目（cwd 列不出这个 root）如实说一句 —— 不闷着
-					const stale = staleIndexRows(rows, root, arch.ids).filter((r) => r.id !== hit.id);
-					if (stale.length > 0) note.push(staleIndexNote(stale[0].cwd));
-					cacheWrite(root, hit.id, titleOf(hit.row));
-					return {
-						ok: true, sid: hit.id,
-						cwd: hit.row.cwd || root, root: root, srWs: srWs,
-						source: hit.source, sessionTitle: titleOf(hit.row),
-						extraPaths: cfgPath ? [cfgPath] : [],
-						configFile: cfgPath, skillsRoot: cfgPath ? skillsRootOf(cfgPath) : "",
-						configRoot: cfg ? String(cfg.config_root || "").replace(/[\\/]+$/, "") : "",
-						note: note
-					};
-				}
-
-				// 一条自己的都没有 → 新建。★ 列表本身就读不到时**不许建**（不然会攒出一堆空会话）
-				if (!listOk) {
-					return { ok: false, sid: "", error: "读不到会话列表：" + note.join("；"), note: note };
-				}
-				// ★ 单航班锁：同一页两个面板同时挂载时只建一条（工单 07 第 5 条）
-				const title = indexTitleFor(root);
-				const made = await singleFlight("index:" + normPath(root), () =>
-					createSessionAt(root, title, INDEX_PRESET, { fullAccess: false, signal: signal }));
-				for (const n of made.note) note.push(n);
-				if (made.error) {
-					return { ok: false, sid: "", error: "无法创建索引会话：" + made.error, note: note };
-				}
-				cacheWrite(root, made.sid, title);
-				return {
-					ok: true, sid: made.sid, cwd: root, root: root, srWs: srWs,
-					source: "created", sessionTitle: title,
-					extraPaths: cfgPath ? [cfgPath] : [],
-					configFile: cfgPath, skillsRoot: cfgPath ? skillsRootOf(cfgPath) : "",
-					configRoot: cfg ? String(cfg.config_root || "").replace(/[\\/]+$/, "") : "",
-					note: note
-				};
-			};
-
-			function PanelBound(props) {
-				return h(PanelErrorBoundary, null,
-					h(Panel, Object.assign({}, props, {
-						__loader: loader, __remoteOpen: remoteOpen, __ledger: ledgerLoader, __final: finalLoader,
-						__fix: fixRunner,
-						// ★ 工单 23：头脑风暴工作面（数据 + 发送出口；发送复用 `sendFeatureInstruction`）
-						__brainstorm: brainstormLoader,
-						__sendBrainstorm: brainstormRunner,
-						// ★ 工单 24：文档生成工作面（成稿 + 配置支线；发送**同一条链路**）
-						__draft: draftLoader,
-						__sendDraft: draftRunner,
-						// ★ 工单 28：派生物（交付桶 + 过期检测；两个派生动作走**同一条链路**）
-						__derived: derivedLoader,
-						__sendDerived: derivedRunner,
-						// ★ 工单 26：外部交付包 ①②③（工作区根的 zip + `source\UE交付_<日期>\` 归档位；
-						//   归档与线框图两个动作都走**同一条链路**，正文由纯函数组装）
-						__ueIntake: ueIntakeLoader,
-						__sendIntake: intakeRunner,
-						__diagnose: diagnose, __probe: probe, __projectRoot: projectRoot,
-						__interfaces: interfaceLoader, __detail: detailLoader,
-						__resolve: resolveIndexSession,
-						// ★ 工单 07：三类会话**唯一**的「认领 → 新建」出口。
-						//   面板里凡是要"给这个功能搞一条工作会话"的地方（A2 流水线的「推进一步」、
-						//   新建功能的「建立」、头脑风暴/文档生成/派生物三个工作面的发送）都走它
-						//   —— 不再各写一份建会话的代码（各写一份就会漏掉标题/归属/权限，改前正是这样）。
-						__ensureWork: ensureFeatureWorkSession,
-						// ★ 工单 22：新建功能（一个动作）的三条通道 —— 只读事实 / 发送 / 窄回读
-						__createFacts: createFactsRunner,
-						__createFeature: createFeatureRunner,
-						__readBack: readBackRunner,
-						// ★ 工单 16：变更订阅 / 版本 stat（面板的自动刷新与指纹就靠这两个出口）
-						__watch: watchTargets, __statMany: statMany
-					})));
-			}
-
-			ctx.slots.inject("main", function* () {
-				yield ctx.slots.register({ name: "main", key: PANEL_ID }, PanelBound);
-			});
-			ctx.slots.inject("sidebar.panellist", function* () {
-				yield ctx.slots.register(
-					{ name: "sidebar.panellist", id: PANEL_ID, order: 100, label: "策划工作台" },
-					Glyph
-				);
-			});
+			for (const d of scaffold.done) done.push(d);
 		}
 
-export { apply, inject };
+		// ④ 专属工作区 + ⑤ 工作会话（策划模式）
+		const made = await createSessionAt(plan.root, sessionTitleFor(plan.topic), PLAN_PRESET, { fullAccess: true, signal: opts.signal });
+		for (const n of made.note) notes.push(n);
+		if (made.error) {
+			return {
+				ok: false, plan: plan, root: plan.root, topic: plan.topic, notes: notes,
+				message: "目录建好了（" + done.join("、") + "），但工作区 / 工作会话没建起来：" + made.error,
+				next: "目录已经能用（刷新看板就能看到卡片）；工作会话会在你点「交给工作会话」时自动重试。"
+			};
+		}
+		if (made.sid) {
+			workCacheSet(plan.root, made.sid);
+			WORK_SESSION.set(normPath(plan.root), made.sid);
+		}
+		return {
+			ok: true, topic: plan.topic, root: plan.root, sid: made.sid, notes: notes,
+			doneText: createDoneNotice(plan.topic, plan.root, made.sid)
+		};
+	};
 
+	// ── 工作会话（每个功能一条；认领凭据 = 标题前缀 + 自己写的缓存）────
+	const WORK_SESSION = new Map();
+
+	const ensureWorkSession = async (root, o) => {
+		const opts = o || {};
+		const key = normPath(root);
+		if (key === "") return { ok: false, error: "算不出这个功能的工作目录。" };
+		return singleFlight("work:" + key, async () => {
+			const note = [];
+			const memory = WORK_SESSION.get(key) || "";
+			if (memory) return { ok: true, sid: memory, source: "memory", note: note, title: workTitleFor(root) };
+			const cached = workCacheGet(workCacheRaw(), root);
+			const L = await listSessions(opts.signal);
+			const rows = L.ok ? rowsFromList(L.value) : [];
+			if (!L.ok) note.push("会话列表读取失败：" + humanError(L));
+			const hit = pickWorkSession(rows, root, { cachedId: cached, archived: opts.archived });
+			if (hit) {
+				WORK_SESSION.set(key, hit.id);
+				workCacheSet(root, hit.id);
+				if (needsFullAccess(hit.row.preset)) {
+					const plan = permissionPlanOf(await permissionCatalog());
+					if (plan.needed) {
+						const ex = await portOf("").execCommand(hit.id, permissionCommandLine(plan.preset));
+						if (!ex.ok) note.push("这条工作会话的权限没能切成完全权限：" + humanError(ex) + "（功能目录之外的产出可能被拦）。");
+					}
+				}
+				return { ok: true, sid: hit.id, source: hit.source, note: note, title: workTitleFor(root) };
+			}
+			const title = workTitleFor(root);
+			const made = await createSessionAt(root, title, PLAN_PRESET, { fullAccess: true, signal: opts.signal });
+			for (const n of made.note) note.push(n);
+			if (made.error) return { ok: false, error: made.error, note: note };
+			WORK_SESSION.set(key, made.sid);
+			workCacheSet(root, made.sid);
+			return { ok: true, sid: made.sid, source: "created", note: note, title: title };
+		});
+	};
+
+	/** 头脑风暴四入口**唯一**的出口：认领工作会话 → 把指令发进去。 */
+	const sendToWorkSession = async (root, text, signal) => {
+		const got = await ensureWorkSession(root, { signal: signal });
+		if (!got.ok) {
+			return {
+				ok: false, error: got.error || "拿不到工作会话。",
+				next: "看左侧有没有一条标题以「策划工作台·工作」开头的会话；没有就再点一次。"
+			};
+		}
+		const r = await portOf("").prompt(got.sid, text);
+		if (!r.ok) {
+			return { ok: false, error: humanError(r), next: "打开那条工作会话看看它是不是在跑；在跑的话指令会排队，不会丢。" };
+		}
+		return { ok: true, sid: got.sid, source: got.source, notes: got.note || [] };
+	};
+
+	/** 打开一个文件（默认应用 → 文件管理器 reveal）。 */
+	const openAbs = async (abs) => {
+		const ns = ctx.remote && ctx.remote.session;
+		if (!ns || typeof ns.openWorkspacePath !== "function") {
+			return { ok: false, error: { message: "remote.session.openWorkspacePath 不可用 —— 请手工打开：" + abs } };
+		}
+		const r = await safeCall("openWorkspacePath", () => ns.openWorkspacePath({ path: abs }, new AbortController().signal));
+		if (r.ok) return { ok: true };
+		const r2 = await safeCall("openWorkspacePath.reveal", () => ns.openWorkspacePath({ path: abs, action: "reveal" }, new AbortController().signal));
+		if (r2.ok) return { ok: true };
+		return { ok: false, error: { message: humanError(r) + "　｜　换 reveal 也失败：" + humanError(r2) } };
+	};
+
+	/** 跳到某条会话（DSH 自己的 uiWorkspace 服务；会把中栏切回对话）。 */
+	const openSession = (sid) => {
+		try {
+			const uw = svc(ctx, "uiWorkspace");
+			if (!uw || typeof uw.openSession !== "function") return { ok: false, error: { message: "uiWorkspace 服务不可用" } };
+			uw.openSession(sid);
+			return { ok: true };
+		} catch (e) {
+			return { ok: false, error: { message: String((e && e.message) || e) } };
+		}
+	};
+
+	// ── 给面板的加载器（组合根是唯一知道 ctx 的地方）──────────────────
+	const dashboardLoader = async (idx, signal) => {
+		const d = await loadDashboard(portOf(idx.sid), { configPath: idx.configFile || "", signal: signal });
+		if (d.srWs) srWsCache = d.srWs;
+		return d;
+	};
+	const featureLoader = (idx, root, signal) => loadFeatureDetail(portOf(idx.sid), { root: root, signal: signal });
+	const createFactsRunner = (idx, srWs) => loadCreateFacts(portOf(idx.sid), { srWs: srWs || idx.srWs });
+
+	function PanelBound(props) {
+		return h(PanelErrorBoundary, null,
+			h(Panel, Object.assign({}, props, {
+				__index: resolveIndexSession,
+				__dashboard: dashboardLoader,
+				__feature: featureLoader,
+				__createFacts: createFactsRunner,
+				__createFeature: createFeature,
+				__sendBrainstorm: (root, text) => sendToWorkSession(root, text),
+				__workSessionOf: (root) => WORK_SESSION.get(normPath(root)) || workCacheGet(workCacheRaw(), root) || "",
+				__open: openAbs,
+				__openSession: openSession
+			})));
+	}
+
+	ctx.slots.inject("main", function* () {
+		yield ctx.slots.register({ name: "main", key: "sr-workbench" }, PanelBound);
+	});
+	ctx.slots.inject("sidebar.panellist", function* () {
+		yield ctx.slots.register(
+			{ name: "sidebar.panellist", id: "sr-workbench", order: 100, label: "策划工作台" },
+			function Glyph() { return h("span", { style: { fontSize: "15px" } }, "▤"); }
+		);
+	});
+}

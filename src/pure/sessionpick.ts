@@ -409,73 +409,6 @@ export function pickIndexSession(
 	return null;
 }
 
-/**
- * 面板自己的索引会话里，**cwd 列不出 sr 根**的那些（换过工作区地方之后留下的旧条目）。
- * 调用方用它如实说一句"旧的那条没用了"，而不是闷着新建一条。
- */
-export function staleIndexRows(rows: SessionRow[], srWs: unknown, archived?: ArchivedIds): SessionRow[] {
-	const live = withoutArchived(rows || [], archived);
-	const own = live.filter((r) => isIndexTitle(titleOf(r)));
-	if (!srWs) return [];
-	return own.filter((r) => !containsPath(r.cwd, srWs));
-}
-
-/** 旧索引会话失效时的那句话（归档 ≠ 删除，所以要说清"它还在，只是没用了"）。 */
-export function staleIndexNote(prevCwd: unknown): string {
-	const p = String(prevCwd === null || prevCwd === undefined ? "" : prevCwd);
-	return "以前那条索引会话（cwd = " + (p || "?") + "）不在 SR 工作区根里、" +
-		"从它那里列不出 `features\\`：这次没用它（它还在侧边栏，可直接归档）。";
-}
-
-/**
- * 借一条会话，用来**列举 SR 工作区之外的目录**（只读）。
- *
- * ★ 为什么需要它（工单 07 实测出来的）：
- *   索引会话的 cwd = **SR 工作区根**，而 host 侧的目录列举是**按会话 cwd 圈定**的 ——
- *   `dsh-api-workspace-files/lib/index.js:411` 把 scope 定成
- *   `workspaceRoot = header.cwd ?? sandboxPolicy.workspaceRoot`，`:500` `list` 再走
- *   `confine(root, workspaceRoot, …)`，越界直接报
- *   `workspace-file/outside-workspace`（"Directory is outside the workspace"）；
- *   文件头也写着 "Directory listings and change observations remain workspace-scoped"
- *   （**读**不受这个限制：`read` 走文件系统的读权限，可以读工作区之外）。
- *   于是 `config_root`（本机 `D:\TimeMachine\planner\策划配置`，在 SR 工作区**之外**）
- *   从索引会话里列不出来 ⇒ 看板的配置表清单、配置支线的"工作簿有没有同名文件"全都失明。
- *   旧版本之所以没露出来，是因为它**借了用户的会话**（cwd = `D:\TimeMachine`，公共祖先）当扫描口径。
- *
- * ★ 这条会话只被 `list` 用（不订阅、不发指令、不显示）——所以这里明确**允许借**：
- *   面板对"我的会话"的所有权纪律（标题 + 自己写的缓存）管的是**索引/工作会话的认领**，
- *   不是"能不能借一条会话读文件"（读配置那一步本来就是借的，见 `resolveIndexSession` 第 1 步）。
- *
- * 挑法：cwd **覆盖** `needPath`（祖先或本身）的里面，取 **cwd 最长（最贴近、暴露面最小）** 的那条；
- * 并列取 updatedAt 最新。一条都没有 → `null`（调用方如实说"列不了"，**不许**编缺件）。
- */
-export function pickListingSession(
-	rows: SessionRow[],
-	needPath: unknown,
-	opts?: { archived?: ArchivedIds; exclude?: string },
-): SessionPick | null {
-	const live = withoutArchived(rows || [], opts && opts.archived)
-		.filter((r) => r && r.id && r.id !== (opts && opts.exclude));
-	if (!needPath) return null;
-	const covering = live.filter((r) => containsPath(r.cwd, needPath));
-	if (covering.length === 0) return null;
-	let best: SessionRow | null = null;
-	for (const r of covering) {
-		if (best === null) { best = r; continue; }
-		const a = normPath(r.cwd).length, b = normPath(best.cwd).length;
-		if (a > b || (a === b && num(r.updatedAt) > num(best.updatedAt))) best = r;
-	}
-	return best ? { id: best.id, source: "recent", row: best } : null;
-}
-
-/** 借不到"能列这个目录"的会话时的那句话（如实说清"核不了"，不编缺件）。 */
-export function noListingSessionNote(needPath: unknown): string {
-	return "没有一条会话的 cwd 覆盖 `" + String(needPath || "?") + "` ⇒ 这个目录（在 SR 工作区之外）列不出来：" +
-		"面板对其中文件的**存在性一律按「核不了」处理**（不编缺件；想让它可核，在左侧建一条 cwd 覆盖该目录的会话即可）。";
-}
-
-
-
 /** sr 配置的默认文件名（相对"工作区根"）。 */
 export const SR_CONFIG_REL = "\\.agents\\skills\\sr-askme\\config.local.json";
 
@@ -499,7 +432,15 @@ export function configPathCandidates(roots: unknown[]): string[] {
 		seen[key] = true;
 		out.push(abs);
 	}
+	/**
+	 * ★ 6.0.0：配置的正经落点是**用户目录** `%USERPROFILE%\.dsh\sr-workbench\config.local.json`，
+	 *   但那台机器上的家目录**浏览器里拿不到**（宿主注入的 boot 载荷里没有）——
+	 *   所以面板认路靠 profile 行里那条 `configPath`（支持按 id 覆盖，README 有写）。
+	 *   这里只留**相对回退**：老位置还认（存量机器不至于突然读不到），另加一条 `.dsh` 相对路径
+	 *   （对"会话 cwd 就在用户目录下"这种少见情形有用）。
+	 */
 	out.push(".agents/skills/sr-askme/config.local.json");
+	out.push(".dsh/sr-workbench/config.local.json");
 	return out;
 }
 
@@ -585,15 +526,6 @@ export function indexTitleFor(srWs: unknown): string {
  *   工作会话的 cwd 是 `features\<主题>\`、只负责干活（规格「三层会话」）。
  */
 export const WORK_TITLE = "策划工作台·工作";
-
-/**
- * 「不属于任何功能」的工作会话（资产索引刷新 / 收件箱导入）的标题。
- * ★ 它是**第三类**：cwd = SR 工作区根（不是功能目录），但也**会收到指令**（不是索引会话）。
- *   给它一个可识别标题的唯一目的是"下次还认得回来"—— 没有标题时面板每次刷新都会新建一条
- *   （`ensureWorkSession` 只有内存缓存，刷新即丢）。
- */
-export const WORK_ROOT_TITLE = "策划工作台·工作（SR 工作区）";
-
 
 /** 功能主题 = 功能目录名（`features\<主题>\` 的最后一段）。空值一律给空串。 */
 export function featureTopicOf(root: unknown): string {

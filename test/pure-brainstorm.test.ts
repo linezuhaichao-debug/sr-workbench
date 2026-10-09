@@ -49,17 +49,18 @@ test("问答式访谈：跑 /sr-concept + 一句创意 + 有/没有材料都要�
 	assert.ok(r2.instruction.includes("1. 文件：D:\\素材\\a.png"));
 });
 
-test("旧文档分析：原件进 source\\、产出四段固定章节、身份信息指向原件", () => {
+test("旧文档分析：原件进 evidence\\（v5 的 4 桶）、产出四段固定章节、身份信息指向原件", () => {
 	const r = B("legacy", { materials: [{ kind: "file", path: "D:\\旧案\\飞船装置.docx" }], name: "飞船装置" });
 	assert.equal(r.blocked, "");
 	assert.ok(r.instruction.startsWith("【头脑风暴 · 旧文档分析】"));
 	// ★ 原件进原料桶（工单 23 第 5 条）
-	assert.ok(r.instruction.includes("1) 原件进原料桶：若它不在 " + FEATURE + "\\source\\ 下，先把原件（**保持原文件名**）放进 " + FEATURE + "\\source\\"), r.instruction);
+	assert.ok(r.instruction.includes("1) 原件进原料桶：若它不在 " + FEATURE + "\\evidence\\ 下，先把原件（**保持原文件名**）放进 " + FEATURE + "\\evidence\\"), r.instruction);
 	// 产出名与 frontmatter（来源指向原件）
 	assert.ok(r.instruction.includes("2) 产出 " + FEATURE + "\\analysis\\" + legacyDocName("飞船装置", "20260930")), r.instruction);
 	assert.ok(r.instruction.includes("doc_type: legacy_analysis"));
-	assert.ok(r.instruction.includes("source: source/<原件文件名>"));
-	assert.ok(r.instruction.includes("（`source:` 指向原件在 `source\\` 里的位置 —— 产出文档的身份信息必须指回原件。）"));
+	assert.ok(r.instruction.includes("source: evidence/<原件文件名>"));
+	assert.equal(/[\\/]source[\\/]/.test(r.instruction), false, "v5 起原件进 evidence\\，指令里不该再出现 source\\ 这个桶");
+	assert.ok(r.instruction.includes("（`source:` 指向原件在 `evidence\\` 里的位置 —— 产出文档的身份信息必须指回原件。）"));
 	// ★ 四段固定章节，标题逐字
 	for (const h of ["## 仍然有效的结论", "## 已废弃 / 不适用", "## 可复用条目（表格：旧文档位置 | 内容 | 去向）", "## 原文（转换后）"]) {
 		assert.ok(r.instruction.includes(h), "指令里缺这一段：" + h);

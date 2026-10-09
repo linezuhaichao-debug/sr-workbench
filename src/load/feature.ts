@@ -1,204 +1,217 @@
 /**
- * 功能详情加载器（工单 12）：产物清单（按桶分组）+ 三阶段 + 定稿有效性 + V 校验清单。
+ * 功能详情加载器（v5）—— 一个功能的**三块**数据，一次读齐。
  *
- * 口径：
- *   · **只吃 port**，只读；列举深度**声明为两层**（功能根 → 子目录 → 再下一层）。
- *     更深层如实报出来（`deepDirs`），不假装列全了 —— "面板列出的产物与磁盘实际一致"
- *     这条验收句靠的就是"不静默丢"。
- *   · 桶的归类、gdd 的细分、三阶段全在 `../pure/artifacts.ts`（纯函数、有测试）；
- *     这里只做 IO 与编排。
- *   · V1 定稿有效性用 `../pure/finalgdd.ts` 的 `checkFinals`；V3/V5/V6/V8/V11 + V1 汇总
- *     用 `../pure/vchecks.ts` 的 `gddChecklist`（工单 30 的能力，本票把它接进面板）。
- *   · ★ 工单 25：**时间**从宿主的 `stat` 版本串里取（`../pure/fsstamp.ts`，第 4 段 = mtime 纳秒，
- *     实测见该文件头）—— 于是 V11 的"审查报告是不是比定稿旧"从**判不了**变成**判得出来**；
- *     取不到时间时**如实降级**（`finalGate` 的 `unknown-time`：判不了就不放行，不默认有效）。
- *   · 定稿门（"这份定稿能不能交程序"）由 `../pure/finalgate.ts` 给 —— 它只把上面那几条判据
- *     翻成人话，**不重算判据**。
- *   · ★ 工单 28：另给一份 `final`（当前有效定稿的名字 / 路径 / **版本指纹原文**）——
- *     派生物的过期判定要对齐的就是它（口径见 `../pure/derived.ts` 与 `../pure/fsstamp.ts`）。
+ * 面板点进一张功能卡片只看三块（用户口径）：
+ *   ① 头脑风暴 —— `analysis\`（已有结论）+ 四入口（四入口的**指令组装**在 `pure/intake.ts`）
+ *   ② 决策记录 —— `decisions\决策记录.md`（解析在 `pure/decisions.ts`）
+ *   ③ 最终产物 —— 头脑风暴的产物 / 成稿 / 定稿 / HTML 宣讲稿（分组在 `pure/artifacts.ts`）
+ *
+ * 这一层**只吃 port、只读**；目录列举深度=2（桶 → 再下一层，如 `gdd\UI\`）。
+ * 磁盘上有什么就列什么：**一个文件都不许静默丢**（不属四类的进「其它」组）。
  */
 
-import { annotateFinals, featureArtifacts, stageProgress } from "../pure/artifacts.ts";
-import { checkFinals, parseFrontmatter } from "../pure/finalgdd.ts";
-import { finalGate } from "../pure/finalgate.ts";
-import { mtimeOf } from "../pure/fsstamp.ts";
-import { gddChecklist } from "../pure/vchecks.ts";
+import { annotateFinals, featureArtifacts } from "../pure/artifacts.ts";
+import { BUCKETS, BUCKET_LABEL, BUCKET_MEANING, configArtifactOf } from "../pure/buckets.ts";
+import { DECISION_REL, parseDecisionLog, type DecisionLog } from "../pure/decisions.ts";
 import type { WorkspacePort } from "../port/types.ts";
-import { listDirs, listFiles, readAllText, readHead } from "./read.ts";
+import { loadBrainstorm } from "./brainstorm.ts";
+import { listDirs, listFiles, readAllText } from "./read.ts";
 
-export interface FeatureDetailOptions {
-	/** 功能根目录（绝对路径，`<sr 根>/features/<主题>`） */
+/** 一个目录的扫描结果。 */
+export interface DirScan {
+	/** 直接文件名。 */
+	files: string[];
+	/** 子目录名。 */
+	subdirs: string[];
+	/** 子目录名 → 里面的文件名（只展开一层）。 */
+	nested: Record<string, string[]>;
+}
+
+export interface FeatureScan {
 	root: string;
-	signal?: AbortSignal;
+	topic: string;
+	/** 桶名 → 扫描结果（缺的桶也在，`absent:true`）。 */
+	dirs: Record<string, DirScan & { absent: boolean }>;
+	/** 缺了哪几个桶（**目录存在就是功能**，但缺桶要如实说）。 */
+	missing: string[];
+	/** 不是 4 个桶的目录（如实列出，不丢）。 */
+	strangerDirs: string[];
+	/** 功能根下的散文件。 */
+	rootFiles: string[];
+}
+
+/** 一层深度的展开上限（防一个桶里堆了几百个子目录把面板拖死）。 */
+const MAX_SUBDIRS = 12;
+
+function emptyScan(): DirScan {
+	return { files: [], subdirs: [], nested: {} };
 }
 
 /**
- * 扫一个功能目录 → 原始清单（**只照子目录走，不按文件名过滤**）。
- * 返回的键与 `pure/artifacts.ts` 的 `FeatureListing` 一致。
+ * 扫一个功能目录：4 个桶 + 每个桶再下**一层**。
+ * 列举失败一律降级成"空 + absent"，绝不抛给界面（缺桶是常态，不是异常）。
  */
-export async function scanFeatureListing(port: WorkspacePort, options: FeatureDetailOptions): Promise<any> {
-	const root = options.root;
-	const signal = options.signal;
-	const rootFiles = await listFiles(port, root, signal, true);
-	const rootDirs = await listDirs(port, root, signal, true);
-	const dirs: Record<string, { files: string[]; nested: Record<string, string[]> }> = {};
-	const deepDirs: string[] = [];
-	/** ★ 工单 16：真正**存在**的那两层目录（`gdd/UI` 这种），订阅变更时要逐个盯着它们 */
-	const nestedDirs: string[] = [];
-	for (const sub of rootDirs) {
-		const dirPath = root + "/" + sub;
-		const files = await listFiles(port, dirPath, signal, true);
-		const subdirs = await listDirs(port, dirPath, signal, true);
-		const nested: Record<string, string[]> = {};
-		for (const sd of subdirs) {
-			nested[sd] = await listFiles(port, dirPath + "/" + sd, signal, true);
-			nestedDirs.push(sub + "/" + sd);
-			const deeper = await listDirs(port, dirPath + "/" + sd, signal, true);
-			if (deeper.length) deepDirs.push(sub + "/" + sd + "（还有 " + deeper.length + " 个子目录）");
+export async function scanFeature(port: WorkspacePort, root: string, signal?: AbortSignal): Promise<FeatureScan> {
+	const r = String(root || "").replace(/[\\/]+$/, "");
+	const topic = r.split(/[\\/]/).pop() || "";
+	const dirs: FeatureScan["dirs"] = {};
+	const missing: string[] = [];
+
+	const rootDirs = await listDirs(port, r, signal, true);
+	const have = new Set(rootDirs.map((d) => String(d).toLowerCase()));
+
+	for (const b of BUCKETS) {
+		if (!have.has(b)) {
+			dirs[b] = Object.assign(emptyScan(), { absent: true });
+			missing.push(b);
+			continue;
 		}
-		dirs[sub] = { files: files, nested: nested };
-	}
-	return { rootFiles: rootFiles, dirs: dirs, nestedDirs: nestedDirs, deepDirs: deepDirs };
-}
-
-/**
- * ★ 工单 25：拿**文件时间**（epoch ms）—— 枚举通道不给 mtime，唯一来源是宿主 `stat` 的版本串
- * （第 4 段 = mtime 纳秒；实测链见 `../pure/fsstamp.ts` 的文件头）。
- *
- * 口径：
- *   · **认不出来给 0**（= 看不到时间），绝不拿半个串猜时间；0 会让定稿门判 `unknown-time` 而不放行。
- *   · 单个文件 stat 失败**不拖垮整批**（刚好被删 / 权限），那一个就是 0 —— 界面上如实反映。
- *   · 只 stat **定稿与审查报告**这几个（真实功能里 2~5 个），不给整份产物清单每个都来一遍。
- */
-async function mtimeMsOf(port: WorkspacePort, absPath: string, signal?: AbortSignal): Promise<number> {
-	return mtimeOf(await versionOf(port, absPath, signal));
-}
-
-/**
- * ★ 工单 28：拿**版本指纹原文**（宿主 `stat` 的 `version`，形状 `dev:ino:size:mtimeNs:ctimeNs`）。
- *
- * 为什么与 `mtimeMsOf` 分开：工单 25 只需要"谁更新"（时间就够了），而工单 28 的过期判定要的是
- * **"是不是同一份内容"** —— 那正是 `version` 这串不透明令牌自己的语义（与工单 16 的指纹、
- * 定稿门的"报告比定稿旧"同一套口径）。**不解析**它来判新旧，只做等值比对。
- * 取不到给空串（= 面板拿不到指纹）⇒ 派生物一律判"看不到依据"，不默认最新。
- */
-async function versionOf(port: WorkspacePort, absPath: string, signal?: AbortSignal): Promise<string> {
-	try {
-		const st = await port.stat(absPath, signal);
-		return String((st && st.version) || "");
-	} catch (e) {
-		return "";
-	}
-}
-
-/**
- * 功能详情的完整视图模型。
- *
- * @returns `{ root, artifacts, stage, finalCheck, checklist, gate, notes }`
- *   · `artifacts.groups` —— 按桶分组（含空桶与"未归桶"），每条带 gdd 细分 kind 与规范名标注
- *   · `artifacts.allPaths` —— **面板会列出的清单**（对账用：与磁盘递归列举逐条 diff 应为 0）
- *   · `stage` —— 三阶段进度
- *   · `finalCheck` —— `checkFinals` 原样结论（V1）
- *   · `checklist` —— `gddChecklist`（V1 + V3/V5/V6/V8/V11，带 level 与行号；V11 的"新旧"用真时间）
- *   · `gate` —— `finalGate`：**这份定稿能不能交程序**（人话；审查是必经一步）
- */
-export async function loadFeatureDetail(port: WorkspacePort, options: FeatureDetailOptions): Promise<any> {
-	const root = options.root;
-	const signal = options.signal;
-	const listing = await scanFeatureListing(port, options);
-	const artifacts = featureArtifacts(listing);
-	const notes: string[] = (artifacts.notes || []).slice();
-
-	// ① 定稿候选：只从 **gdd 组**（且不在子目录里）取 —— 与面板列的清单同源，不另做判断
-	const gddGroup = artifacts.groups.find((g: any) => g.key === "gdd");
-	const gddFiles: any[] = (gddGroup && gddGroup.files) || [];
-	const finalFiles = gddFiles.filter((f) => !f.subdir && f.kind === "final");
-	const reviewFiles = gddFiles.filter((f) => !f.subdir && f.kind === "review");
-
-	// ② 每份定稿的 frontmatter（status 是 V1 的唯一判据）+ **每份的时间与版本指纹**（工单 25 / 28）
-	const heads: Array<{ name: string; doc_type: unknown; status: unknown; mtime: number; version: string }> = [];
-	for (const f of finalFiles) {
-		const abs = root + "/gdd/" + f.name;
-		const head = parseFrontmatter((await readHead(port, abs, signal)) || "");
-		const v = await versionOf(port, abs, signal);
-		heads.push({
-			name: f.name, doc_type: head ? head.doc_type : null, status: head ? head.status : null,
-			mtime: mtimeOf(v), version: v
-		});
-	}
-	const finalCheck = checkFinals(heads);
-	annotateFinals(artifacts, finalCheck);
-
-	// ③ 当前有效定稿的正文 → V 校验清单（没有定稿就不读，如实给空清单）
-	const current: string | null = finalCheck.current || null;
-	let text = "";
-	if (current) {
-		const t = await readAllText(port, root + "/gdd/" + current, signal, 6000);
-		if (t === null) {
-			notes.push("当前有效定稿 `" + current + "` 读不到正文 —— 正文类校验（V3/V5/V6/V8）本轮为空。");
-			text = "";
-		} else {
-			text = t;
+		const d = Object.assign(emptyScan(), { absent: false });
+		d.files = (await listFiles(port, r + "/" + b, signal, true)).slice().sort();
+		d.subdirs = (await listDirs(port, r + "/" + b, signal, true)).slice().sort();
+		for (const sub of d.subdirs.slice(0, MAX_SUBDIRS)) {
+			d.nested[sub] = (await listFiles(port, r + "/" + b + "/" + sub, signal, true)).slice().sort();
 		}
+		dirs[b] = d;
 	}
 
-	// ④ 审查报告的**时间**（每份都要，因为"哪一份才对应这一版定稿"由 `checkV11` 的逐字匹配决定）
-	const reviewMs: Record<string, number> = {};
-	for (const f of reviewFiles) reviewMs[f.name] = await mtimeMsOf(port, root + "/gdd/" + f.name, signal);
+	const rootFiles = (await listFiles(port, r, signal, true)).slice().sort();
+	const strangerDirs = rootDirs
+		.filter((d) => !(BUCKETS as readonly string[]).some((b) => b.toLowerCase() === String(d).toLowerCase()))
+		.sort();
 
-	// ⑤ 校验清单：★ 这里把**真时间**喂进去 —— V11 因此能判"报告比定稿旧"（工单 25 第 3 条）
-	const currentMs = current ? Number((heads.filter((h) => h.name === current)[0] || {}).mtime) || 0 : 0;
-	const checklist = gddChecklist({
-		text: text,
-		finals: heads,
-		reviews: reviewFiles.map((f) => ({ name: f.name, mtime: Number(reviewMs[f.name]) || 0 })),
-		mtime: currentMs
+	return { root: r, topic: topic, dirs: dirs, missing: missing, strangerDirs: strangerDirs, rootFiles: rootFiles };
+}
+
+/** 决策记录文件的位置（**唯一出处**：面板、加载器、操作文档都引 `pure/decisions.ts`）。 */
+export function decisionPathOf(root: string): string {
+	return String(root || "").replace(/[\\/]+$/, "") + "\\" + DECISION_REL.replace(/\//g, "\\");
+}
+
+/**
+ * 读决策记录。**读不到 ≠ 没有**：文件不存在是"还没记过决策"（正常），
+ * 读失败是"读不到"（要如实说）—— 两种情况分开报。
+ */
+export async function loadDecisionLog(
+	port: WorkspacePort,
+	root: string,
+	signal?: AbortSignal,
+): Promise<{ rel: string; abs: string; log: DecisionLog; readError: string }> {
+	const abs = decisionPathOf(root);
+	const text = await readAllText(port, abs, signal, 20000);
+	if (text === null) return { rel: DECISION_REL, abs: abs, readError: "", log: parseDecisionLog("") };
+	return { rel: DECISION_REL, abs: abs, readError: "", log: parseDecisionLog(text) };
+}
+
+export interface FeatureDetail {
+	root: string;
+	topic: string;
+	missing: string[];
+	strangerDirs: string[];
+	rootFiles: string[];
+	/** 桶概览（界面上的"4 个桶"一行）。 */
+	buckets: Array<{ key: string; label: string; meaning: string; files: number; subdirs: number; absent: boolean }>;
+	/** ① 头脑风暴（四入口的已有结论 + 两种固定格式的解析）。 */
+	brainstorm: any;
+	/** ② 决策记录（解析后的账本 + 原始文本）。 */
+	decisions: { rel: string; abs: string; readError: string; log: DecisionLog };
+	/** ③ 最终产物（四类 + 其它）。 */
+	outputs: ReturnType<typeof featureArtifacts>;
+	/** 计数（卡片与页签上的数字，界面不自己数）。 */
+	counts: Record<string, number>;
+}
+
+/**
+ * 读一个功能的全部三块。
+ * @param options.root 功能根（绝对路径）
+ */
+export async function loadFeatureDetail(
+	port: WorkspacePort,
+	options: { root: string; signal?: AbortSignal; maxDocs?: number },
+): Promise<FeatureDetail> {
+	const signal = options.signal;
+	const scan = await scanFeature(port, options.root, signal);
+
+	// ① 头脑风暴：文件清单来自这一次扫描（**不重新列目录**，两处列举结果就不会打架）
+	/**
+	 * 交给头脑风暴读通道的 `analysis\` 文件。
+	 *
+	 * ★ **配置表那条线的文件要剔掉**：`CS-*.yaml` 变更集、`*_读回验收报告.md`、`.xlsx/.xlsm/.csv`
+	 *   是配置交付物（口径：**只落 `gdd\`**，`analysis\` 只放头脑风暴产物），它们不是四个入口的产物 ——
+	 *   混进来会让"四入口分组的总数"对不上，也会在头脑风暴里冒出一张不相干的表。
+	 *   判据用**同一份** `configArtifactOf`（不在这里另判一次）。
+	 */
+	const analysisFiles: Array<{ name: string; rel: string; subdir: string }> = [];
+	const pushAnalysis = (n: string, sub: string) => {
+		if (configArtifactOf(n)) return;
+		analysisFiles.push({ name: n, rel: sub ? "analysis/" + sub + "/" + n : "analysis/" + n, subdir: sub });
+	};
+	for (const n of scan.dirs.analysis.files) pushAnalysis(n, "");
+	for (const sub of Object.keys(scan.dirs.analysis.nested).sort()) {
+		for (const n of scan.dirs.analysis.nested[sub]) pushAnalysis(n, sub);
+	}
+	const brainstorm = await loadBrainstorm(port, {
+		root: scan.root,
+		files: analysisFiles,
+		signal: signal,
+		maxDocs: options.maxDocs
 	});
 
-	// ⑥ 定稿门（能不能交程序）—— 判据搬自 finalCheck / V11 / checklist 的 error 项，**不重算**
-	const gate = finalGate({
-		finalCheck: finalCheck,
-		v11: (checklist.checks || {}).V11,
-		finalMs: currentMs,
-		reviewMs: reviewMs,
-		errors: (checklist.issues || []).filter((it: any) => it.level === "error")
-	});
+	// ② 决策记录
+	const decisions = await loadDecisionLog(port, scan.root, signal);
 
-	// ⑦ 时间这一项的**如实说明**：拿到就说拿到，拿不到就说看不到（绝不含糊成"没问题"）
-	const curHead = current ? heads.filter((h) => h.name === current)[0] || null : null;
-	if (current) {
-		if (currentMs > 0) {
-			notes.push("时间来源：宿主 `stat` 的版本串（`dev:ino:size:mtimeNs:ctimeNs` 的第 4 段 = mtime 纳秒）—— " +
-				"V11 据此判「审查报告是否比定稿旧」，这次的结论：" + gate.review.state + "。");
-		} else {
-			notes.push("面板**看不到时间**（宿主 `stat` 的版本串不是预期的 5 段形状）—— " +
-				"「审查报告是否比定稿旧」判不了；定稿门因此**不放行**（判不了就不当有效）。");
-		}
-	}
+	// ③ 最终产物：analysis + gdd 两个桶的列举 → 四类分组
+	const outputs = featureArtifacts({
+		analysis: { files: scan.dirs.analysis.files, nested: scan.dirs.analysis.nested },
+		gdd: { files: scan.dirs.gdd.files, nested: scan.dirs.gdd.nested }
+	});
+	annotateFinals(outputs.groups);
+
+	let evidence = scan.dirs.evidence.files.length;
+	for (const k of Object.keys(scan.dirs.evidence.nested)) evidence += scan.dirs.evidence.nested[k].length;
+
+	const counts: Record<string, number> = {
+		brainstorm: outputs.counts.brainstorm || 0,
+		draft: outputs.counts.draft || 0,
+		final: outputs.counts.final || 0,
+		speech: outputs.counts.speech || 0,
+		other: outputs.counts.other || 0,
+		evidence: evidence,
+		decisions: decisions.log.entries.length,
+		total: outputs.total
+	};
 
 	return {
-		root: root,
-		artifacts: artifacts,
-		stage: stageProgress(artifacts),
-		finalCheck: finalCheck,
-		checklist: checklist,
-		gate: gate,
-		notes: notes,
-		/**
-		 * ★ 工单 28：**当前有效定稿**（派生物要对齐的那一份）+ 它的**版本指纹原文**。
-		 *   · `name` / `path` —— 哪一份（`checkFinals` 认出来的，`from` 说明依据是 `active` 还是日期）；
-		 *   · `version` —— 宿主 `stat` 的 `version` 原文（`dev:ino:size:mtimeNs:ctimeNs`）。
-		 *     派生物的过期判定就是拿**侧车里记的这串**与**这一串**做等值比对（口径引工单 25）；
-		 *     拿不到就是空串 ⇒ 派生物一律显示"面板看不到依据"，**不默认它是最新的**。
-		 */
-		final: {
-			name: finalCheck.current || "", path: current ? root + "/gdd/" + current : "",
-			version: curHead ? curHead.version : "", mtime: curHead ? curHead.mtime : 0,
-			from: finalCheck.currentFrom || ""
-		},
-		// ★ 工单 16：功能根下**确实存在**的那两层的名字（订阅变更要逐个盯）——
-		//   0.2.0 的 `changes` 是目标定向 + depth 0，只订阅功能根看不见 `gdd\` 里的写入（实测）。
-		dirs: Object.keys(listing.dirs),
-		nestedDirs: listing.nestedDirs || []
+		root: scan.root,
+		topic: scan.topic,
+		missing: scan.missing,
+		strangerDirs: scan.strangerDirs,
+		rootFiles: scan.rootFiles,
+		buckets: BUCKETS.map((b) => ({
+			key: b,
+			label: BUCKET_LABEL[b] || b,
+			meaning: BUCKET_MEANING[b] || "",
+			files: scan.dirs[b].files.length,
+			subdirs: scan.dirs[b].subdirs.length,
+			absent: scan.dirs[b].absent
+		})),
+		brainstorm: brainstorm,
+		decisions: decisions,
+		outputs: outputs,
+		counts: counts
 	};
+}
+
+/** 决策记录里最近一条的时间戳（没有就是空串）—— 卡片上那一行用它。 */
+export function lastDecisionAt(log: DecisionLog): string {
+	let best = "";
+	let bestKey = "";
+	for (const e of log.entries) {
+		const k = String(e.at).replace(/[-: ]/g, "");
+		if (k > bestKey) {
+			bestKey = k;
+			best = e.at;
+		}
+	}
+	return best;
 }

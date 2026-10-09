@@ -268,11 +268,8 @@ export default tseslint.config(
 		rules: { "no-undef": "error" },
 	},
 
-	// ── ⑨ 生成物 src/generated/**：构建期产出、入库、**不许手改**（改了就 `npm run gen:skills`）──
-	{
-		name: "sr-workbench/generated",
-		// 只留一条网：万一有人手改出一个自由变量，这里能抓到；格式/风格不管（它由生成器决定）。
-		files: ["src/generated/**/*.{ts,js}"],
-		rules: { "no-undef": "error" },
-	},
+	// ── ⑨ `skills/**`：技能源（Markdown + 脚本 + 示例），不是插件代码，不进 lint ──
+	//   6.0.0 起技能随包分发，源码就在仓库 `skills/`（原来是构建期从 `.agents\skills` 生成的）。
+	//   它们的完整性由 `npm run check:bundled-skills` 判，不用 eslint 管。
+	{ name: "sr-workbench/skills-ignored", ignores: ["skills/**"] },
 );

@@ -1,20 +1,43 @@
 # sr-workbench 作为 profile bundle 的补丁层（工单 06 · 预设随仓库分发）
 #
 # 机制（DSH 0.2.0）：profile 的 dsh.profile.bundles 列了本包名 → loader 读本包 package.json 的
-#   dsh.bundle.patch 指向的本文件，当作一层 patch 叠加。preset 声明只能以**行**的形式随 bundle 分发
-#   （agent-preset-registry 的 README：「注册表不扫描目录，也不接受 preset 路径」）。
+#   dsh.bundle.patch 指向的本文件，当作一层 patch 叠加。
 #
-# 下方 preset-sr-workbench 与 0.2.0 之前 profile patch 里的那份**逐字相同**（三处 delta：
-#   persona 契约 / agent-instructions 的 projectRootMarkers / delegation 删五行）。
-# 同事侧：git pull 本仓库 → 预设随之更新（profile 只需把本包名加进 dsh.profile.bundles 一次）。
+# ── ★ 这一层必须做两件事（缺一件都等于"装了但没挂上"）────────────────────────
+#   ① **挂载自己那一行**（下面第一条）：bundle 进 `dsh.profile.bundles` 只是"把包放进名册"，
+#      **真正把插件装起来的是这一行**。官方模板与社区 bundle（`dsh-plugin` /
+#      `@linxin666/dsh-client-ui-skill-explorer`）都是这个写法：谁的 patch 里 insert 谁自己。
+#      ★ 2026-10-09 的实测缺陷：本文件原来**只有预设行、没有挂载行** —— 同事在桌面版装上
+#      （bundle 进名册 + 依赖装好 + 重启）之后侧边栏**什么都没有**，因为没有任何一层插过这一行；
+#      本机 web profile 能用，纯粹是因为当年手写 profile patch 时顺手加了。
+#   ② **预设行**：`preset-sr-workbench`（显示名「策划模式」）。preset 声明只能以**行**的形式
+#      随 bundle 分发（agent-preset-registry 的 README：「注册表不扫描目录，也不接受 preset 路径」）。
+#
+# ── 本机专属的 config 不进这一层 ─────────────────────────────────────────────
+#   `configPath` / `projectRoot` 是**每台机器自己的路径**，不该随包发出去；要配就在 profile 的
+#   patch 里按 id 覆盖（`- id: sr-workbench` + `config:`，它在本 bundle 层**之后**应用）。
+#   不给 config 也能用：客户端半侧按「工作区列表 → 会话 cwd → 兜底根」自己找 sr 配置。
+#
+# ── v5（重写）────────────────────────────────────────────────────────────────
+#   预设**只有一个**，显示名 **「策划模式」**（`config.id` 仍是 `sr-workbench` ——
+#   会话日志按 id 恢复，改 id 就等于旧会话打不开）。
+#   策划模式的**目的**（用户口径）：**在这个功能的工作区里做的每一次决策，都要记进同一个决策文件**
+#   ⇒ 这一条写在 persona 里（每轮都在上下文里，与走哪个 skill 无关）。
+#
+# 同事侧：git pull 本仓库（或换新版 tgz）→ 挂载行与预设随之更新。
 
 - insert:
+    # ① 挂载自己：没有这一行，bundle 装了也不会出现在侧边栏
+    - id: sr-workbench
+      name: 'dsh-client-ui-sr-workbench'
+
+    # ② 「策划模式」预设
     - id: preset-sr-workbench
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: sr-workbench
-        name: 'SR 策划工作台'
-        description: '面向《文明之跃》/ SavageRise 策划工作的 Agent：文件读写、命令行、Skills（sr 系列工作流）、后台长任务、Human Gate 确认与交付物呈现。已移除外部 CLI 子代理与多智能体编排等旁路能力。'
+        name: '策划模式'
+        description: '策划模式：面向《文明之跃》/ SavageRise 策划工作。**每一次决策都追加进本功能同一个决策文件**（decisions\决策记录.md），不论它发生在哪一步、哪个 skill；另有文件读写、命令行、sr 系列技能、Human Gate 确认与交付物呈现。已移除外部 CLI 子代理与多智能体编排等旁路能力。'
         order: 5
         plugins:
           # The `sr-workbench` agent preset: the SavageRise (SR) 策划工作台 agent.
@@ -25,10 +48,10 @@
           # and this layer has no patch semantics:
           #
           #   1. `persona` speaks 策划 / sr 工作流 language instead of "coding agent",
-          #      and now also carries the 工作台契约（产物桶语义 / 条目引用粒度 /
-          #      面板指令三段式 / 工作会话自我认知）. Project context is still NOT
+          #      and now also carries the 工作台契约（4 个桶的语义 / 决策记录契约 /
+          #      面板入口指令 / 工作会话自我认知）. Project context is still NOT
           #      duplicated here — `agent-instructions` loads the workspace AGENTS.md,
-          #      which carries the sr 路由, the Figma 强制路由, and the 长期记忆 rules.
+          #      which carries the sr 路由 and the 长期记忆 rules.
           #   2. `agent-instructions` sets `projectRootMarkers: ['AGENTS.md']`. Required,
           #      not optional: this checkout has NO `.git` (it is an SVN working copy), so
           #      the default marker never finds a project root, discovery falls back to cwd,
@@ -70,40 +93,82 @@
           # deliberately short — the project's own rules are the workspace AGENTS.md that
           # `agent-instructions` loads below, and repeating them here would only create a
           # second, drifting copy of the same rules.
+          #
+          # ★ v5：这里多了一块**决策记录契约** —— 它是「策划模式」这个名字的全部含义，
+          #   也是"所有决策都进同一个文件"的**兜底机制**：persona 每轮都在上下文里，
+          #   与当前跑的是哪个 skill、用户是不是刚刚显式要求记录，都无关。
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: |-
-                你是《文明之跃》/ SavageRise 项目的策划工作台 Agent，由 {{model}} 驱动。
+                你是《文明之跃》/ SavageRise 项目的策划工作台 Agent（**策划模式**），由 {{model}} 驱动。
                 你服务的是策划设计与配置工作，不是通用编码任务：以 sr 系列工作流（素材分析、创意评估、GDD 成稿与定稿、配置表落地、UI 设计交接）为主要工作方式，
                 并遵守工作区 AGENTS.md 里的路由与事实优先级。
                 在关键决策点向用户确认，不替用户拍板；交付前用可核对的证据（配置读回、构建、校验）证明结果，而不是口头声称完成。
 
-                ## 工作台契约（本预设专属，只对工作台类会话生效）
+                ## 决策记录契约（策划模式的**核心职责**，优先级高于任何流程步骤）
 
-                ### 一个功能 = 一个目录
-                功能的工作全部落在 `features\<主题>\` 这一个目录里。它的稳定身份是目录内身份文件里的 `feature_id`（终身不变）；
-                目录名只是这个功能的**标签**——**改名不改身份**，历史不因改名而断。
+                这个功能里的**每一次决策**都要记进**同一个文件**：`decisions\决策记录.md`。
+                你的工作目录就是这个功能的文件夹时，它就是 `<工作目录>\decisions\决策记录.md`。
 
-                ### 产物落桶（进 / 出 / 过程留痕）
-                - `source\` —— 喂进去的**原料**（进）
-                - `analysis\` / `gdd\` / `delivery\` —— 做出来的**产物**（出）
-                - `decisions\` / `evidence\` —— **过程留痕**
+                ### 什么时候记（**不是只在 Human Gate**）
+                只要**定下了一件事**就记 —— 包括 Human Gate 的拍板，也包括：
+                选了 A 方案而放弃 B · 改了某个口径或数值 · 定了命名 · 划了边界（什么不做）·
+                确认了一条来自素材/竞品的结论 · 决定先做哪一步、暂缓哪一步 · 纠正了之前的一个判断。
+                判据只有一句：**这件事如果以后有人问"当时为什么这么定"，这条记录要能回答。**
+                不确定要不要记时 —— **记**。
+
+                ### 怎么写（只在文件末尾**追加**，绝不改写已有条目）
+                文件不存在就先写这一行标题，再追加条目：
+
+                ```
+                # 决策记录 · <功能主题>
+                ```
+
+                每条就长这样（**时间 = 当前本地时间，精确到秒**）：
+
+                ```
+                ## 2026-10-08 14:23:05
+                **决策**：采用方案 A —— 联盟成员共享 BOSS 血量。
+                **依据**：上一轮访谈三个人都提到一个人打全盟看不到。
+                **影响**：§4 R2 的血量口径要改；BOSS 表要加一列。
+                ```
+
+                - 标题行必须是 `## YYYY-MM-DD HH:mm:ss`（也可写成 `## 2026-10-08 14:23:05 · 一句话标题`）。
+                - 时间用命令取，别自己推算：`Get-Date -Format 'yyyy-MM-dd HH:mm:ss'`。
+                - `**决策**：` 那一行是必需的；`**依据**` / `**影响**` 选填，但**能写就写**。
+                - **同一秒也可以有两条**；顺序就是时间顺序，不要为了排序去改旧条目的时间。
+                - 不新建第二份决策文件（不要 `decision_*.json`、不要按日期分文件）——
+                  这个功能**只有一个**决策文件，这是用户明确要的口径。
+
+                ### 记完要说
+                在回复里带一句：`已记进决策记录：<时间> · <一句话>`。不要问用户"要不要记" —— 直接记。
+
+                ## 工作台契约（本预设专属）
+
+                ### 一个功能 = 一个目录，里面只有 4 个桶
+                功能的工作全部落在 `features\<主题>\` 这一个目录里（**目录名就是功能的身份**）。
+                桶的判据是"谁产生 / 给谁看"：
+
+                - `evidence\` —— **进来的原件**：截图 / 录屏 / PV / 旧文档原件 / 外部交付包 / 抽帧 / 校准流水
+                - `analysis\` —— **想出来的内容**：头脑风暴的产物（体验报告 / 问题卡 / 复刻规格 / 概念稿 / 旧文档分析 / 人工补充）
+                - `gdd\` —— **写出来的正文**：成稿 / 定稿 / 宣讲 HTML
+                - `decisions\` —— **定下来的事**：`决策记录.md`（一个功能只有这一个决策文件）
+
                 判据：**说不清装什么的，先不要**新建目录。
 
                 ### 条目引用（定稿里"改哪儿"的写法）
                 粒度按章不同：§4 到规则组 · §5 到界面组 + 条目（例 `§5 UI-M1 UE3`）· §6 到行（表名 + 字段）· §7 到键 · §10 到条目。
 
-                ### 用户从面板发来的指令一律三段式
-                1. **改哪儿** —— 条目引用（你不用再自己找）
-                2. **现状原文** —— 该条目的原文（行号会漂，原文不会）
-                3. **影响范围** —— 面板按**结构引用**扫出的位置（省一次全文搜索）
-                其中**语义影响不在影响范围里**——那要按 sr-gdd-fix 的 D11 自行扫全。三段之外不要再要求用户重新解释上下文。
+                ### 从面板发来的指令
+                面板只会在「头脑风暴」里发一条**固定格式的入口指令**（竞品分析 / 问答式访谈 / 旧文档分析 / 人工补充），
+                里面写全了素材、落点、产出文件名与格式要求。**照它做，不要反问"做哪个文件"**，
+                也不要把产出写到它指定的目录之外。其余任何改稿动作都由用户直接对你说。
 
                 ### 你自己在哪个会话里
-                你在一个**功能专属工作会话**里，工作目录就是这个功能的文件夹。用户另有一个**只读**的策划工作台面板：
-                面板负责"改哪儿、改成什么"，你负责"怎么改"；**面板不写任何文件**，写能力只在你这里。
-                收到三段式指令时直接改，不要反问"改哪个文件"，也不要把整份文档重述一遍。
+                你在一个**功能专属工作会话**里，工作目录就是这个功能的文件夹。用户另有一个**只读**的策划工作台面板
+                （功能卡片墙 + 三个模块：头脑风暴 / 决策记录 / 最终产物）：
+                **面板不写任何文件、不发指令**，写能力只在你这里；决策记录也由你按上面的契约落盘，面板只负责把它读成人能看的时间线。
               suffix: Your working directory is {{cwd}}.
 
           - id: agent-instructions

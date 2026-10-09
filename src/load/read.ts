@@ -2,9 +2,8 @@
  * 加载层的读原语 —— **只吃 port**，只收绝对路径；不写任何东西。
  *
  * ★ 分页读整文本：`read` 在 DSH 上按行分页（`maxLines` 默认 5000），所以要循环到 `eof`。
- * ★ 目录列举的容错口径与迁移前**逐字一致**：
- *   `optional = true` 时"列不出来"就是空数组（功能目录缺 buckets 是常态），
- *   否则抛错——由调用方决定要不要降级。
+ * ★ 目录列举的容错口径：`optional = true` 时"列不出来"就是空数组（功能目录缺桶是常态），
+ *   否则抛错 —— 由调用方决定要不要降级。
  */
 
 import type { ListResult, WorkspacePort } from "../port/types.ts";
@@ -47,7 +46,7 @@ export async function listDirs(port: WorkspacePort, absPath: string, signal: Abo
 	}
 }
 
-/** 只读文件开头 14 行（读 frontmatter 够用）。读不到返回 `null`。 */
+/** 只读文件开头若干行（读 frontmatter 够用）。读不到返回 `null`。 */
 export async function readHead(port: WorkspacePort, path: string, signal?: AbortSignal): Promise<string | null> {
 	try {
 		const r = await port.readText(path, { offset: 1, limit: 14 }, signal);
@@ -57,21 +56,7 @@ export async function readHead(port: WorkspacePort, path: string, signal?: Abort
 	}
 }
 
-/**
- * 读一份**身份声明**（`features\<主题>\feature.json`）。
- * ★ 窗口给到 60 行：写出来只有 6 行，但**别名多的功能**（合并/多次改名）行数会长，
- *   14 行那种 frontmatter 窗口会把 JSON 截断成"读不出来"（假缺件）。读不到返回 `null`。
- */
-export async function readIdentityText(port: WorkspacePort, root: string, signal?: AbortSignal): Promise<string | null> {
-	try {
-		const r = await port.readText(String(root).replace(/[\\/]+$/, "") + "/feature.json", { offset: 1, limit: 60 }, signal);
-		return r && typeof r.text === "string" ? r.text : null;
-	} catch (e) {
-		return null;
-	}
-}
-
-/** 分页读完整文本（读了半截就失败时，返回已经读到的部分，口径与迁移前一致）。 */
+/** 分页读完整文本（读了半截就失败时，返回已经读到的部分）。读不到返回 `null`。 */
 export async function readAllText(
 	port: WorkspacePort,
 	path: string,

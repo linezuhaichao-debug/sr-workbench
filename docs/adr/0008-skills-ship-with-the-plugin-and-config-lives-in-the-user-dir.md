@@ -1,0 +1,68 @@
+# 0008 · 技能随插件整套分发；本机配置落用户目录
+
+- 日期：2026-10-09
+- 状态：**已接受**（用户口径）
+- 取代：**0006** 的"只嵌正文 + 资源包另发"那一半（0006 的"技能随包走是硬前提"仍然成立，见下）
+
+## 背景
+
+0006 决定让技能随插件走（因为 `dsh-skill-filesystem` 的技能根按 cwd 解析，工作会话的 cwd 在
+`features\<主题>\` 里，够不到 `.agents\skills` ⇒ 技能全部消失）。当时的落地是：
+**正文内联进 `lib/index.js`（120.9 KB），兄弟资源（references / scripts / tools，1.51 MB）不进包**，
+另发一个"技能资源包"让同事解到工作区 `.agents\skills\`。
+
+2026-10-09 用户一句话点破了这套设计的致命处：
+
+> 「兜底副本好像没有意义。因为这个副本里没有 references，这里才是 skill 的精华。」
+
+实测确认这话是对的，而且比表面更严重：
+
+- **11 个技能每一个都有兄弟资源**（`sr-analysis` 28 个文件、`sr-gtgenerator` 26 个、`sr-askme` 20 个…）
+  ⇒ 只带正文的副本等于 **11 个空壳**，一个能用的都没有；
+- **同事机器上就是空壳**：插件行不带 config，宿主半侧找不到他工作区的 `.agents\skills`
+  （候选只有环境变量与"构建机上的路径"），`resourceBase` 只能落 `{kind:'opaque'}`。
+  也就是说旧设计**对同事本来就是坏的**，不是"降级可用"。
+
+## 决定
+
+1. **技能整套随插件分发**：技能源码落 **仓库 `skills/`**（随 tgz 走，`files` 含 `skills`）。
+   宿主半侧在 `apply()` 时**运行时读** `<包根>/skills/<名>/SKILL.md` 拿正文，
+   并把 `resourceBase` 指向**同一个目录** ⇒ 正文与 references **同源同包**，同事只装一个包就完整可用。
+2. **只有一份技能**：不再有"磁盘源 → 构建期生成 → 内联"这条链。
+   `src/generated/skills.ts`、`tools/gen-skills.mjs`、`npm run gen:skills` / `check:skills`（漂移门）
+   全部删除。用户口径："我以后用和改都用插件里的"。
+3. **本机私有配置落用户目录**：`%USERPROFILE%\.dsh\sr-workbench\config.local.json`
+   （以及同目录的 `timemachine.local.yaml`）。原因：技能目录现在在 `node_modules` 下，
+   把本机私有文件写在那儿，**插件升级/重装就被清掉**。
+   - agent/skill 侧：按这个约定读写（`sr-askme` 第 0 步、`sr-config` 取 `config_root` 都改了）；
+   - 面板侧：**浏览器拿不到家目录**（宿主注入的 boot 载荷里没有），所以面板认路靠
+     profile 行里的 `configPath`（支持按 id 覆盖）；另留两条相对回退（老的 `.agents\skills\...` 与 `.dsh/...`）。
+4. **技能资源包退役**：`tools/pack-skills.mjs` 与 `npm run pack:skills` 删除。交付物只剩一个 tgz。
+5. **"宁缺勿假"写进代码**：技能根找不到、或某个技能的 `SKILL.md` 读不出 frontmatter / 没有正文
+   ⇒ **不注册**（并打 WARN 说清原因），绝不注册一个读不到 references 的壳。
+
+## 判据（替代原来的漂移门）
+
+`npm run check:bundled-skills`：
+
+1. 恰好 11 个 `sr-*`，每个 `SKILL.md` 解析得出 `name`、正文非空；
+2. 每个技能的兄弟资源都在（references 才是精华）；无 `*.local.json` / `__pycache__` 混入；
+3. 用**真实 `apply()`** 注册一遍：条数对、`resourceBase` 在包内、注册的正文与该文件逐字一致；
+4. 技能根为空 ⇒ **0 条注册 + WARN**。
+
+`check-package.mjs` 同步加：包内 11 个 `SKILL.md` + ≥100 个兄弟资源文件 + 无私有文件。
+
+## 影响
+
+- **包体积** 137 KB → **1.2 MB**（技能是主体）。用户口径：体积不是缺点。
+- **同事流程**从"两个包配对"变成"装一个包"；少一个必须同步升级的交付物。
+- **改技能的循环**：`references/` 即改即生效；`SKILL.md` 正文**重启 DSH** 生效（运行时读，不用 build）。
+  本机把桌面版加载路径从 `outputs\package`（构建产物）换成**仓库本身**，所以"改插件里的技能"= 改仓库 `skills/`。
+- **不再保证的**：技能正文与"磁盘 `.agents\skills`"一致（那份可以删了 —— 用户已决定不保留）。
+  若哪天还有磁盘同名技能，`dsh-skill-filesystem` 的 rank（project-agents 200 < bundled 600）自然让它赢，
+  那是宿主规则，不归本插件管。
+
+## 没选的方案
+
+**B. 技能整套归"技能包"、插件不注册技能**：更彻底地单一来源（连包内副本都没有），
+但同事必须装两个包、且两个包的版本要配对；与"sr 系列技能都放到插件里"的既有期待相反。用户选 A。

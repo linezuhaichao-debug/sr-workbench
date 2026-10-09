@@ -4,7 +4,7 @@
  * 出处（逐条对着写的，不自己编）：
  *   · 设计 §4.1 —— 四种入口**没有先后**、四张并列的动作卡、产出全部落 `features\<主题>\analysis\`
  *   · 设计 §4.2.1 —— 旧文档分析 → `analysis\legacy-analysis_<名称>_<日期>.md`，
- *     **四段固定章节**（仍然有效 / 已废弃 / 可复用 / 原文（转换后）），frontmatter 的 `source:` 指向 `source\` 里的原件
+ *     **四段固定章节**（仍然有效 / 已废弃 / 可复用 / 原文（转换后）），frontmatter 的 `source:` 指向 `evidence\` 里的原件
  *   · 设计 §4.2.2 —— 人工补充 → `analysis\human-note_<标题>_<日期>.md`，
  *     正文固定保留 `> 原话：…` 一行，**面板上原话与结论并排显示**（一眼看出 AI 有没有改动结论）
  *   · 四种输入方式产出规范 v1 §七.3 —— 每个按钮的前置条件
@@ -16,7 +16,7 @@
  *   面板把它们收进「其他章节」——这与 `mdspec` 的「未知章节不丢」是同一条纪律。
  */
 
-import { parseFrontmatter } from "./finalgdd.ts";
+import { parseFrontmatter } from "./frontmatter.ts";
 import { mdSpecOf, parseMdSections } from "./mdspec.ts";
 
 /** 四种并列入口 —— 顺序即面板上的顺序（设计 §4.1 的表，一行不多一行不少） */
@@ -46,7 +46,7 @@ const ENTRANCES = [
 		hint: "AI 转换 + 分析",
 		needs: "旧策划案 / 脑图 / 表格（目录或文件路径）",
 		prereq: "path",
-		output: "analysis\\legacy-analysis_<名称>_<日期>.md（四段固定章节）· 原件进 source\\",
+		output: "analysis\\legacy-analysis_<名称>_<日期>.md（四段固定章节）· 原件进 evidence\\",
 		handoff: "阶段交给了会话里的 AI 转换 + 分析，进度与提问都在那个会话里（面板不重画流程）"
 	},
 	{

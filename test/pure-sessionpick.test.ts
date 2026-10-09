@@ -33,20 +33,16 @@ import {
 	mergeRows,
 	needsFullAccess,
 	normPath,
-	noListingSessionNote,
 	permissionCommandLine,
 	permissionPlanOf,
 	permissionResultNote,
 	pickIndexSession,
-	pickListingSession,
 	pickWorkSession,
 	presetOfProjections,
 	presetOfRow,
 	rowsFromList,
 	rowsFromStore,
 	samePath,
-	staleIndexNote,
-	staleIndexRows,
 	titleOf,
 	withoutArchived,
 	workCacheDrop,
@@ -246,24 +242,6 @@ test("pickIndexSession：others —— 同一条凭据下还有几条（用来�
 	assert.equal(pickIndexSession([rows[0]], SR_ROOT)?.others, 0);
 });
 
-test("staleIndexRows / staleIndexNote：cwd 落不到 sr 根上的旧索引会话能被认出来并如实说明", () => {
-	const rows = [
-		row({ id: "old", title: INDEX_TITLE, cwd: "E:\\别的仓库" }),
-		row({ id: "now", title: INDEX_TITLE + "（workspace）", cwd: SR_ROOT }),
-		// ★ 注意：cwd = D:\TimeMachine 的会话**不算** stale —— 它确实列得出 sr 根
-		//   （祖先目录覆盖子目录）。它的问题是"不是我的"，那是 `pickIndexSession` 管的（返回 null）。
-		row({ id: "ancestor", title: INDEX_TITLE, cwd: TM_ROOT }),
-		row({ id: "user", title: "用户自己的会话", cwd: TM_ROOT }),
-	];
-	const stale = staleIndexRows(rows, SR_ROOT);
-	assert.deepEqual(stale.map((r) => r.id), ["old"], "只点我们自己的、且列不出 sr 根的那条");
-	assert.equal(containsPath(TM_ROOT, SR_ROOT), true, "祖先目录那条不 stale（前提别写错）");
-	assert.ok(staleIndexNote("E:\\别的仓库").includes("E:\\别的仓库"));
-	assert.ok(staleIndexNote("E:\\别的仓库").includes("归档"));
-	assert.deepEqual(staleIndexRows(rows, SR_ROOT, ["old"]), [], "归档的状态照旧优先（它是显示过滤）");
-	assert.deepEqual(staleIndexRows(rows, ""), []);
-});
-
 test("pickIndexSession：空候选 → null（调用方据此去建会话）", () => {
 	assert.equal(pickIndexSession([], SR_ROOT, { allowForeign: true }), null);
 	assert.equal(pickIndexSession([row({ id: "" })], SR_ROOT), null);
@@ -272,28 +250,6 @@ test("pickIndexSession：空候选 → null（调用方据此去建会话）", (
 // ════════════════════════════════════════════════════════════════════════════
 // 索引会话的缓存（工单 07 第 3 条：所有权凭据 = 标题 + **自己写的**缓存）
 // ════════════════════════════════════════════════════════════════════════════
-
-test("pickListingSession：为「列 SR 工作区之外的目录」借一条只读会话（最贴近的祖先优先）", () => {
-	const CFG = "D:\\TimeMachine\\planner\\策划配置";
-	const rows = [
-		row({ id: "root", cwd: SR_ROOT, updatedAt: 9 }),            // 覆盖不到配置目录
-		row({ id: "tm", cwd: TM_ROOT, updatedAt: 3 }),              // 公共祖先：能列
-		row({ id: "planner", cwd: "D:\\TimeMachine\\planner", updatedAt: 1 }), // 更贴近：优先
-		row({ id: "else", cwd: "E:\\别的仓库", updatedAt: 99 })
-	];
-	const hit = pickListingSession(rows, CFG);
-	assert.equal(hit && hit.id, "planner", "取**最长（最贴近）**的覆盖者，暴露面最小");
-	assert.equal(pickListingSession(rows, SR_ROOT)?.id, "root", "SR 根自己也能当列举会话（精确=覆盖）");
-	assert.equal(pickListingSession(rows, "E:\\别的仓库\\x")?.id, "else");
-	assert.equal(pickListingSession(rows, "F:\\谁都不覆盖"), null, "一条都没有 ⇒ null（调用方如实说「核不了」）");
-	assert.equal(pickListingSession(rows, ""), null, "没给路径 ⇒ null");
-	assert.equal(pickListingSession(rows, CFG, { archived: ["planner", "tm"] }), null, "归档的不算可用");
-	assert.equal(pickListingSession(rows, CFG, { exclude: "planner" })?.id, "tm", "可以排除指定的那条");
-	// 并列时取最近更新的那条
-	const tie = [row({ id: "a", cwd: "D:\\TimeMachine\\planner", updatedAt: 1 }), row({ id: "b", cwd: "D:\\TimeMachine\\planner", updatedAt: 5 })];
-	assert.equal(pickListingSession(tie, CFG)?.id, "b");
-	assert.ok(noListingSessionNote(CFG).includes(CFG) && noListingSessionNote(CFG).includes("核不了"));
-});
 
 test("indexCache：只有 mine:true 才算所有权凭据（旧版本写的缓存自动作废，不用手清 localStorage）", () => {
 	const mine = indexCacheParse(indexCacheSerialize(SR_ROOT, "s1", INDEX_TITLE));
@@ -379,16 +335,20 @@ test("isIndexTitle / titleOf / indexTitleFor：前缀认领与展示名退让", 
 	assert.equal(indexTitleFor("D:\\a\\b\\"), INDEX_TITLE + "（b）");
 });
 
-test("configPathCandidates：每个根一条**绝对**候选，去重，末尾兜一条相对候选", () => {
+test("configPathCandidates：每个根一条**绝对**候选，去重，末尾兜两条相对候选", () => {
 	const c = configPathCandidates([TM_ROOT, TM_ROOT + "\\", SR_ROOT, "", null, undefined]);
 	assert.deepEqual(c, [
 		TM_ROOT + "\\.agents\\skills\\sr-askme\\config.local.json",
 		SR_ROOT + "\\.agents\\skills\\sr-askme\\config.local.json",
+		// ★ 6.0.0：配置的正经落点是用户目录（`%USERPROFILE%\.dsh\sr-workbench\`），
+		//   家目录在浏览器里拿不到 ⇒ 面板认路靠 profile 行的 `configPath`；
+		//   这两条只是**相对回退**（老位置还认，免得存量机器突然读不到）。
 		".agents/skills/sr-askme/config.local.json",
+		".dsh/sr-workbench/config.local.json",
 	]);
 	// 大小写不同视为同一条（Windows）
 	const c2 = configPathCandidates(["D:\\TimeMachine", "d:/timemachine"]);
-	assert.equal(c2.length, 2, "第一条绝对 + 末尾相对");
+	assert.equal(c2.length, 3, "第一条绝对 + 末尾两条相对");
 	assert.equal(indexCacheKey(), "sr-wb.index.v1");
 });
 

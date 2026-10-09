@@ -1,97 +1,141 @@
 /**
- * 产物分类（功能 = 目录；sub 目录本身即答案）
+ * 目录契约与产物分类（v5 口径）—— **一个功能 = 一个目录，目录里只有 4 个桶**。
  *
- * ★ 工单 03（WorkspacePort 接缝）从 `src/client.js` **逐字搬来**，只做了整体去缩进与补 export；
- *   正文一字未改（行为不变的证据：临时 harness 对真实工作区数据做迁移前后 deepEqual）。
- * 新结构按子目录归桶；gdd\ 内部再按文件名细分（artifactBucket）。旧结构前缀表只减不增。
+ *     features\<主题>\
+ *     ├─ evidence\    【原始件 + 过程证据】外部送进来的一切 · 抽帧 · 校准流水
+ *     ├─ analysis\    【头脑风暴的内容】AI 分析产物 ← 面板「头脑风暴」模块读它
+ *     ├─ gdd\         【设计正文与交付物】成稿 · 定稿 · 宣讲 HTML
+ *     └─ decisions\   【人要读的记录】决策记录.md（一个功能**只有一个**决策文件）
+ *
+ * 判据（谁产生 / 给谁看）：
+ *   evidence = **进来的原件**；analysis = **想出来的内容**；gdd = **写出来的正文**；
+ *   decisions = **定下来的事**。
+ *
+ * ★ 相对 v4 的两处变化（这就是本票的目录契约）：
+ *   ① `source\` 并入 `evidence\`，`delivery\` 并入 `gdd\` —— 六个桶减成四个
+ *      （"原料"与"证据"本来就是一件事：都是外部来的原件）；
+ *   ② `gdd\` 内部**只按文件名分三档面板产物**（成稿 / 定稿 / 宣讲 HTML），
+ *      其余（审查 / 修订点 / 定稿 HTML 派生件 / 认不出来的）如实进「其它」，**一个都不丢**。
+ *
+ * 纯函数、零 IO。
  */
 
-// ── 产物分类（设计 §3.2：**功能 = 目录**）──────────────────────────
-//   产物落在 `features\<主题>\` 的**子目录**里，所以分类就是"看子目录"——零猜测。
-//   `artifactBucket()` 是给 `gdd\` 内部用的：那一个子目录里混着成稿/定稿/审查/宣讲 HTML，
-//   得按文件名再分一次。
-//   ★ 这一层存在的意义：**别再往兼容层加东西**。
-//     新结构 `features\<主题>\`：按**子目录**分类，零猜测（目录本身就是答案）；
-//     旧结构（平铺的 proposals/analysis/decisions/evidence）：按**文件名前缀**分类 +
-//     `topicOf` 派生主题 —— 这是**兼容层，只减不增**。
-//   两种结构经这里产出**同一组桶**，下游（阶段条 / 产物页签 / 计数）不用分叉。
-//
-//   ⚠️ 2026-09-29 实测缺口：原实现只认 `concept-triage_ / feature-concept_ / sr-gdd-handoff_`
-//      三个前缀，于是 sr-analysis 的**体验报告 / 问题卡 / 复刻规格被静默丢弃**，
-//      `evidence\` 目录更是整个没扫 —— 竞品分析只剩"交接 JSON"能被看见。
-//   ★ `source\` —— **所有发给 agent 的源文件**（2026-09-29 你定义）：
-//      分析用的截图 / 录屏 / PV、旧文档原件、外部交付包（UE 交互交付物）…
-//      它是**输入**；`evidence\` 是分析**产出**的证据（抽帧 / 索引 / 时间戳账本 / readback）——
-//      两者是"喂进去的原料"与"做出来的证据"，不能混。
-//   ✗ `assets\` 不要：线框图跟着定稿走（`gdd\UI\`），没有独立的素材目录需求。
-const DIR_BUCKET = {
-	analysis: "analysis", gdd: "gdd", decisions: "decisions",
-	evidence: "evidence", source: "source", delivery: "delivery"
+/** 4 个桶（**顺序即界面顺序**：进 → 想 → 写 → 定）。 */
+export const BUCKETS = ["evidence", "analysis", "gdd", "decisions"] as const;
+
+/** 桶 → 一句话含义（建目录时的提示语、检索结果、操作文档都引这一份）。 */
+export const BUCKET_MEANING: Record<string, string> = {
+	evidence: "原始件 + 过程证据（截图 / 录屏 / 旧文档原件 / 外部交付包 / 抽帧 / 校准流水）",
+	analysis: "头脑风暴的内容（体验报告 / 问题卡 / 复刻规格 / 概念稿 / 旧文档分析 / 人工补充）",
+	gdd: "设计正文与交付物（成稿 / 定稿 / 宣讲 HTML）",
+	decisions: "决策记录（一个功能只有一个决策文件：决策记录.md）"
 };
-/** 桶 → byTopic 里的数组字段名（没有字段的进 others） */
-const BUCKET_FIELD = {
-	final: "finals", review: "reviews", speech: "speeches",
-	// ★ analysis 桶落到 `concept` 字段：**沿用旧字段名**，免得阶段条 / 产物页签 / PipelinePanel
-	//   跟着改一遍。含义已从"3 种概念产物"扩为**全部头脑风暴产物**（6 种 analysis 产出）。
-	analysis: "concept",
-	evidence: "evidence", decisions: "decisions", source: "source",
-	draft: "drafts", gdd: "drafts"
+
+/** 桶 → 界面短标签。 */
+export const BUCKET_LABEL: Record<string, string> = {
+	evidence: "证据",
+	analysis: "头脑风暴",
+	gdd: "设计正文",
+	decisions: "决策记录"
 };
-/** 旧结构：文件名前缀 → 桶。sr-* 各 skill 的产出全在这里 */
-const PREFIX_BUCKET = [
-	["concept-triage_", "analysis"], ["feature-concept_", "analysis"],
-	["experience-report_", "analysis"], ["issue-cards_", "analysis"],
-	["replication-spec_", "analysis"], ["sr-gdd-handoff_", "analysis"],
-	["evidence-index_", "evidence"], ["calibration_", "evidence"],
-	["readback_", "evidence"], ["decision_", "decisions"],
-	["smoke_", "others"], ["write_CS-", "others"]
-];
+
+/** 是不是 4 个标准桶之一（大小写不敏感 —— Windows 目录名如此）。 */
+export function isBucket(name: unknown): boolean {
+	const n = String(name == null ? "" : name).toLowerCase();
+	return (BUCKETS as readonly string[]).indexOf(n) >= 0;
+}
+
 /**
- * `gdd\` 内部的细分（工单 12：「gdd\ 内部再按文件名细分一次」）。
+ * `gdd\` 内部按文件名分档（**唯一**允许按文件名分类的地方 —— 它是一个混装目录）。
+ * 返回值 → 显示标签见 `GDD_KIND_LABEL`。
  *
- * 判据全在**文件名**上——这是**唯一**允许按文件名分的地方，因为 `gdd\` 是一个
- * 混装目录（成稿 / 定稿 / 审查 / 修订点 / 定稿派生的 HTML）。别的桶一律按目录归类。
- *
- * 返回值 → 显示标签：
- *   final 定稿 · finalHtml 定稿 HTML · review 审查 · fixpoints 修订点 · draft 成稿 · others 其它
+ *   draft 成稿 · final 定稿 · speech 宣讲 HTML · speechSrc 宣讲源数据
+ *   review 审查 · fixpoints 修订点 · finalHtml 定稿 HTML（派生件）· others 其它
  */
-function gddKindOf(name) {
-	const n = String(name || "");
+export function gddKindOf(name: unknown): string {
+	const n = String(name == null ? "" : name);
 	if (!n) return "others";
 	if (/_定稿_审查\.md$/i.test(n) || /_审查\.md$/i.test(n)) return "review";
 	if (/_定稿\.md$/i.test(n)) return "final";
-	// ★ 定稿的**派生 HTML**（sr-gdd-html 的产物）：与宣讲 HTML 不是一类，单独一档。
-	//   原实现在这里落到 `others`（面板上根本看不见它）——2026-09-30 实测缺口。
 	if (/_定稿\.html?$/i.test(n)) return "finalHtml";
 	if (/_修订点\.md$/i.test(n)) return "fixpoints";
 	if (/_宣讲_.*\.html$/i.test(n)) return "speech";
-	if (/_宣讲_.*\.content\.json$/i.test(n)) return "speechSrc";   // 派生件，不单独显示
+	if (/_宣讲_.*\.content\.json$/i.test(n)) return "speechSrc";
 	if (/\.md$/i.test(n)) return "draft";
 	return "others";
 }
 
-/** gdd 细分 kind → 面板上的短标签 */
-const GDD_KIND_LABEL = {
-	final: "定稿", finalHtml: "定稿 HTML", review: "审查",
-	fixpoints: "修订点", draft: "成稿", speech: "宣讲", speechSrc: "宣讲源", others: "其它"
+export const GDD_KIND_LABEL: Record<string, string> = {
+	draft: "成稿",
+	final: "定稿",
+	speech: "宣讲 HTML",
+	speechSrc: "宣讲源数据",
+	review: "审查",
+	fixpoints: "修订点",
+	finalHtml: "定稿 HTML",
+	others: "其它"
 };
 
 /**
- * 文件名 → 产物桶。**旧结构用**（也用于 gdd\ 内部的细分）。
- * ★ 与 `gddKindOf` **同源**：先按 gdd 细分判，剩下的才走文件名前缀表 ——
- *   这样"定稿/审查/宣讲/修订点"的判据全仓库只有一份，不会两处各自漂移。
+ * 面板「最终产物」模块的分类（v5 用户口径：头脑风暴的产物、成稿、定稿、html 宣讲稿；
+ * 2026-10-09 追加 **配置表**）。`key` 就是界面分组键；`other` 是兜底组（**默认折叠**，
+ * 只为"一个文件都不许静默丢"存在）。
  */
-function artifactBucket(name) {
-	const n = String(name || "");
-	if (!n) return "others";
-	const k = gddKindOf(n);
-	if (k === "draft" || k === "others") {
-		for (const pk of PREFIX_BUCKET) if (n.indexOf(pk[0]) === 0) return pk[1];
-		return k;
-	}
-	// 修订点在旧字段口径里并入 drafts（BUCKET_FIELD.gdd = "drafts"）——保持迁移前行为不变
-	if (k === "fixpoints") return "gdd";
-	return k;
+export const OUTPUT_GROUPS = [
+	{ key: "brainstorm", label: "头脑风暴的产物", note: "analysis\\ 里的全部内容（体验报告 / 问题卡 / 复刻规格 / 概念稿 / 旧文档分析 / 人工补充）" },
+	{ key: "draft", label: "成稿", note: "gdd\\<主题>_<日期>.md —— 只含纯规则与设计" },
+	{ key: "final", label: "定稿", note: "gdd\\*_定稿.md —— 供程序使用的那一份" },
+	{ key: "speech", label: "HTML 宣讲稿", note: "gdd\\*_宣讲_<日期>.html —— 宣讲用的网页" },
+	{ key: "config", label: "配置表", note: "配置这条线的交付物：运行时表（.xlsx / .xlsm / .csv）、change set（CS-*.yaml）、读回验收报告" },
+	{ key: "other", label: "其它（不属上面五类）", note: "审查 / 修订点 / 定稿 HTML 派生件 / 认不出名字的文件 —— 如实列出，不丢" }
+] as const;
+
+/**
+ * 这是不是**配置表这条线**的产物（「最终产物 › 配置表」分类的判据）。
+ *
+ * 认三类：
+ *   · `CS-<YYYYMMDD>-<NNN>.yaml` —— change set（变更集）
+ *   · `*_读回验收报告*.md` —— 读回验收报告
+ *   · `.xlsx` / `.xlsm` / `.csv` —— 运行时配置表文件本体
+ *
+ * ★ 口径上这类文件**只该落在 `gdd\`**（`analysis\` 只放头脑风暴产物）。
+ *   判据仍**按内容认、不按目录认**，理由是：万一哪个 agent 写错了桶，
+ *   它也得归到「配置表」、而不是掉进「头脑风暴的产物」里冒充分析结论 ——
+ *   归错类比看不见更糟。落点对不对是另一件事（那是纪律，不是分类）。
+ */
+export function configArtifactOf(name: unknown): boolean {
+	const n = String(name == null ? "" : name);
+	if (!n) return false;
+	if (/^CS-\d{8}-\d+\.ya?ml$/i.test(n)) return true;
+	if (/_读回验收报告.*\.md$/i.test(n)) return true;
+	if (/\.(xlsx|xlsm|csv)$/i.test(n)) return true;
+	return false;
 }
 
-export { DIR_BUCKET, BUCKET_FIELD, PREFIX_BUCKET, GDD_KIND_LABEL, artifactBucket, gddKindOf };
+/**
+ * 一个产物（在哪个桶、叫什么名字）→ 面板分类键。
+ *   · 配置表这条线的产物**先按内容认**（`configArtifactOf`）—— 它在哪个桶都算配置表；
+ *   · `analysis\` 下的其余文件（含子目录里的）都算头脑风暴产物；
+ *   · `gdd\` 下按 `gddKindOf` 分：成稿 / 定稿 / 宣讲 HTML，其余进 other；
+ *   · 其它桶（evidence / decisions）不进「最终产物」模块 —— 它们各有各的模块。
+ */
+export function outputGroupOf(dir: unknown, name: unknown): string {
+	const d = String(dir == null ? "" : dir).toLowerCase();
+	if (configArtifactOf(name)) return "config";
+	if (d === "analysis") return "brainstorm";
+	if (d === "gdd") {
+		const k = gddKindOf(name);
+		if (k === "draft") return "draft";
+		if (k === "final") return "final";
+		if (k === "speech") return "speech";
+		return "other";
+	}
+	return "other";
+}
+
+/** 分类键 → 显示信息（界面不自己写标签）。 */
+export function outputGroupInfo(key: unknown): { key: string; label: string; note: string } {
+	const k = String(key == null ? "" : key);
+	const g = OUTPUT_GROUPS.filter((x) => x.key === k)[0];
+	return g ? { key: g.key, label: g.label, note: g.note } : { key: k, label: k, note: "" };
+}

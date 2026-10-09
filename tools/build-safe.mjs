@@ -9,14 +9,15 @@
  *   因为坏产物已经躺进了 `lib/`。当时靠 `git checkout HEAD -- lib/client.js` 手工止血。
  *
  * 本脚本把止血动作自动化：
- *   ⓪ **技能快照漂移门**（工单 05）：`lib/index.js` 里内联着 12 个 sr 技能的正文，
+  *   ⓪ **技能快照漂移门**（工单 05）：`lib/index.js` 里内联着 11 个 sr 技能的正文，
  *      那是 `src/generated/skills.ts`（入库产物）的副本；**先**比对它与磁盘 `.agents\skills` 是否一致，
  *      不一致就立刻停（此步不写 lib/，所以最安全）。源目录不存在时跳过（分发场景）。
  *   ① 备份当前 `lib/client.js` 与 `lib/index.js`（存到系统临时目录，**不放进 `lib/`** ——
  *      `test/seam.test.ts` 断言 `lib/` 里只有 client.js 与 index.js）
  *   ② `npm run build`
- *   ③ 三道判据：`npm run smoke`（加载 + apply + slot 注册形状）、`npm run check:react`、
- *      `npm run check:host-skills`（产物里真的注册了 12 条 sr 技能 —— 工单 05）
+ *   ③ 四道判据：`npm run smoke`（加载 + apply + slot 注册形状）、
+ *      `npm run smoke:render`（★ v5：在迷你 React 里把组件树真跑一遍 —— smoke 的 React 是桩，不渲染）、
+  *      `npm run check:react`、`npm run check:host-skills`（产物里真的注册了 11 条 sr 技能 —— 工单 05）
  *   ④ 任何一道不过 ⇒ **立刻用备份还原 `lib/`**，并以非 0 退出码结束（构建=失败，仓库保持可用态）
  *
  * 跑法：
@@ -50,9 +51,6 @@ function run(script) {
 }
 
 // ── ⓪ 技能快照漂移门（早于 build：这一步只读，发现漂移时 lib/ 一个字节都没动）──────
-if (run("check:skills") !== 0) {
-	die("技能随包快照已漂移（src/generated/skills.ts 与磁盘 .agents\\skills 不一致）—— 先 `npm run gen:skills` 并提交，再构建");
-}
 
 // ── ① 备份（client.js + index.js 都备；任何一个判据不过就把 lib/ 还原成构建前的样子）──
 let backupDir = null;
@@ -71,15 +69,25 @@ if (existing.length > 0) {
 if (run("build") !== 0) die("npm run build 失败（lib/ 未被替换，安全）");
 for (const p of ARTIFACTS) if (!fs.existsSync(p)) die("npm run build 退出码 0，但 lib/" + path.basename(p) + " 没生成");
 
-// ── ③ 三道产物判据 ────────────────────────────────────────────────────────
+// ── ③ 四道产物判据 ────────────────────────────────────────────────────────
 const smokeOk = run("smoke") === 0;
+// ★ v5 新增：**渲染冒烟** —— 在迷你 React 里把组件树真跑一遍（smoke 的 React 是桩，不渲染）。
+//   它补的正是"渲染期崩成一片红/一片白"那一格（见 tools/render-smoke.mjs 的文件头）。
+const renderOk = run("smoke:render") === 0;
 const reactOk = run("check:react") === 0;
 // ⓪ 的漂移门管"入库快照 vs 磁盘"，这里管"产物里到底有没有那份快照"（构建后才有意义）
 const hostOk = run("check:host-skills") === 0;
+const bundledOk = run("check:bundled-skills") === 0;   // 包内技能齐全（正文 + 兄弟资源同源同包）
 
 // ── ④ 不过就还原 ──────────────────────────────────────────────────────────
-if (!smokeOk || !reactOk || !hostOk) {
-	const which = [!smokeOk ? "smoke" : null, !reactOk ? "check:react" : null, !hostOk ? "check:host-skills" : null].filter(Boolean).join(" + ");
+if (!smokeOk || !renderOk || !reactOk || !hostOk || !bundledOk) {
+	const which = [
+		!smokeOk ? "smoke" : null,
+		!renderOk ? "smoke:render" : null,
+		!reactOk ? "check:react" : null,
+		!hostOk ? "check:host-skills" : null,
+	!bundledOk ? "check:bundled-skills" : null
+	].filter(Boolean).join(" + ");
 	console.error("");
 	console.error("[build:safe] ✗ 产物未过判据（" + which + "）—— 正在还原 lib/ 下的产物，绝不让坏产物留在 lib/");
 	let restored = true;

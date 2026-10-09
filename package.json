@@ -1,6 +1,6 @@
 {
   "name": "dsh-client-ui-sr-workbench",
-  "version": "0.0.1",
+  "version": "6.0.1",
   "private": true,
   "description": "策划工作台：DSH Web 全局面板（只读）。host 半侧 + 浏览器半侧源码，tsdown 打包成单个 lib/client.js",
   "type": "module",
@@ -34,20 +34,22 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "skills"
   ],
   "scripts": {
     "build": "tsdown",
     "build:safe": "node tools/build-safe.mjs",
     "watch": "tsdown --watch",
-    "gen:skills": "node tools/gen-skills.mjs --out src/generated/skills.ts",
-    "check:skills": "node tools/gen-skills.mjs --check --out src/generated/skills.ts",
     "smoke": "node tools/smoke-client.mjs",
+    "smoke:render": "node tools/render-smoke.mjs",
+    "pack:check": "node tools/check-package.mjs",
     "check:react": "node tools/check-no-react.mjs",
     "check:host-skills": "node tools/check-host-skills.mjs",
     "test": "node --test \"test/**/*.test.ts\"",
     "lint": "eslint .",
-    "verify": "npm test && npm run lint && npm run build:safe"
+    "verify": "npm run lint && npm run build:safe && npm test",
+    "check:bundled-skills": "node tools/check-bundled-skills.mjs"
   },
   "devDependencies": {
     "eslint": "^9.39.1",
