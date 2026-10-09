@@ -280,6 +280,47 @@ function Notice(props) {
 }
 
 /**
+ * **卡片墙的最后一张卡**：一个大大的加号 + 「新建功能」（用户口径：
+ * 「新建功能改成最后一个卡片里一个大大的加号和新建功能的文本 的样式」）。
+ *
+ * 规格：与功能卡同尺寸（`minHeight` 132 / 自然宽 340 起）；**虚线边**（区别于实线的功能卡 ——
+ * "这不是一个已有功能，是一个动作"）；加号优先用官方图标，拿不到就用全角 `＋` 当字形；
+ * 键盘可达（Enter / 空格）、`role="button"`、带 title 与 aria-label。
+ */
+function NewCard(props) {
+	const [hover, setHover] = React.useState(false);
+	const [focus, setFocus] = React.useState(false);
+	const off = !!props.off;
+	const ICON = PRIMITIVES && PRIMITIVES.IconPlusOutlineRegular;
+	const on = (hover || focus) && !off;
+	return h("div", {
+		role: "button", tabIndex: 0, title: "新建功能", "aria-label": "新建功能",
+		onClick: off ? void 0 : props.onPick,
+		onKeyDown: (e) => { if (!off && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); props.onPick(); } },
+		onMouseEnter: () => setHover(true),
+		onMouseLeave: () => setHover(false),
+		onFocus: () => setFocus(true),
+		onBlur: () => setFocus(false),
+		style: {
+			boxSizing: "border-box", minHeight: "132px", cursor: off ? "default" : "pointer",
+			border: "1px dashed " + (on ? V.brand : V.line2), borderRadius: RADIUS.card,
+			background: on ? "var(--dsw-alias-bg-layer-2)" : "transparent",
+			display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+			gap: GAP.sm, color: on ? V.brand : V.muted, opacity: off ? 0.5 : 1,
+			boxShadow: focus ? "0 0 0 " + LINE.ring + " " + COLOR.accentSoft : (on ? SHADOW.hover : "none"),
+			transition: "border-color 120ms ease, background 120ms ease, color 120ms ease",
+			outline: "none"
+		}
+	}, [
+		// 加号：官方图标优先（本就是 SVG），没有就用字形 —— 字号走令牌（面板里不许有裸字号）
+		ICON
+			? h(ICON, { key: "i", size: 32 })
+			: h("div", { key: "i", style: { fontSize: FONT.glyph, lineHeight: 1, fontWeight: 300 } }, "＋"),
+		h("div", { key: "t", style: { fontSize: FONT.card, fontWeight: 600 } }, "新建功能")
+	]);
+}
+
+/**
  * 一行路径。**带按钮的那条直接「打开路径」**（用户口径：想看目录就点开，别让人先复制再粘贴）。
  * 给了 `onOpen` 才有按钮 —— 没给的场合（如决策记录卡，那里已经有「打开文件」）就只是一行等宽文字，
  * 需要复制时用鼠标选中即可。
@@ -649,8 +690,9 @@ function Dashboard(props) {
 				style: { fontSize: FONT.body, color: V.muted, fontVariantNumeric: "tabular-nums" }
 			}, "功能 " + feats.length + (d.srWs ? "　｜　" + d.srWs : "")),
 			h("div", { key: "s", style: { flex: 1 } }),
-			Btn({ key: "r", label: "刷新", icon: PRIMITIVES && PRIMITIVES.IconRefreshOutlineRegular, onPick: props.onRefresh, off: props.phase === "loading" }),
-			Btn({ key: "n", label: "新建功能", icon: PRIMITIVES && PRIMITIVES.IconPlusOutlineRegular, tone: "primary", onPick: props.onNew, off: props.newOpen })
+			Btn({ key: "r", label: "刷新", icon: PRIMITIVES && PRIMITIVES.IconRefreshOutlineRegular, onPick: props.onRefresh, off: props.phase === "loading" })
+			// ★ 这里的〔＋ 新建功能〕按钮**挪到卡片墙最后一张卡**了（用户口径：
+			//   「新建功能改成最后一个卡片里一个大大的加号和新建功能的文本 的样式」）。
 		]),
 		/**
 		 * ★ 原来这里有一句「工作台只做三件事：看功能卡片 · 新建功能 · 进去看三个模块…」——
@@ -670,7 +712,8 @@ function Dashboard(props) {
 			style: { border: "1px dashed " + V.line2, borderRadius: RADIUS.card, padding: GAP.xl, textAlign: "center", color: V.muted }
 		}, [
 			h("div", { key: "a" }, "还没有功能。"),
-			h("div", { key: "b", style: { marginTop: GAP.xs, fontSize: FONT.body } }, "点右上角〔新建功能〕建第一个。")
+			// ★ 按钮已经挪到卡片墙上（最后一张卡），文案跟着改，别再指向"右上角"
+			h("div", { key: "b", style: { marginTop: GAP.xs, fontSize: FONT.body } }, "点下面那张〔＋ 新建功能〕建第一个。")
 		]) : null,
 		h("div", {
 			key: "g",
@@ -688,7 +731,11 @@ function Dashboard(props) {
 			/** 卡片**自然宽度**：340px 起，面板窄时可缩到更小；上限 520px 免得两三个功能被拉成一条。 */
 			style: { flex: "0 1 340px", minWidth: 0, maxWidth: "520px" }
 		},
-		h(FeatureCard, { feature: f, onOpen: () => props.onOpen(f.topic) })))),
+		h(FeatureCard, { feature: f, onOpen: () => props.onOpen(f.topic) }))).concat([
+			/** ★ 卡片墙的**最后一张卡**就是〔＋ 新建功能〕（用户口径）。 */
+			h("div", { key: "__new", style: { flex: "0 1 340px", minWidth: 0, maxWidth: "520px" } },
+				h(NewCard, { onPick: props.onNew, off: props.newOpen }))
+		])),
 		/**
 		 * ★ **UI 自我报告**：只在**拿不到宿主组件库**时出现 —— 那时界面用的是自绘控件，
 		 *   观感与宿主不一致，得让你知道为什么。拿得到就一个字都不多（不占位置）。
