@@ -681,8 +681,18 @@ function Dashboard(props) {
 			 *   免得只有一两个功能时被拉成一条。
 			 */
 			style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: GAP.md, marginTop: GAP.sm }
-		}, feats.map((f) => h("div", { key: f.topic, style: { display: "flex", maxWidth: "520px", minWidth: 0 } },
-			h(FeatureCard, { feature: f, onOpen: () => props.onOpen(f.topic) })))),
+		}, feats.map((f) => h("div", {
+			key: f.topic,
+			/**
+			 * ★ **不要 `display: "flex"`**（用户口径：「这个卡片墙的卡片不要这么硬居中，之前那种自适应位置就行」）。
+			 *   原来外层是 flex：卡片按**内容宽度**缩在格子左边，于是每格右边空一大片，
+			 *   三张卡看着像被"均匀摊开"在三个槽里。
+			 *   去掉 flex ⇒ 卡片是块级元素，**自然撑满自己那一格**（上限 520px），
+			 *   相邻卡片贴着排，空轨道仍然由 `auto-fit` 塌掉。
+			 */
+			style: { maxWidth: "520px", minWidth: 0 }
+		},
+		h(FeatureCard, { feature: f, onOpen: () => props.onOpen(f.topic) })))),
 		/**
 		 * ★ **UI 自我报告**：只在**拿不到宿主组件库**时出现 —— 那时界面用的是自绘控件，
 		 *   观感与宿主不一致，得让你知道为什么。拿得到就一个字都不多（不占位置）。
