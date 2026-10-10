@@ -292,6 +292,8 @@ function TeachingModal(props) {
 	const [phase, setPhase] = React.useState("loading");
 	const [data, setData] = React.useState(null);
 	const [err, setErr] = React.useState("");
+	/** 数据实际来自哪个基址（多基址探测命中的那个）—— 显示在页脚，不藏。 */
+	const [base, setBase] = React.useState("");
 	const [rulesOpen, setRulesOpen] = React.useState(false);
 
 	React.useEffect(() => {
@@ -300,23 +302,37 @@ function TeachingModal(props) {
 			try {
 				// 渲染冒烟那个环境里没有 fetch ⇒ 先判存在，再判失败都走"如实说"那条路（不炸）
 				if (typeof fetch !== "function") throw new Error("这个环境没有 fetch");
-				const url = "/sr-workbench/teaching.json";
-				const r = await fetch(url, { cache: "no-store" });
-				if (!r.ok) {
-					/**
-					 * ★ 404 的两种可能，都要说清（用户实测遇到的就是 404）：
-					 *   ① 宿主还是旧进程（这条路由是后加的）⇒ 重启一次 DSH；
-					 *   ② 页面 origin 与宿主 HTTP 服务不是同一个 ⇒ 把 origin 显示出来，一眼能判。
-					 *   所以错误里带上 **origin + 试的 URL + 状态码**，不写"没起来？"这种猜。
-					 */
-					const origin = (typeof location !== "undefined" && location.origin) || "（拿不到 location）";
-					throw new Error("HTTP " + r.status + " · " + url + " · 页面 origin " + origin +
-						(r.status === 404
-							? " · 404 = 宿主没有这条路由：刚更新过插件就**重启一次 DSH**；重启后仍 404 则说明页面 origin 与宿主 HTTP 服务不是同一个"
-							: ""));
+				/**
+				 * ★ **多基址探测**（用户实测：桌面版里相对路径拿到 404）。
+				 *   成因很可能是"页面 origin ≠ 宿主 HTTP 服务"（Electron 窗口可能不是从宿主那个
+				 *   HTTP 服务加载的）⇒ 相对路径落到了别的服务上，表现为 404。
+				 *   顺序：① 页面 origin ② boot 载荷里的服务地址（若有）③ 本机常见端口（**最后手段**，
+				 *   只是为了让功能能用起来；明天按实测结果把它换成有依据的来源）。
+				 *   命中的那个基址会显示在弹窗页脚 —— **不藏**：用户一眼看得出数据从哪来。
+				 */
+				const bases = [];
+				if (typeof location !== "undefined" && location.origin && location.origin !== "null") bases.push(location.origin);
+				try {
+					const b = (typeof window !== "undefined" && window.__DSH_BOOT__) || null;
+					const cand = b && (b.serverUrl || b.baseUrl || b.origin || b.httpBase);
+					if (typeof cand === "string" && cand !== "") bases.push(cand.replace(/\/+$/, ""));
+				} catch (e) { /* 拿不到就算了 */ }
+				bases.push("http://127.0.0.1:19387");
+				let used = "", lastErr = "";
+				let j = null;
+				for (const base of bases) {
+					const url = base + "/sr-workbench/teaching.json";
+					try {
+						const r = await fetch(url, { cache: "no-store" });
+						if (!r.ok) { lastErr = "HTTP " + r.status + " · " + url; continue; }
+						j = await r.json();
+						used = base;
+						break;
+					} catch (e) { lastErr = String((e && e.message) || e) + " · " + url; }
 				}
-				const j = await r.json();
+				if (j === null) throw new Error(lastErr || "三个基址都试过了，都拿不到");
 				if (!alive) return;
+				setBase(used);
 				setData(j);
 				setPhase(j && j.ok ? "ok" : "bad");
 			} catch (e) {
@@ -429,7 +445,7 @@ function TeachingModal(props) {
 			]),
 			h("div", { key: "b", style: { padding: GAP.md + " " + GAP.lg, overflow: "auto" } }, body()),
 			h("div", { key: "f", style: { display: "flex", alignItems: "center", gap: GAP.sm, padding: GAP.sm + " " + GAP.lg, borderTop: "1px solid " + V.line } }, [
-				h("div", { key: "n", style: { fontSize: FONT.meta, color: V.idle, flex: 1 } }, "内容来源：包内 skills/sr-askme（技能改了，重开即变）"),
+				h("div", { key: "n", style: { fontSize: FONT.meta, color: V.idle, flex: 1 } }, "内容来源：包内 skills/sr-askme（技能改了，重开即变）" + (base ? "　·　数据源 " + base : "")),
 				Btn({ key: "ok", label: "知道了", tone: "primary", onPick: props.onClose })
 			])
 		])
