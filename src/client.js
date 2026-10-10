@@ -300,8 +300,21 @@ function TeachingModal(props) {
 			try {
 				// 渲染冒烟那个环境里没有 fetch ⇒ 先判存在，再判失败都走"如实说"那条路（不炸）
 				if (typeof fetch !== "function") throw new Error("这个环境没有 fetch");
-				const r = await fetch("/sr-workbench/teaching.json", { cache: "no-store" });
-				if (!r.ok) throw new Error("HTTP " + r.status);
+				const url = "/sr-workbench/teaching.json";
+				const r = await fetch(url, { cache: "no-store" });
+				if (!r.ok) {
+					/**
+					 * ★ 404 的两种可能，都要说清（用户实测遇到的就是 404）：
+					 *   ① 宿主还是旧进程（这条路由是后加的）⇒ 重启一次 DSH；
+					 *   ② 页面 origin 与宿主 HTTP 服务不是同一个 ⇒ 把 origin 显示出来，一眼能判。
+					 *   所以错误里带上 **origin + 试的 URL + 状态码**，不写"没起来？"这种猜。
+					 */
+					const origin = (typeof location !== "undefined" && location.origin) || "（拿不到 location）";
+					throw new Error("HTTP " + r.status + " · " + url + " · 页面 origin " + origin +
+						(r.status === 404
+							? " · 404 = 宿主没有这条路由：刚更新过插件就**重启一次 DSH**；重启后仍 404 则说明页面 origin 与宿主 HTTP 服务不是同一个"
+							: ""));
+				}
 				const j = await r.json();
 				if (!alive) return;
 				setData(j);
