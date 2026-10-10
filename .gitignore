@@ -9,3 +9,7 @@ dist/
 *.local.json
 *.local.yaml
 !*.local.example.*
+
+# Python 工具（skills/sr-config/tools/）跑起来会生成字节码缓存：不入库、也不该进 tgz
+__pycache__/
+*.pyc
