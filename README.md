@@ -430,8 +430,8 @@ git show pre-migration-baseline:legacy/pre-migration/package.json
   这一类的旧防线 `legacy/check-sandbox.js` 已按 ADR 0001 删除，替代是 `no-undef`（静态，覆盖
   `pure/port/load` 与组合根源码，**覆盖不到组件渲染**）+ `npm run smoke`（覆盖加载期）。
 - `syntax-check.js` 那 16 条**产品行为正则自查**没有替代品（见上面 `legacy/` 一节）。
-- 组件层**已经有渲染网了**（v5 新增）：`npm run smoke:render` 用一个迷你 React 真跑 9 遍组件树
-  （初始帧 / 卡片墙 / 真数据详情 / 三个模块 / 新建表单），断言屏幕上真出现了该出现的字。
+- 组件层**已经有渲染网了**（v5 新增）：`npm run smoke:render` 用一个迷你 React 逐遍真跑组件树
+  （初始帧 / 卡片墙 / 真数据详情 / 三个模块 / 技能用法弹窗 / 配置向导 / 新建表单），断言屏幕上真出现了该出现的字。
   它**仍未覆盖**：状态更新后的重渲染、副作用（`useEffect` 不跑）、真实 DOM 与样式 ——
   所以面板在浏览器里"逐屏无差异"还是只能人看。
   加载期那条网仍是 `npm run smoke`；静态那条是 `no-undef`（`pure/port/load` 与组合根源码）。
@@ -440,16 +440,20 @@ git show pre-migration-baseline:legacy/pre-migration/package.json
 
 ## 技能用法弹窗（面板上怎么看 sr 技能怎么用）
 
-卡片墙头部有〔技能用法〕按钮，点开是一个弹窗：**主线五步 → 独立技能 → 速查表 → 共用规则**（默认折叠）。
+卡片墙头部有〔技能用法〕按钮，点开是一个弹窗，里面**就是那份使用说明的 md 原样渲染**
+（主线五步、旁支、skill 一览、术语、产出落盘摘要、两条共用规矩的指针 —— 表格就是表格）。
 
-**内容只有一个来源**：包内 `skills/sr-askme/`（`SKILL.md` 的教学节 + `references/teaching/*.md`）。
-面板**不复制**任何一句教学文字 —— 技能改了，重开弹窗即变。
+**内容只有一个来源**：包内 `skills/sr-askme/references/使用说明.md`（**整份字节**）。
+面板**不复制**、也**不解析**任何一句教学文字 —— 技能改了，重开弹窗即变。
 
-数据由**宿主半侧**递：`GET /sr-workbench/teaching.json`（每次请求现读，`no-store`）。
-为什么不让面板自己读：面板只有"借会话读**绝对路径**"这一种能力，而技能在 `node_modules` 下 ——
-面板不知道那个路径，也不该猜（与配置落点那次同一类问题）。
-
-- `webServer` 走**可选访问**（`ctx.get`）：拿不到就记一条 INFO 说清"这一版拿不到"，**技能本身照常注册**；
-- 判据：`npm run check:teaching`（进 `build:safe`）—— 路由注册得住 / handler 真跑：200 + JSON + `no-store` +
-  内容齐（主线 ≥4 步、速查 ≥8 行、规则 2 节、教学卡 ≥8 张）/ **主线提到的技能必须有出处** / 没有 webServer 也不炸；
+- 数据是**构建期快照**：`npm run gen:teaching` 把那份 md 写进 `src/generated/teaching.js`
+  （`{ markdown, source }`），面板 `import` 直接用 —— 零网络、零基址、零失败面
+  （7.0.0 之前那条 `GET /sr-workbench/teaching.json` 与多基址探测都已删掉）；
+- 渲染**两支**：宿主给了官方 `MarkdownText` 就交给它；拿不到走自绘的
+  `src/ui/mdview.js`（分块与行内拆分在 `src/pure/mdview.ts`，有单测）。
+  表格 `table-layout: auto` + `white-space: normal`（长单元格换行，不撑破弹窗）；
+- 判据：`npm run check:teaching`（进 `build:safe`）—— **快照 == 该 md 的字节** /
+  md 里 ≥2 个表格 / **SKILL.md 里不再有教学正文**（正文只许有一份）/ 产物里不许再有那条路由；
+  渲染那一层由 `npm run smoke:render` 盯：自绘臂断言真出 `<table>`、标题、`<strong>`，
+  官方臂断言**整份 md 原文真的交给了 `MarkdownText`**；
 - 设计稿：`outputs\技能用法弹窗-设计方案.md`；界面预览：`outputs\技能用法弹窗-界面预览.html`。

@@ -52,12 +52,14 @@ import { labelLineOf } from "./pure/labels.ts";
 // ★ 技能用法快照（构建期生成；面板直接读，不走网络 —— 见 tools/gen-teaching.mjs 的文件头）
 import { TEACHING } from "./generated/teaching.js";
 // ★ 设计令牌：间距/字号/圆角/动效的唯一参数源（面板里不许再写裸数字）
-import { COLOR, FONT, GAP, LEADING, LINE, RADIUS, SHADOW } from "./ui/tokens.js";
+import { ALIAS as V, COLOR, FONT, GAP, LEADING, LINE, RADIUS, SHADOW } from "./ui/tokens.js";
 import {
 	buildConfigInstruction, CONFIG_FIELDS, pointerCandidates, POINTER_REL, validateConfigValues, workspaceMissing
 } from "./pure/configentry.ts";
 // ★ 官方 UI 原子库的唯一引入点（守卫式：拿不到就退回自绘控件）—— 见 `src/ui/atoms.js` 的文件头
-import { HAS_PRIMITIVES, PRIMITIVES, primitivesNote } from "./ui/atoms.js";
+import { HAS_PRIMITIVES, PRIMITIVES, isComponent, primitivesNote } from "./ui/atoms.js";
+// ★ md 渲染器（自绘那支）：技能用法弹窗**按 md 原样渲染**；拿得到官方 MarkdownText 时优先用它
+import { mdView } from "./ui/mdview.js";
 import {
 	ARCHIVED_CACHED_NOTE, FOREIGN_CACHE_NOTE, NO_ARCHIVE_INFO_NOTE,
 	archivedFromSnapshot, configPathCandidates, indexCacheKey, indexCacheOwned, indexCacheParse,
@@ -75,20 +77,9 @@ const h = React.createElement;
 
 // ════════════════════════════════════════════════════════════════════════════
 // 主题令牌：一律用宿主主题变量（浅色 / 深色自动跟随，不写死颜色）
+// ★ 表本体已搬进 `src/ui/tokens.js`（`ALIAS`）—— md 渲染器（ui 层）要共用同一批颜色，
+//   而 ui 层不许反向 import 这个组合根。这里起个别名 `V`，下面几百处调用一个字都不用改。
 // ════════════════════════════════════════════════════════════════════════════
-const V = {
-	bg: "var(--dsw-alias-bg-base)",
-	panel: "var(--dsw-alias-bg-layer-1)",
-	panel2: "var(--dsw-alias-bg-layer-2)",
-	line: "var(--dsw-alias-border-l1)",
-	line2: "var(--dsw-alias-border-l2)",
-	ink: "var(--dsw-alias-label-primary)",
-	muted: "var(--dsw-alias-label-secondary)",
-	brand: "var(--dsw-alias-brand-primary)",
-	ok: "var(--dsw-alias-state-success-primary)",
-	warn: "var(--dsw-alias-state-warn-primary)",
-	bad: "var(--dsw-alias-state-error-primary)"
-};
 
 const toneColor = (t) => (t === "ok" ? V.ok : t === "warn" ? V.warn : t === "bad" ? V.bad : t === "brand" ? V.brand : V.muted);
 
@@ -284,22 +275,28 @@ function Notice(props) {
 /**
  * **技能用法弹窗**（T1）。
  *
- * 内容**全部来自**包内 `skills/sr-askme/`：构建期由 `npm run gen:teaching` 生成快照，面板直接 import。
- * （用户口径：**纯静态的使用说明不该要"网站地址"** ⇒ 原来那条 HTTP 路由与多基址探测都已删掉。）
+ * 内容**全部来自**包内 `skills/sr-askme/references/使用说明.md`：构建期由 `npm run gen:teaching`
+ * 把它**整份**快照进 `src/generated/teaching.js`，弹窗直接 `import`。
+ * （用户口径：① **纯静态的使用说明不该要"网站地址"**；② **按 md 原样渲染，尤其表格**。）
  *
- * 四块：① 主线（askme 的编号项）② 独立技能那一句 ③ 速查表 ④ 共用规则（默认折叠）＋ 教学卡一览。
- * 读不到就**如实说**（显示 problems / 网络错误），绝不显示一个空壳。
+ * 渲染有**两支**（观感目标一致，判据两臂都有网 —— 见 `tools/render-smoke.mjs`）：
+ *   ① 宿主给了官方 `MarkdownText` ⇒ 交给它（宿主自己的 markdown 渲染器，表格/代码/引用都是它的事）；
+ *   ② 拿不到 ⇒ 走自绘的 `mdView`（`src/ui/mdview.js`）。
+ *
+ * ★ 为什么不再按字段排版（8.0.0 之前的样子）：那时是把 SKILL.md 的教学节**解析**成
+ *   steps / routes / rules / cards 四个数组再摆一遍，解析器本身就是几轮 bug 的来源；
+ *   而用户要的只有一句"按 md 渲染"。现在快照里只有那份 md 的字节，排版在渲染器一处。
  */
 function TeachingModal(props) {
 	/**
 	 * ★ **静态快照**（用户口径：这是纯静态的使用说明，不该要"网站地址"）：
-	 *   内容由 `npm run gen:teaching` 在构建期从包内 `skills/sr-askme/` 生成，这里**直接 import** ——
-	 *   零网络、零基址、零失败面（原来那条 HTTP 路由与多基址探测都已删掉）。
-	 *   判据 `npm run check:teaching` 盯着"快照与技能文件一致"：改了技能忘了重新生成就会红。
+	 *   内容由 `npm run gen:teaching` 在构建期从包内那个 md 生成，这里**直接 import** ——
+	 *   零网络、零基址、零失败面。判据 `npm run check:teaching` 盯着"快照 == 该 md 的字节"。
 	 */
 	const data = TEACHING;
-	const [rulesOpen, setRulesOpen] = React.useState(false);
-
+	const md = String((data && data.markdown) || "");
+	/** 官方 markdown 渲染器（可选依赖：拿不到就自绘，绝不能因此让弹窗空白）。 */
+	const MD = PRIMITIVES && isComponent(PRIMITIVES.MarkdownText) ? PRIMITIVES.MarkdownText : null;
 
 	/** Esc 关闭（弹窗的基本礼貌）。 */
 	React.useEffect(() => {
@@ -311,85 +308,17 @@ function TeachingModal(props) {
 		return void 0;
 	}, []);
 
-	const line = (t) => h("div", { style: { fontSize: FONT.meta, color: V.muted, lineHeight: LEADING.body } }, t);
 	const body = () => {
-		// 静态快照：要么有内容，要么如实说解析缺了什么（不再有"读不到网络"这种情况）
-		if (!data || !data.ok) {
+		// 静态快照：要么有正文，要么如实说它空了（既不猜、也不显示一个空壳）
+		if (md.trim() === "") {
 			return h("div", null, [
-				h("div", { key: "a", style: { fontSize: FONT.body, color: V.warn } }, "技能素材没解析全 —— 下面是能解析出来的部分："),
-				...((data && data.problems) || []).map((p, i) => h("div", { key: "p" + i, style: { fontSize: FONT.meta, color: V.muted } }, "· " + p))
+				h("div", { key: "a", style: { fontSize: FONT.body, color: V.warn } }, "教学正文是空的 —— 快照里没有内容。"),
+				h("div", { key: "b", style: { fontSize: FONT.meta, color: V.muted } },
+					"跑一次 npm run gen:teaching（来源：包内 " + String((data && data.source) || "skills/sr-askme/references/使用说明.md") + "）。")
 			]);
 		}
-		const steps = (data && data.steps) || [];
-		const routes = (data && data.routes) || [];
-		const cards = (data && data.cards) || [];
-		const rules = (data && data.rules) || [];
-		return h("div", null, [
-			// ① 主线
-			h("div", { key: "h1", style: { fontSize: FONT.title, fontWeight: 600, marginBottom: GAP.sm } }, "主线：" + steps.length + " 步"),
-			...steps.map((s) => h("div", { key: "s" + s.n, style: { display: "flex", gap: GAP.sm, marginBottom: GAP.sm } }, [
-				h("div", { key: "n", style: { flex: "0 0 20px", fontSize: FONT.meta, color: V.idle, fontVariantNumeric: "tabular-nums" } }, s.n + "."),
-				h("div", { key: "c", style: { flex: 1, minWidth: 0 } }, [
-					h("div", { key: "t", style: { fontSize: FONT.body, fontWeight: 600 } }, s.title),
-					h("div", { key: "x", style: { fontSize: FONT.body, color: V.muted, whiteSpace: "pre-wrap", lineHeight: LEADING.loose } },
-						rich(String(s.text).split(/\n/)[0] || "")),
-					...String(s.text).split(/\n/).slice(1).filter((l) => l.trim() !== "").map((l, i) =>
-						h("div", { key: "l" + i, style: { fontSize: FONT.meta, color: V.muted, paddingLeft: GAP.md, lineHeight: LEADING.loose } },
-							rich(l.trim().replace(/^\s*[-*]\s*/, "· "))))
-				])
-			])),
-			// ② 独立技能（原文照抄，去掉加粗标记）
-			data && data.standalone
-				? h("div", { key: "sa", style: { fontSize: FONT.meta, color: V.muted, marginTop: GAP.sm, lineHeight: LEADING.body } }, String(data.standalone).replace(/\*\*/g, ""))
-				: null,
-			// ③ 速查表
-			routes.length
-				? h("div", { key: "rt", style: { marginTop: GAP.lg } }, [
-					h("div", { key: "h", style: { fontSize: FONT.title, fontWeight: 600, marginBottom: GAP.sm } }, "skill 一览"),
-					...routes.map((r, i) => h("div", {
-						key: "r" + i,
-						style: { display: "flex", gap: GAP.sm, alignItems: "baseline", fontSize: FONT.body, marginBottom: GAP.xs }
-					}, [
-						// 第一列：技能名（等宽、链接色）；第二列：干什么；第三列：关键产出（弱色，可空）
-						h("div", {
-							key: "s",
-							style: { flex: "0 0 116px", color: LINK, fontFamily: MONO, fontSize: FONT.meta, whiteSpace: "nowrap" }
-						}, String(r.skill || "")),
-						h("div", { key: "w", style: { flex: 1, minWidth: 0, color: V.ink } }, rich(String(r.what || ""))),
-						r.out ? h("div", {
-							key: "o",
-							style: { flex: "0 0 auto", color: V.muted, fontSize: FONT.meta, whiteSpace: "nowrap" }
-						}, String(r.out).replace(/`/g, "")) : null
-					]))
-				])
-				: null,
-			// ④ 共用规则（默认折叠；收起时**不渲染**内容 —— 沿用现有折叠口径）
-			rules.length
-				? h("div", { key: "ru", style: { marginTop: GAP.lg, borderTop: "1px solid " + V.line, paddingTop: GAP.sm } }, [
-					h("button", {
-						key: "b", type: "button", onClick: () => setRulesOpen(!rulesOpen),
-						style: { font: "inherit", fontSize: FONT.body, padding: 0, border: 0, background: "transparent", color: V.ink, cursor: "pointer" }
-					}, (rulesOpen ? "▾ " : "▸ ") + "共用规则（" + rules.map((r) => r.title).join(" · ") + "）"),
-					rulesOpen
-						? h("div", { key: "c", style: { marginTop: GAP.sm } }, rules.map((r, i) => h("div", { key: "x" + i, style: { marginBottom: GAP.sm } }, [
-							h("div", { key: "t", style: { fontSize: FONT.body, fontWeight: 600 } }, r.title),
-							h("div", { key: "b", style: { fontSize: FONT.meta, color: V.muted, whiteSpace: "pre-wrap", lineHeight: LEADING.body } }, r.body)
-						])))
-						: null
-				])
-				: null,
-			// 教学卡一览（只列名字 —— 全文太长，要看全文去 /sr-askme）
-			cards.length
-				? h("div", { key: "cd", style: { marginTop: GAP.md, display: "flex", gap: GAP.xs, flexWrap: "wrap" } },
-					cards.map((c) => h("span", {
-						key: c.id,
-						title: c.rel,
-						style: { fontSize: FONT.meta, color: V.muted, border: "1px solid " + V.line2, borderRadius: RADIUS.chip, padding: "1px 7px" }
-					}, c.title)))
-				: null
-		]);
+		return MD ? h(MD, { text: md, variant: "body" }) : mdView(md);
 	};
-
 	return h("div", {
 		onClick: (e) => { if (e.target === e.currentTarget) props.onClose(); },   // 点遮罩关闭
 		style: { position: "fixed", inset: 0, background: "#0000002e", zIndex: 50, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "9vh" }
@@ -411,7 +340,8 @@ function TeachingModal(props) {
 			]),
 			h("div", { key: "b", style: { padding: GAP.md + " " + GAP.lg, overflow: "auto" } }, body()),
 			h("div", { key: "f", style: { display: "flex", alignItems: "center", gap: GAP.sm, padding: GAP.sm + " " + GAP.lg, borderTop: "1px solid " + V.line } }, [
-				h("div", { key: "n", style: { fontSize: FONT.meta, color: V.idle, flex: 1 } }, "内容来源：包内 skills/sr-askme（构建期生成快照 · npm run gen:teaching 更新）"),
+				h("div", { key: "n", style: { fontSize: FONT.meta, color: V.idle, flex: 1 } },
+					"内容来源：包内 " + String((data && data.source) || "skills/sr-askme/references/使用说明.md") + "（构建期生成快照 · npm run gen:teaching 更新）"),
 				Btn({ key: "ok", label: "知道了", tone: "primary", onPick: props.onClose })
 			])
 		])

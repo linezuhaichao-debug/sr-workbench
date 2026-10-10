@@ -36,6 +36,12 @@ const target = process.argv[2] ? path.resolve(process.argv[2]) : path.join(REPO,
 let scripts = {};
 let curName = "";
 let curIdx = 0;
+/**
+ * 这一遍渲染里出现过的**宿主标签名**（`table` / `h2` / `strong`…）。
+ * ★ 为什么要它：技能用法弹窗的口径是"**按 md 原样渲染**，尤其表格"—— 只断言"屏幕上有那些字"
+ *   管不住排版（把 md 当纯文本吐出来，字也全在）。所以这里连**标签**一起收。
+ */
+let tags = [];
 
 function createElement(type, props, ...children) {
 	const p = Object.assign({}, props || {});
@@ -123,6 +129,7 @@ function renderToText(node, out = [], depth = 0) {
 		curName = prev;
 		return renderToText(rendered, out, depth + 1);
 	}
+	if (typeof type === "string") tags.push(type);   // 宿主元素：记下标签名（断言"真渲染成了 <table>"用）
 	if (props && props.children !== undefined) renderToText(props.children, out, depth + 1);
 	return out;
 }
@@ -162,7 +169,12 @@ function primitivesStub() {
 		IconRefreshOutlineRegular: ico,
 		IconPlusOutlineRegular: ico,
 		Tag: (props) => createElement("span", null, props.children),
-		MarkdownText: memo((props) => createElement("div", null, props.text)),
+		// ★ 官方 markdown 渲染器：**只做形状**（真机上是宿主那份），收到的 props 记下来供断言 ——
+		//   面板该把**整份 md 原文**交给它，而不是自己再排版一遍。
+		MarkdownText: memo((props) => {
+			(globalThis.__mdProps = globalThis.__mdProps || []).push(props);
+			return createElement("div", null, "⟨官方 MarkdownText⟩ ", props.text);
+		}),
 		SegmentedTabs: fwd((props) => createElement("div", null, (props.items || []).map((i) => i.label).join(" ")))
 	};
 }
@@ -216,11 +228,15 @@ const slotProps = {
 // ════════════════════════════════════════════════════════════════════════════
 
 const results = [];
+/** 刚跑完那一遍出现过的标签（去重后）。`pass()` 会重置它。 */
+let lastTags = [];
 function pass(name, script, mustHave) {
 	scripts = script;
+	tags = [];
 	const text = renderToText(mainEntry.component(slotProps)).join(" ");
+	lastTags = tags.filter((t, i) => tags.indexOf(t) === i);
 	const missing = mustHave.filter((s) => !text.includes(s));
-	results.push({ pass: name, chars: text.length, missing });
+	results.push({ pass: name, chars: text.length, missing: missing });
 	if (missing.length) {
 		console.error("✗ [" + name + "] 渲染出来的字里缺：" + JSON.stringify(missing));
 		console.error("  实际前 600 字：" + text.slice(0, 600));
@@ -307,19 +323,43 @@ if (real) {
 // ── ③'' 技能用法弹窗：内容来自**构建期快照**（面板直接 import，不走网络）──────────
 //   ★ 断言盯的是**真快照**（真 askme 素材）：技能改了忘了 gen:teaching，这里的字就会对不上，
 //     与 check:teaching 那道门形成两道网。
-pass("技能用法弹窗", {
+//   ★ 8.0.0 起弹窗**按 md 原样渲染**（用户口径，尤其表格）⇒ 这里除了"字在不在"，
+//     还要盯**排版真发生了**：自绘那臂必须真出 `<table>` / 标题 / `<strong>`；
+//     官方那臂必须真把**整份 md 原文**交给 MarkdownText（而不是退回自绘或只给一段摘要）。
+const teachText = pass("技能用法弹窗", {
 	Panel: [INDEX, "idle", null, DASH, null, { kind: "cards" }, null, 0, false, false, "", false, null],
 	Dashboard: [true]
 }, [
 	"SR 系列技能 · 工作流程", "用法都在 /sr-askme",
-	"主线：5 步", "头脑风暴（四个入口）", "/sr-analysis", "/sr-concept",
+	"SR 系列技能 · 使用说明", "主线：五步", "头脑风暴（四个入口）", "/sr-analysis", "/sr-concept",
 	"成稿", "/sr-gdd-human", "可选的两件事", "不做也能直接进第 4 步", "没有对应技能，人工做",
 	"输出定稿", "/sr-gdd-ai", "正式 UE 回写",
-	"独立技能", "skill 一览", "sr-concept", "一句话创意 → 设计核候选报告", "sr-gtgenerator", "gtypes.xml",
-	"共用规则", "产出落盘位置", "数值铁律",
-	"sr-analysis 使用卡：分析素材 / 拆解竞品", "✕ 关闭", "知道了",
-	"内容来源：包内 skills/sr-askme"
+	"旁支（不在主线上，需要时单独用）", "skill 一览", "sr-concept", "一句话创意 → 设计核候选报告", "sr-gtgenerator", "gtypes.xml",
+	"术语", "两条共用规矩（这里只给指针）", "产出落盘位置", "数值铁律",
+	"✕ 关闭", "知道了",
+	"内容来源：包内 skills/sr-askme/references/使用说明.md"
 ]);
+if (WITH_PRIM) {
+	// 官方那臂：官方 MarkdownText 必须**真被用上**，而且拿到的是**整份 md 原文**
+	if (!teachText.includes("⟨官方 MarkdownText⟩")) {
+		results.push({ pass: "技能用法 · 官方臂", missing: ["（拿了 primitives 却没走官方 MarkdownText）"] });
+		console.error("✗ [技能用法] 拿到了 primitives，但弹窗没用官方 MarkdownText");
+	}
+	const mdProps = globalThis.__mdProps || [];
+	const got = mdProps.filter((p) => typeof p.text === "string" && p.text.includes("| skill | 干什么 | 关键产出 |"));
+	if (got.length === 0) {
+		results.push({ pass: "技能用法 · 官方臂", missing: ["（官方 MarkdownText 没收到那份 md 原文）"] });
+		console.error("✗ [技能用法] 官方 MarkdownText 收到的不是那份 md 原文（收到 " + mdProps.length + " 次）");
+	}
+} else {
+	// 自绘那臂：md 必须真被**排版**出来（把 md 当纯文本吐出来也能让上面那些字全在 —— 这条才拦得住）
+	const need = ["table", "thead", "tbody", "th", "td", "h1", "h2", "strong", "code", "ol", "ul", "li"];
+	const lack = need.filter((t) => lastTags.indexOf(t) < 0);
+	if (lack.length) {
+		results.push({ pass: "技能用法 · 自绘臂", missing: ["（md 没被排版，缺标签：" + lack.join("、") + "）"] });
+		console.error("✗ [技能用法] 自绘渲染里没有这些标签：" + lack.join("、") + "　实际：" + lastTags.join(","));
+	}
+}
 
 // ── ③' 配置向导：这台机器还没配好时，卡片墙位置必须出现向导 ────────────────
 const WIZ_IDX = Object.assign({}, INDEX, { needConfig: true, cfgObj: { sr_workspace: "", sr_project: "" }, triedPaths: ["D:\\X\\.dsh\\sr-workbench\\config.local.json"], configFile: "" });

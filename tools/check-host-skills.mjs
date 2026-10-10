@@ -75,9 +75,19 @@ check("模型可见 9 个 + 用户专用 2 个（两个 user-only 必须在册�
 		assert.equal(s.invocation.userInvocable, true, s.name + " 用户必须仍可 /名字 调用");
 	}
 });
-check("正文合计应 ~120.9 KB（证明整批正文都在产物里）", () => {
+check("正文合计与磁盘上那 10 份 SKILL.md 同量级（证明整批正文都在产物里）", () => {
+	/**
+	 * ★ 原来这里写死"~120.9 KB（>110KB 且 <130KB）"—— 2026-10-10 把 sr-askme 的使用教学
+	 *   搬出 SKILL.md 之后，正文合计掉到 108.8 KB，于是**判据红了而东西是好的**。
+	 *   写死的量级本来就是这个毛病：它盯的是"那个数字"，不是"正文在不在"。
+	 *   ⇒ 改成**跟磁盘对**：注册的正文是各自 SKILL.md 的尾部（frontmatter 不带进来），
+	 *     所以总量应当略小于磁盘上这批 SKILL.md 的字节数，且不能小太多。
+	 */
 	const total = registered.reduce((a, s) => a + Buffer.byteLength(s.content, "utf8"), 0);
-	assert.ok(total > 110 * 1024 && total < 130 * 1024, "正文合计 " + (total / 1024).toFixed(1) + " KB，不在预期量级");
+	const onDisk = registered.reduce((a, s) => a + fs.statSync(path.join(s.resourceBase.path, "SKILL.md")).size, 0);
+	const kb = (n) => (n / 1024).toFixed(1) + " KB";
+	assert.ok(total <= onDisk, "正文合计 " + kb(total) + " 比磁盘上的 SKILL.md 合计 " + kb(onDisk) + " 还大 —— 形状不对");
+	assert.ok(total > onDisk * 0.8, "正文合计 " + kb(total) + " 远小于磁盘上的 " + kb(onDisk) + "（多半被 DCE 吃了，或漏了技能）");
 });
 check("单文件产物：不该留 ../src/generated 的相对 import", () => {
 	const text = fs.readFileSync(ARTIFACT, "utf8");

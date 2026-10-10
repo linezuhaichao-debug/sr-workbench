@@ -80,6 +80,33 @@ export const SHADOW = {
 };
 
 /**
+ * **宿主主题别名**（浅色 / 深色自动跟随，面板里不写死颜色）。
+ *
+ * ★ 这张表原来长在 `src/client.js` 里（叫 `V`）。md 渲染器（ui 层）也要用同一批颜色，
+ *   而 ui 层不许反向 import 组合根 ⇒ 搬进令牌文件，client.js 改成 `import { ALIAS as V }`
+ *   （名字不变，几百处调用一行都不用改）。**以后再要颜色，从这里取。**
+ */
+export const ALIAS = {
+	bg: "var(--dsw-alias-bg-base)",
+	panel: "var(--dsw-alias-bg-layer-1)",
+	panel2: "var(--dsw-alias-bg-layer-2)",
+	line: "var(--dsw-alias-border-l1)",
+	line2: "var(--dsw-alias-border-l2)",
+	ink: "var(--dsw-alias-label-primary)",
+	muted: "var(--dsw-alias-label-secondary)",
+	/**
+	 * 三级墨色（更淡）。★ 这是**补的一个洞**：`client.js` 里早就在用 `V.idle`，
+	 *   而那张表里从来没有 `idle` 这一支 ⇒ 颜色一直是 `undefined`（渲染成继承色）。
+	 *   搬表时补上（宿主确实有 `--dsw-alias-label-tertiary`，见 primitives 的 index.js）。
+	 */
+	idle: "var(--dsw-alias-label-tertiary)",
+	brand: "var(--dsw-alias-brand-primary)",
+	ok: "var(--dsw-alias-state-success-primary)",
+	warn: "var(--dsw-alias-state-warn-primary)",
+	bad: "var(--dsw-alias-state-error-primary)"
+};
+
+/**
  * 颜色：**能走宿主令牌就走令牌**；只有强调蓝是明确色值。
  * `accentSoft` 用于焦点环（带透明度的同色）。
  */

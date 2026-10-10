@@ -129,7 +129,7 @@ try {
 		else bad(label, String(r.stdout || "").slice(-200) + String(r.stderr || "").slice(-400));
 	};
 	run("smoke-client.mjs", path.join(pkg, "lib", "client.js"), "② 包里的 lib/client.js 过加载冒烟（假 ModuleLoader 真跑 apply + slot）");
-	run("render-smoke.mjs", path.join(pkg, "lib", "client.js"), "③ 包里的 lib/client.js 过渲染冒烟（迷你 React 跑 9 遍组件树）");
+	run("render-smoke.mjs", path.join(pkg, "lib", "client.js"), "③ 包里的 lib/client.js 过渲染冒烟（迷你 React 逐遍跑组件树）");
 
 	// ── ④ 宿主半侧自足 + patch 结构 ────────────────────────────────────
 	const host = await import("file:///" + path.join(pkg, "lib", "index.js").replace(/\\/g, "/"));
