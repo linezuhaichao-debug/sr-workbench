@@ -38,11 +38,17 @@ test("主线编号项：标题与正文分开，正文里保留子项", () => {
 	assert.equal(steps[1].text.includes("落配置"), false, "不许把下一项吃进来");
 });
 
-test("速查表：只取数据行，表头与分隔行不要", () => {
-	const sec = ["| 你想做什么 | 用哪个 |", "| --- | --- |", "| \"我有个创意\" | `/sr-concept` |", "| \"加字段\" | `/sr-config` |"].join("\n");
-	const routes = parseRoutes(sec);
-	assert.deepEqual(routes.map((r) => r.skill), ["`/sr-concept`", "`/sr-config`"]);
-	assert.equal(routes[0].want, "我有个创意", "两头引号去掉");
+test("skill 一览：三列（skill / 干什么 / 关键产出），表头与分隔行不要", () => {
+	const sec = [
+		"| skill | 干什么 | 关键产出 |",
+		"| --- | --- | --- |",
+		"| `sr-concept` | 一句话创意 → 设计稿 | 设计稿（`analysis\\`） |",
+		"| `sr-config` | 派生配置字段与记录 | 配置工作簿（`gdd\\`） |"
+	].join("\n");
+	const rows = parseRoutes(sec);
+	assert.deepEqual(rows.map((r) => r.skill), ["sr-concept", "sr-config"], "第一列去反引号");
+	assert.equal(rows[0].what, "一句话创意 → 设计稿");
+	assert.ok(rows[0].out.indexOf("analysis") >= 0, "第三列带产出位置");
 });
 
 test("独立技能那一句照抄原文（面板直接显示）", () => {
@@ -60,11 +66,12 @@ test("真数据：sr-askme 的教学素材必须解析得出来（这是本功�
 	const model = parseTeaching({ skillMd: fs.readFileSync(SKILL_MD, "utf8"), cards: readCards() });
 	assert.equal(model.ok, true, "解析不通过：" + model.problems.join("；"));
 	assert.ok(model.steps.length >= 4, "主线步骤至少 4 步，实际 " + model.steps.length);
-	assert.ok(model.routes.length >= 8, "速查表至少 8 行，实际 " + model.routes.length);
+	assert.ok(model.routes.length >= 6, "skill 一览至少 6 行，实际 " + model.routes.length);
 	assert.equal(model.rules.length, 2, "两个规则节都要在：" + model.rules.map((r) => r.title).join("、"));
 	assert.ok(model.cards.length >= 8, "教学卡至少 8 张，实际 " + model.cards.length);
-	// 主线里出现的技能名，必须能在速查表里找到（否则弹窗会出现"无出处的技能"）
-	const routeText = model.routes.map((r) => r.skill).join(" ") + " " + model.standalone;
+	// 主线里出现的技能名，必须能在 skill 一览里找到（否则弹窗会出现"无出处的技能"）
+	// ★ 一览的第一列是裸技能名（`sr-concept`），主线里带斜杠（`/sr-concept`）—— 这里给第一列补斜杠再比。
+	const routeText = model.routes.map((r) => "/" + r.skill).join(" ") + " " + model.standalone;
 	for (const s of model.steps) {
 		for (const m of s.text.matchAll(/`(\/sr-[a-z-]+)`/g)) {
 			assert.ok(routeText.includes(m[1]), "主线提到的 " + m[1] + " 在速查表/独立技能里找不到出处");

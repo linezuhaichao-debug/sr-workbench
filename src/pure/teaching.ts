@@ -109,7 +109,7 @@ export function parseSteps(section: string): TeachingStep[] {
 	return out;
 }
 
-/** 解析速查表：`| 你想做什么 | 用哪个 |` 的数据行。 */
+/** 解析「skill 一览」：`| skill | 干什么 | 关键产出 |` 的数据行（第一列技能名去反引号）。 */
 export function parseRoutes(section: string): TeachingRoute[] {
 	const out: TeachingRoute[] = [];
 	for (const line of String(section || "").split(/\r?\n/)) {
@@ -117,11 +117,12 @@ export function parseRoutes(section: string): TeachingRoute[] {
 		if (!t.startsWith("|")) continue;
 		const cells = t.replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
 		if (cells.length < 2) continue;
-		const want = cells[0];
-		const skill = cells[1];
-		if (want === "" || skill === "" || /^-+$/.test(want) || /^-+$/.test(skill)) continue;   // 表头分隔行
-		if (want.indexOf("你想做什么") === 0) continue;                                            // 表头
-		out.push({ want: want.replace(/^["「]|["」]$/g, ""), skill: skill });
+		const skill = cells[0].replace(/`/g, "").trim();
+		const what = cells[1] || "";
+		const outCol = cells[2] || "";
+		if (skill === "" || what === "" || /^-+$/.test(skill) || /^-+$/.test(what)) continue;   // 表头 / 分隔行
+		if (skill === "skill") continue;                                                          // 表头
+		out.push({ skill: skill, what: what, out: outCol });
 	}
 	return out;
 }
@@ -151,9 +152,9 @@ export function parseTeaching(input: { skillMd: string; cards?: Array<{ rel: str
 	if (teach === "") problems.push("SKILL.md 里找不到「## 二、使用教学」这一节");
 	const steps = parseSteps(teach);
 	if (steps.length === 0) problems.push("主线那串编号项解析不出来（在「推荐用法」小标题之后）");
-	const routesSec = subSectionOf(md, "速查表");
+	const routesSec = subSectionOf(md, "skill 一览");
 	const routes = parseRoutes(routesSec);
-	if (routes.length === 0) problems.push("速查表解析不出来（### 速查表… 下面的表格）");
+	if (routes.length === 0) problems.push("「skill 一览」解析不出来（### skill 一览… 下面的表格）");
 	const rules: TeachingRule[] = [];
 	const deposit = subSectionOf(md, "产出落盘位置");
 	if (deposit !== "") rules.push({ title: "产出落盘位置", body: deposit });

@@ -35,44 +35,44 @@ export const TEACHING = {
 	"standalone": "**独立技能**（不在主线，需要时单独用）：`/sr-gtgenerator`、`/sr-gdd-review`（定稿审查，只读出报告）、`/sr-gdd-fix`（定稿之后的改动入口）。",
 	"routes": [
 		{
-			"want": "我有个创意 / 想个新玩法 / 这个点子能不能做",
-			"skill": "`/sr-concept`"
+			"skill": "sr-concept",
+			"what": "一句话创意 → 设计核候选报告 → 你拍板 → 完整功能设计",
+			"out": "设计稿（`analysis\\`）"
 		},
 		{
-			"want": "分析这段录屏 / 拆一下这个竞品 / 能不能复刻",
-			"skill": "`/sr-analysis`"
+			"skill": "sr-analysis",
+			"what": "录屏/截图/PV 素材 → 证据链分析报告 → 你判定 → 复刻规格",
+			"out": "分析报告 / 复刻规格（`analysis\\`）"
 		},
 		{
-			"want": "写策划案 / 出 GDD / 整理成功能文档\"（主线成稿步，过程留痕+可读结果）",
-			"skill": "`/sr-gdd-human`"
+			"skill": "sr-gdd-human",
+			"what": "把入口产出落成**成稿**：只有纯规则与设计，决策留痕在附录 A，供你审核",
+			"out": "成稿（`gdd\\`）"
 		},
 		{
-			"want": "整合定稿 / 出正式版 GDD / 交给程序的策划案",
-			"skill": "`/sr-gdd-ai`"
+			"skill": "sr-config",
+			"what": "从成稿规则**派生**配置字段与记录，最小事务写入，读回验收",
+			"out": "配置工作簿（`gdd\\`）"
 		},
 		{
-			"want": "改定稿 / 修订定稿 / 调一下定稿里的某处",
-			"skill": "`/sr-gdd-fix`"
+			"skill": "sr-gdd-ai",
+			"what": "把成稿 + 配置表**整合成定稿**：程序可实现的粒度，含配置契约与多语言文本条目",
+			"out": "定稿（`gdd\\`）"
 		},
 		{
-			"want": "审查定稿 / 检查策划案 / 这稿能不能交程序",
-			"skill": "`/sr-gdd-review`"
+			"skill": "sr-gdd-fix",
+			"what": "定稿通过后的**唯一改动入口**：影响面扫描 + 最小编辑 + 决策记录",
+			"out": "定稿原地更新"
 		},
 		{
-			"want": "把定稿出成评审会用的 HTML / 做成宣讲页\"（用户调用型，需手动输入）",
-			"skill": "`/sr-gdd-html`"
+			"skill": "sr-gdd-html",
+			"what": "把定稿重排成评审会用的**单文件宣讲 HTML**（用户手动触发）",
+			"out": "宣讲稿（`gdd\\`）"
 		},
 		{
-			"want": "把这条规则落成配置表 / 加字段 / 建新表",
-			"skill": "`/sr-config`"
-		},
-		{
-			"want": "配英雄技能 / 把技能设计落到配置表\"（用户调用型，需手动输入）",
-			"skill": "`/skill-hero-config`（**配套技能，不属于 sr 系列**，随工作区技能目录走、不在插件里）"
-		},
-		{
-			"want": "新增/改 GID / 改多语言文案 / 导出 string_zh_CN / 翻译合并",
-			"skill": "`/sr-gtgenerator`"
+			"skill": "sr-gtgenerator",
+			"what": "GID 类型与多语言文本的增删改、翻译合并、导出 string_zh_CN 等",
+			"out": "`gtypes.xml` / `normaltxt.xml`"
 		}
 	],
 	"rules": [

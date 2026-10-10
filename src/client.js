@@ -345,11 +345,21 @@ function TeachingModal(props) {
 			// ③ 速查表
 			routes.length
 				? h("div", { key: "rt", style: { marginTop: GAP.lg } }, [
-					h("div", { key: "h", style: { fontSize: FONT.title, fontWeight: 600, marginBottom: GAP.sm } }, "我想做什么 → 用哪个"),
-					...routes.map((r, i) => h("div", { key: "r" + i, style: { display: "flex", gap: GAP.sm, alignItems: "baseline", fontSize: FONT.body } }, [
-						h("div", { key: "w", style: { flex: 1, minWidth: 0, color: V.ink } }, r.want),
-						h("div", { key: "a", style: { flex: "0 0 auto", color: V.idle } }, "→"),
-						h("div", { key: "s", style: { flex: "0 0 auto", color: LINK, fontFamily: MONO, fontSize: FONT.meta } }, String(r.skill).replace(/`/g, ""))
+					h("div", { key: "h", style: { fontSize: FONT.title, fontWeight: 600, marginBottom: GAP.sm } }, "skill 一览"),
+					...routes.map((r, i) => h("div", {
+						key: "r" + i,
+						style: { display: "flex", gap: GAP.sm, alignItems: "baseline", fontSize: FONT.body, marginBottom: GAP.xs }
+					}, [
+						// 第一列：技能名（等宽、链接色）；第二列：干什么；第三列：关键产出（弱色，可空）
+						h("div", {
+							key: "s",
+							style: { flex: "0 0 116px", color: LINK, fontFamily: MONO, fontSize: FONT.meta, whiteSpace: "nowrap" }
+						}, String(r.skill || "")),
+						h("div", { key: "w", style: { flex: 1, minWidth: 0, color: V.ink } }, rich(String(r.what || ""))),
+						r.out ? h("div", {
+							key: "o",
+							style: { flex: "0 0 auto", color: V.muted, fontSize: FONT.meta, whiteSpace: "nowrap" }
+						}, String(r.out).replace(/`/g, "")) : null
 					]))
 				])
 				: null,
