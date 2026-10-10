@@ -18,11 +18,11 @@
 │  ├─ generated/
 │  │  └─ skills.ts  # ★ 构建期生成、**入库**：11 个 sr 技能的正文 + 来源 sha256 清单（不要手改）
 │  ├─ client.js     # 浏览器半侧**组合根**（唯一知道 ctx / remote / store 的地方）→ lib/client.js
-│  ├─ pure/         # 零依赖纯函数（12 个）—— 决策记录解析 / 4 桶契约 / 产物分组 / 主题派生 /
-│  │                #   头脑风暴四入口 / 会话认领缓存 / 主题名校验 / 路径归一 / frontmatter
+│  ├─ pure/         # 零依赖纯函数（20 个）—— 决策记录解析 / 4 桶契约 / 产物分组 / 主题派生 /
+│  │                #   头脑风暴四入口 / 会话认领缓存 / 面板视图记忆 / 主题名校验 / 路径归一 / frontmatter
 │  ├─ port/         # WorkspacePort：接口 + 测试替身（node:fs 直读真实工作区）
 │  └─ load/         # 加载器 —— 只吃 port，产出视图模型（看板 / 功能详情 / 决策记录 / 建功能事实）
-├─ test/            # node --test 直跑（.ts 由 Node 的类型剥离加载）：124 个用例 + paths.ts 真实数据坐标
+├─ test/            # node --test 直跑（.ts 由 Node 的类型剥离加载）：170 个用例 + paths.ts 真实数据坐标
 ├─ lib/             # ★ 构建产物，**入库**（clone 即安装；不要手改）
 │  ├─ index.js      #   宿主半侧（运行时从 <包根>/skills/ 读 11 条技能正文 + 挂 resourceBase）
 │  └─ client.js     #   浏览器半侧
@@ -457,3 +457,22 @@ git show pre-migration-baseline:legacy/pre-migration/package.json
   渲染那一层由 `npm run smoke:render` 盯：自绘臂断言真出 `<table>`、标题、`<strong>`，
   官方臂断言**整份 md 原文真的交给了 `MarkdownText`**；
 - 设计稿：`outputs\技能用法弹窗-设计方案.md`；界面预览：`outputs\技能用法弹窗-界面预览.html`。
+
+## 面板视图记忆（从工作会话切回来，接着上次看）
+
+面板是主区里的一个槽组件：从工作会话切回工作台会**重挂载** —— `view` 若只放在组件 state 里，
+每次都会回到卡片墙，想接着看某个功能就得"卡片 → 模块页签"重头点一遍（用户口径 2026-10-10）。
+
+所以记住**两件事**：上次停在哪个功能（`topic`）＋ 那个功能里看的哪个模块（`mod`；`topic` 为空 = 卡片墙）。
+
+- **存哪**：`localStorage` 的 `sr-wb.view.v1`（与索引会话 / 工作会话两条缓存同一路，
+  键名、解析、序列化、容错都在 `src/pure/panelview.ts`；读写留在组合根 —— pure 层不许碰 `localStorage`）；
+- **什么时候读**：`view` 的 **惰性初值**（不是 effect）⇒ 第一帧就落在那个功能上，不会先闪一下卡片墙；
+- **什么时候写**：进功能 / 切模块 / 点〔‹ 卡片墙〕/ 新建完功能 —— 就这四处（渲染里不写状态）；
+- **模块名由 Panel 持有**（`view.mod`，受控）：`FeatureView` 里**没有**自己的 `useState` ——
+  两份状态必然漂移（功能恢复了、页签却回到头脑风暴）；
+- **容错**：坏 JSON / 未知模块名 / 那次记住的功能已经不在了 ⇒ **一律回卡片墙**（后者还会说一句为什么），
+  绝不抛、不假装记得、也不卡在「正在读…」；
+- **判据**：`test/pure-panelview.test.ts`（解析 / 序列化 / 容错）＋ `tools/render-smoke.mjs` 里
+  「视图记忆」两遍 —— 一遍是**只喂前 5 个 state**、让 `view` 走惰性初值（真机那条路：假 `localStorage`
+  里预置记忆 ⇒ 必须落在那个功能上），一遍是坏记忆 ⇒ 必须回卡片墙。

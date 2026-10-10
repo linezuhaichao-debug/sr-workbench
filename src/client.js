@@ -69,6 +69,8 @@ import {
 	workCacheDrop, workCacheGet, workCacheKey, workCachePut, workTitleFor
 } from "./pure/sessionpick.ts";
 import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
+// ★ 面板视图记忆（上次停在哪个功能 / 哪个模块）—— 切回工作台不用重头点，见 pure/panelview.ts
+import { panelModOf, panelViewKey, panelViewParse, panelViewSerialize } from "./pure/panelview.ts";
 import { inspectFeatureDir, loadCreateFacts } from "./load/create.ts";
 import { loadDashboard } from "./load/dashboard.ts";
 import { loadFeatureDetail } from "./load/feature.ts";
@@ -1295,7 +1297,13 @@ const MODULES = [
 
 function FeatureView(props) {
 	const d = props.detail;
-	const [mod, setMod] = React.useState("brainstorm");
+	/**
+	 * ★ 当前模块**由 Panel 持有**（`props.mod`），这里不再自己 `useState`。
+	 *   理由：它跟"上次打开的功能"是同一条记忆（`sr-wb.view.v1`）—— 面板要能一起读回、一起写回；
+	 *   两个地方各存一份必然漂移（切回面板时功能恢复了、页签却回到头脑风暴）。
+	 *   受控之后"切一个页签"= 一次 `setView`，Panel 顺手把记忆写掉（见 `goFeature`）。
+	 */
+	const mod = panelModOf(props.mod) || MODULES[0].id;
 	const items = MODULES.map((m) => Object.assign({}, m, {
 		count: m.id === "brainstorm" ? ((d.brainstorm && d.brainstorm.groups && d.brainstorm.groups.total) || 0)
 			: m.id === "decisions" ? ((d.decisions && d.decisions.log && d.decisions.log.entries.length) || 0)
@@ -1347,7 +1355,7 @@ function FeatureView(props) {
 				"这个功能缺桶：" + d.missing.join("、") + " —— 面板只建不删，不会替你补，请手工建这几个目录。")
 			: null,
 		h(Notice, { key: "n", notice: props.notice }),
-		h(TabBar, { key: "tabs", items: items, view: mod, onPick: setMod }),
+		h(TabBar, { key: "tabs", items: items, view: mod, onPick: props.onModPick }),
 		mod === "brainstorm" ? h(BrainstormModule, {
 			detail: d, onOpen: props.onOpen, onSend: props.onSendBrainstorm,
 			sending: props.sending, notice: null, sessionNote: props.sessionNote
@@ -1439,7 +1447,21 @@ function Panel(props) {
 			setNotice({ kind: "err", text: "发起配置失败：" + String((e && e.message) || e) });
 		}
 	};
-	const [view, setView] = React.useState({ kind: "cards" });
+	/**
+	 * ★ **视图状态**（卡片墙 / 某功能的某模块）—— 初值从 `localStorage` 的"上次打开的状态"恢复。
+	 *
+	 *   面板是主区里的一个槽组件：从工作会话切回工作台会**重挂载** ⇒ 不恢复的话每次都回到
+	 *   卡片墙、重头点一遍（用户口径 2026-10-10）。恢复是**惰性初值**（不是 effect）：第一帧
+	 *   就落在那个功能上，不会先闪一下卡片墙再跳过去；`dash` 还没到之前显示「正在读「X」…」。
+	 *
+	 *   `mod` 与 `topic` 放在**同一个对象**里（不另开一个 useState）⇒ 面板的 hook 位置一个没动
+	 *   （渲染冒烟的状态脚本按位置喂，动了就得连脚本一起改），而且"功能 + 模块"天然同生同死。
+	 */
+	const [view, setView] = React.useState(() => {
+		const mem = panelViewParse(typeof props.__viewCacheRaw === "function" ? props.__viewCacheRaw() : null);
+		if (mem.topic === "") return { kind: "cards" };
+		return { kind: "feature", topic: mem.topic, mod: panelModOf(mem.mod) || MODULES[0].id };
+	});
 	const [detail, setDetail] = React.useState(null);
 	const [rev, setRev] = React.useState(0);
 	const [sending, setSending] = React.useState(false);
@@ -1450,6 +1472,26 @@ function Panel(props) {
 
 	const refresh = React.useCallback(() => setRev((n) => n + 1), []);
 	const rowsKey = sessionRows.length + "|" + wsPaths.length + "|" + (archived === null ? "?" : archived.length);
+
+	/**
+	 * 把"上次打开的状态"记下来（卡片墙 = 空 topic）。写失败只影响下次恢复，**不影响这次界面**。
+	 * ★ 只在**动视图的那几处**调用：进功能 / 切模块 / 回卡片墙 —— 不在渲染里写（渲染要纯）。
+	 */
+	const remember = (v) => {
+		if (typeof props.__viewCacheSet !== "function") return;
+		const t = v && v.kind === "feature" ? v.topic : "";
+		props.__viewCacheSet(t, t === "" ? "" : panelModOf(v.mod) || MODULES[0].id);
+	};
+	/** 进某个功能（`mod` 给空 ⇒ 从默认模块开始；恢复走的是上面那个惰性初值，不经过这里）。 */
+	const goFeature = (topic, mod) => {
+		const v = { kind: "feature", topic: topic, mod: panelModOf(mod) || MODULES[0].id };
+		setView(v);
+		remember(v);
+	};
+	const goCards = () => {
+		setView({ kind: "cards" });
+		remember({ kind: "cards" });
+	};
 
 	// ① 解析索引会话（读通道）
 	React.useEffect(() => {
@@ -1536,6 +1578,18 @@ function Panel(props) {
 		return () => clearInterval(t);
 	}, [sid, topic]);
 
+	/**
+	 * ⑤ 恢复出来的那个功能**还在不在**：卡片墙读完才知道（改名 / 删了 / 换了工作区都会落空）。
+	 *   落空 ⇒ 回卡片墙，并**把那条记忆也擦掉**（自愈：否则每次切回来都白跑一趟、卡在「正在读…」），
+	 *   同时如实说一句为什么。判据是"卡片墙已经读到了"（`dash` 非空），不是"这轮读不到根目录"。
+	 */
+	React.useEffect(() => {
+		if (!idx || !idx.ok || !dash || view.kind !== "feature") return;
+		if (rootOf(view.topic) !== "") return;
+		goCards();
+		setNotice({ kind: "warn", text: "上次打开的功能「" + view.topic + "」没找到（可能改名或删了）—— 已回到卡片墙。" });
+	}, [sid, dash, topic]);
+
 	// ── 动作 ──────────────────────────────────────────────────────────
 	const openAbs = (abs) => {
 		props.__open(abs).then(
@@ -1576,7 +1630,8 @@ function Panel(props) {
 				setPlan(null);
 				setNotice({ kind: "ok", text: r.doneText, next: (r.notes || []).join("　") });
 				refresh();
-				setView({ kind: "feature", topic: r.topic });
+				// ★ 新建完就进它的详情：顺带把"上次打开的状态"写成这个新功能（切回来还在它上面）
+				goFeature(r.topic, "");
 			},
 			(e) => { setNewBusy(false); setNotice({ kind: "err", text: "新建失败：" + String((e && e.message) || e) }); }
 		);
@@ -1645,7 +1700,7 @@ function Panel(props) {
 		idx && idx.ok && !idx.needConfig && view.kind === "cards"
 			? h(Dashboard, {
 				key: "dash", dash: dash, phase: phase, notice: notice,
-				onRefresh: refresh, onOpen: (t) => { setNotice(null); setView({ kind: "feature", topic: t }); },
+				onRefresh: refresh, onOpen: (t) => { setNotice(null); goFeature(t, ""); },
 				onNew: () => { setPlan(null); setNewOpen(true); },
 				newOpen: newOpen, newTopic: newTopic, plan: plan, busy: newBusy,
 				onTopic: onTopic, onSubmit: submitNew,
@@ -1656,7 +1711,12 @@ function Panel(props) {
 			? (detail
 				? h(FeatureView, {
 					key: "fv", detail: detail, phase: phase, notice: notice,
-					onBack: () => { setNotice(null); setView({ kind: "cards" }); },
+					/**
+					 * ★ 当前模块跟着 `view.mod` 走（受控），切换时回写记忆 ——
+					 *   这样"面板重挂载后回到上次那个页签"才是真的（见 `FeatureView` 里的说明）。
+					 */
+					mod: view.mod, onModPick: (m) => goFeature(view.topic, m),
+					onBack: () => { setNotice(null); goCards(); },
 					onRefresh: refresh, onOpen: openAbs, onOpenAbs: openAbs,
 					onSendBrainstorm: sendBrainstorm, sending: sending,
 					sessionId: sessionId,
@@ -1804,6 +1864,23 @@ export function apply(ctx, config) {
 			const raw = workCacheRaw();
 			localStorage.setItem(workCacheKey(), sid === null || sid === void 0 ? workCacheDrop(raw, root) : workCachePut(raw, root, sid));
 		} catch (e) { /* 无缓存也能用 */ }
+	};
+	/**
+	 * ★ **面板视图记忆**：上次停在哪个功能 / 哪个模块（用户口径 2026-10-10）。
+	 *   与上面两条缓存同一路（`localStorage` + 只在组合根里读写；解析/序列化在 pure 层）。
+	 *   读不到 / 坏值 ⇒ 面板照旧从卡片墙开始，什么都不影响。
+	 */
+	const viewCacheRaw = () => {
+		try {
+			if (typeof localStorage === "undefined" || !localStorage) return null;
+			return localStorage.getItem(panelViewKey());
+		} catch (e) { return null; }
+	};
+	const viewCacheSet = (topic, mod) => {
+		try {
+			if (typeof localStorage === "undefined" || !localStorage) return;
+			localStorage.setItem(panelViewKey(), panelViewSerialize(topic, mod));
+		} catch (e) { /* 记不住也能用 */ }
 	};
 
 	/** 本机权限预设目录（一页只读一次；读不到就 `null`，按最坏情况处理）。 */
@@ -2403,6 +2480,9 @@ export function apply(ctx, config) {
 				__createFeature: createFeature,
 				__sendBrainstorm: (root, text) => sendToWorkSession(root, text),
 				__workSessionOf: (root) => WORK_SESSION.get(normPath(root)) || workCacheGet(workCacheRaw(), root) || "",
+				/** 上次打开的状态：面板第一帧读它、动视图时写它（见 `pure/panelview.ts`）。 */
+				__viewCacheRaw: viewCacheRaw,
+				__viewCacheSet: viewCacheSet,
 				__open: openAbs,
 				__openSession: openSession
 			})));

@@ -32,7 +32,13 @@ const target = process.argv[2] ? path.resolve(process.argv[2]) : path.join(REPO,
 // 迷你 React
 // ════════════════════════════════════════════════════════════════════════════
 
-/** 按**组件名**喂状态：`{ Panel: [v0, v1, …], FeatureView: [...] }`；没喂就用 useState 的初始值。 */
+/**
+ * 按**组件名**喂状态：`{ Panel: [v0, v1, …] }`；没喂（或喂到一半没了）就用 `useState` 的初值。
+ *
+ * ★ 8.1.0 起**不再有 `FeatureView: [...]`**：模块名（页签）由 Panel 的 `view.mod` 携带（受控），
+ *   所以"切页签"这件事在这里是喂 `Panel` 的第 6 个值（`{ kind: "feature", topic, mod }`）。
+ *   给少了还有第二个用处 —— 让 `useState` 走**惰性初值**（视图记忆就是这么被测到的，见 ②'）。
+ */
 let scripts = {};
 let curName = "";
 let curIdx = 0;
@@ -138,10 +144,30 @@ function renderToText(node, out = [], depth = 0) {
 // 载入 bundle（与 smoke-client.mjs 同一条接缝）
 // ════════════════════════════════════════════════════════════════════════════
 
+/**
+ * **假 `localStorage`**：面板的三条缓存（索引会话 / 工作会话 / 视图记忆）都走它。
+ *
+ * ★ 为什么要有它（8.1.0）：视图记忆（"上次停在哪个功能 / 哪个模块"）是在**组合根**里读写的
+ *   （`localStorage.getItem/setItem`），`PanelBound` 会把宿主的实现直接注入给 `Panel` ——
+ *   所以从 slot props 那头喂不进去。给沙箱一个真能存取的 `localStorage`，被测的就是
+ *   **真机那条路**：`localStorage → panelViewParse → 第一帧的 view`。
+ *   `pass()` 每遍开头按脚本里的 `__viewCacheRaw` 预置（相当于"上次停在那儿"）。
+ */
+const fakeStorage = new Map();
+const localStorageStub = {
+	getItem: (k) => (fakeStorage.has(String(k)) ? fakeStorage.get(String(k)) : null),
+	setItem: (k, v) => { fakeStorage.set(String(k), String(v)); },
+	removeItem: (k) => { fakeStorage.delete(String(k)); },
+	clear: () => { fakeStorage.clear(); },
+	key: (i) => Array.from(fakeStorage.keys())[i] ?? null,
+	get length() { return fakeStorage.size; }
+};
+
 const src = fs.readFileSync(target, "utf8");
 const registrations = [];
 const sandbox = {
 	window: { __ModuleLoader__: { load: (r) => registrations.push(r) }, location: { origin: "http://127.0.0.1:3080" } },
+	localStorage: localStorageStub,
 	console, Symbol, Object, Array, String, Number, Boolean, Date, Math, JSON, Map, Set, WeakMap, WeakSet,
 	Promise, RegExp, Error, TypeError, RangeError, URL, URLSearchParams, TextEncoder, TextDecoder,
 	setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask
@@ -216,7 +242,10 @@ const mainEntry = registered.filter((r) => r.options && r.options.name === "main
 const sideEntry = registered.filter((r) => r.options && r.options.name === "sidebar.panellist")[0];
 if (!mainEntry || typeof mainEntry.component !== "function") throw new Error("apply 没有注册 main 槽（或不是函数组件）");
 
-/** 面板会从 slot props 里拿到的那两个 hook + 打开文件的回调。 */
+/**
+ * 面板会从 slot props 里拿到的那两个 hook + 打开文件的回调。
+ * （视图记忆**不走这里** —— 它在组合根里读写 `localStorage`，见上面那个假 `localStorage`。）
+ */
 const slotProps = {
 	useSessions: (sel) => sel({ ids: [], byId: {} }),
 	useWorkspaces: (sel) => sel({ items: [] }),
@@ -233,6 +262,9 @@ let lastTags = [];
 function pass(name, script, mustHave) {
 	scripts = script;
 	tags = [];
+	// ★ 视图记忆：脚本给 `__viewCacheRaw` 就相当于"上次停在那儿"（写进假 localStorage 再渲染）
+	fakeStorage.clear();
+	if (typeof script.__viewCacheRaw === "string") fakeStorage.set("sr-wb.view.v1", script.__viewCacheRaw);
 	const text = renderToText(mainEntry.component(slotProps)).join(" ");
 	lastTags = tags.filter((t, i) => tags.indexOf(t) === i);
 	const missing = mustHave.filter((s) => !text.includes(s));
@@ -279,6 +311,27 @@ pass("卡片墙", {
 	"刷新", "使用说明"
 ]);
 
+// ── ②' 视图记忆：从工作会话切回工作台（面板**重挂载**）后，落回上次那个功能 ──────────
+//   用户口径 2026-10-10：以前每次切回来都回到卡片墙，想进那个功能得重头点。
+//   ★ 脚本**只喂前 5 个 useState**（idx / phase / notice / dash / wiz）⇒ `view` 走它自己的
+//     **惰性初值**（真机上是 localStorage 的那条记忆）—— 不喂状态，看它自己恢复成什么。
+//   ★ 只断言"恢复了那个功能"这一层：详情数据没喂（第 7 位起都是初值 null）
+//     ⇒ 屏幕上是「正在读「联盟讨伐」…」，而不是卡片墙。
+pass("视图记忆 · 切回来落回上次那个功能", {
+	Panel: [INDEX, "idle", null, DASH, null],
+	__viewCacheRaw: JSON.stringify({ topic: "联盟讨伐", mod: "decisions" })
+}, ["正在读「联盟讨伐」…"]);
+
+// 反面：记忆坏掉 / 没记过 ⇒ **老老实实从卡片墙开始**，绝不猜、也不卡在「正在读…」
+const badMem = pass("视图记忆 · 坏记忆回卡片墙", {
+	Panel: [INDEX, "idle", null, DASH, null],
+	__viewCacheRaw: "{这不是 JSON"
+}, ["策划工作台", "功能 2", "使用说明", "联盟讨伐"]);
+if (badMem.includes("正在读")) {
+	results.push({ pass: "视图记忆 · 坏记忆", missing: ["（坏记忆不该被当成一个功能去读）"] });
+	console.error("✗ [视图记忆] 坏掉的记忆被当成了功能");
+}
+
 // ── ③ 功能详情：三块数据都用**真实工作区**喂进去 ──────────────────────────
 async function realDetail() {
 	try {
@@ -306,15 +359,17 @@ if (/contentVisibility/.test(bundleSrc)) {
 if (real) {
 	// 真数据那两遍**只断言"渲染得出来、该在的字在"** —— 真数据里有什么内容是数据的事，
 	// 不是这一层的判据（本仓库的测试纪律：条数不写死）。
-	const realPanel = [INDEX, "idle", null, DASH, null, { kind: "feature", topic: real.topic }, real.detail, 0, false, false, "", false, null];
-	pass("详情 · 真数据（" + real.topic + "）· 头脑风暴", { Panel: realPanel }, [
+	// ★ 8.1.0 起模块名（`mod`）**由 Panel 的 view 携带**（受控）—— 不再是 `FeatureView` 自己的 useState。
+	const realPanel = (mod) => [INDEX, "idle", null, DASH, null,
+		{ kind: "feature", topic: real.topic, mod: mod || "brainstorm" }, real.detail, 0, false, false, "", false, null];
+	pass("详情 · 真数据（" + real.topic + "）· 头脑风暴", { Panel: realPanel("") }, [
 		real.topic, "头脑风暴", "决策记录", "最终产物",
 		// ★ 「已有的分析结论」这个**标题**已按用户口径删掉（2026-10-09）—— 列表本体还在，断言改盯列表
 	"四个入口", "竞品分析", "问答式访谈", "旧文档分析", "人工补充"
 	]);
 	// ★ 「这个功能的 4 个桶」整块已去掉；这里只该有五组产物（组头带桶名小字）
 	//   搬完位置后：变更集与验收报告在 gdd\ 那一类里（这两条断言就是搬迁的实测证据）
-	pass("详情 · 真数据（" + real.topic + "）· 最终产物", { Panel: realPanel, FeatureView: ["outputs"] }, [
+	pass("详情 · 真数据（" + real.topic + "）· 最终产物", { Panel: realPanel("outputs") }, [
 		"最终产物", "头脑风暴的产物", "成稿", "定稿", "宣讲稿", "配置表", "analysis\\", "gdd\\",
 		"CS-20261009-001.yaml", "CS-20261009-001_读回验收报告.md"
 	]);
@@ -437,25 +492,35 @@ const DETAIL = {
 	counts: { brainstorm: 1, draft: 1, final: 1, speech: 1, config: 2, other: 1, evidence: 1, decisions: 2, total: 6 }
 };
 
-const featureScript = {
-	Panel: [INDEX, "idle", null, DASH, null, { kind: "feature", topic: TOPIC }, DETAIL, 0, false, false, "", false, null]
-};
+/**
+ * 详情页那几遍的脚本。
+ *
+ * ★ 8.1.0 起**模块名在 Panel 的 view 里**（`mod`，受控）—— 不再靠喂 `FeatureView: ["outputs"]` 切页签。
+ *   理由：模块名跟"上次打开的功能"是同一条记忆（`sr-wb.view.v1`），状态必须只有一处
+ *   （见 `src/client.js` 里 `FeatureView` 的说明）；这里跟着真机一起改。
+ */
+const featureScript = (mod) => ({
+	Panel: [INDEX, "idle", null, DASH, null,
+		{ kind: "feature", topic: TOPIC, mod: mod || "brainstorm" }, DETAIL, 0, false, false, "", false, null]
+});
 
-pass("详情 · 三块都在（合成）", featureScript, [
+pass("详情 · 三块都在（合成）", featureScript(""), [
 	TOPIC, "头脑风暴（2）", "决策记录（2）", "最终产物（6）",
 	"四个入口", "竞品分析", "问答式访谈", "旧文档分析", "人工补充",
 	"其他 / 来源未知（1）", "固定格式的两类产物", "原话：「血条全盟共享」", "读不动的文件",
 	"顺带一句提示"
 ]);
 
-pass("详情 · 决策记录（合成）", Object.assign({}, featureScript, { FeatureView: ["decisions"] }), [
+// ★ 页签由 `view.mod` 决定（`FeatureView` 里没有自己的 state 了）—— 这一遍同时是"受控之后
+//   模块名真能落到界面"的判据（写成 `FeatureView: ["decisions"]` 已经不再管用了）
+pass("详情 · 决策记录（合成）", featureScript("decisions"), [
 	"这个功能的所有决策都记在同一个文件里", "共 2 条", "最近一条 2026-10-08 16:02:11",
 	// ★ 有真实条目时**不再**显示「条目格式」模板（用户口径：不额外占位置）
 	"全部决策", "2026-10-08 14:23:05", "第 1 条", "采用方案 A", "§4 R2 要改", "附带一条列表项",
 	"2026-10-08 16:02:11", "定稿门", "没有时间戳"
 ]);
 
-const outText = pass("详情 · 最终产物（合成）", Object.assign({}, featureScript, { FeatureView: ["outputs"] }), [
+const outText = pass("详情 · 最终产物（合成）", featureScript("outputs"), [
 	"最终产物", "头脑风暴的产物", "成稿", "定稿", "宣讲稿", "最新定稿", "现有 2 份",
 	"其它（不属上面四类）",
 	"不是 4 个桶的目录（如实列出）：source", "功能根下的散文件：feature.json"
@@ -466,16 +531,16 @@ for (const gone of ["这个功能的 4 个桶", "只有四类", "evidence\\", "d
 }
 
 // 折叠区**默认是收起的**（收起时里面的字根本不渲染）——把 Fold 强制展开，走一遍展开分支
-pass("详情 · 最终产物（展开「其它」）", Object.assign({}, featureScript, { FeatureView: ["outputs"], Fold: [true] }), [
+pass("详情 · 最终产物（展开「其它」）", Object.assign(featureScript("outputs"), { Fold: [true] }), [
 	"其它（不属上面四类）", "审查", "联盟讨伐_20260921_定稿_审查.md"
 ]);
 
 // ── ④' 决策记录：有真实条目时**不该**出现「条目格式」模板 ──────────────
-const decisionText = pass("决策记录 · 无模板（合成）", Object.assign({}, featureScript, { FeatureView: ["decisions"] }), ["全部决策", "采用方案 A"]);
+const decisionText = pass("决策记录 · 无模板（合成）", featureScript("decisions"), ["全部决策", "采用方案 A"]);
 if (decisionText.includes("条目格式")) { results.push({ pass: "决策记录 · 无模板", missing: ["（不该有）条目格式"] }); console.error("✗ [决策记录] 有真实条目时还在显示「条目格式」模板"); }
 // 没有条目时**要**出现（那是唯一需要它的场合）
 const emptyLog = Object.assign({}, DETAIL, { decisions: { rel: "decisions/决策记录.md", abs: "D:\\X\\decisions\\决策记录.md", readError: "", log: { present: false, entries: [], issues: [], preamble: "", title: "", text: "" } } });
-pass("决策记录 · 空文件要有模板（合成）", Object.assign({}, featureScript, { Panel: [INDEX, "idle", null, DASH, null, { kind: "feature", topic: TOPIC }, emptyLog, 0, false, false, "", false, null], FeatureView: ["decisions"] }), ["条目格式", "还没有决策记录"]);
+pass("决策记录 · 空文件要有模板（合成）", Object.assign(featureScript("decisions"), { Panel: [INDEX, "idle", null, DASH, null, { kind: "feature", topic: TOPIC, mod: "decisions" }, emptyLog, 0, false, false, "", false, null] }), ["条目格式", "还没有决策记录"]);
 
 // ── ⑤ 新建表单（开着、并且已经算好计划）────────────────────────────────
 const plan = {
