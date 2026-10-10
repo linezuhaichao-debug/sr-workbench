@@ -27,7 +27,7 @@ description: sr 系列 skill 的配置与使用教学：首次用 sr-* 时（con
 
 用户问"sr 系列怎么用"、"有哪些 skill"、"/sr-concept 是什么"时：**读 `references/使用说明.md`，按原文讲** —— 不要在这里、也不要在记忆里另起一份（两份教学内容一定会漂移）。要更细的用法再展开 `references/teaching/` 下对应的使用卡（与各工作流 skill 一一对应；`sr-askme` 自身不设卡）。
 
-★ 那份 md 同时是面板〔技能用法〕弹窗的正文：构建期由 `npm run gen:teaching` 快照进 `src/generated/teaching.js`，弹窗**按 md 原样渲染**；`npm run check:teaching` 盯住"快照 == 该 md 的字节"。
+★ 那份 md 同时是面板〔使用说明〕弹窗（2026-10-10 由〔技能用法〕改名）的正文：构建期由 `npm run gen:teaching` 快照进 `src/generated/teaching.js`，弹窗**按 md 原样渲染**；`npm run check:teaching` 盯住"快照 == 该 md 的字节"。
 
 ## 三、产出落盘位置（**一个功能一个目录**，里面只有 4 个桶）
 
@@ -58,7 +58,7 @@ description: sr 系列 skill 的配置与使用教学：首次用 sr-* 时（con
 | `references/decision-recording.md` | 决策记录写入规范：**一个功能只有一个决策文件** `decisions\决策记录.md`，条目 = 时间（年月日时分秒）+ 决策内容；什么时候写、怎么写、写完怎么说 | **10 个 sr-* skill 全部挂了指针**（在「按需读取」或第 0 步的共享语境清单里）；配套技能 `skill-hero-config` 也挂了 —— v5 起**不止 Human Gate**：只要定下了一件事就记 |
 | `references/bare-invocation.md` | 裸调用行为：先说明需要什么输入再停下等用户 | sr-concept / sr-analysis / sr-gdd-human / sr-gdd-ai / sr-gdd-fix / sr-gdd-review / sr-gdd-html 的「无输入时的行为」节；config 系三个 skill 无此节 |
 | `references/calibration-recording.md` | 校准记录：Gate 前用户迭代输入的实时留痕（触发时机、jsonl 格式、会话恢复） | sr-concept 第 5 步 / sr-analysis 第 6 步（设计稿与规格迭代循环）；sr-gdd-human 第 5 步 / sr-gdd-ai 第 6 步（门内 revise 循环）；无迭代循环的 skill 不写 |
-| `references/使用说明.md` | **使用教学正文**（给人看的那份）：主线五步、旁支、skill 一览、术语、产出落盘摘要、两条共用规矩的指针 | sr-askme 自己（用户问用法时**按原文讲**）；面板〔技能用法〕弹窗（构建期快照，见 `tools/gen-teaching.mjs`）—— 其它 sr-* skill 不引用它 |
+| `references/使用说明.md` | **使用教学正文**（给人看的那份）：主线五步、旁支、skill 一览、术语、产出落盘摘要、两条共用规矩的指针 | sr-askme 自己（用户问用法时**按原文讲**）；面板〔使用说明〕弹窗（构建期快照，见 `tools/gen-teaching.mjs`）—— 其它 sr-* skill 不引用它 |
 
 本区文件缺失（未成组安装）时，各 skill 第 0 步读不到共享文件：向用户报告缺的是 sr-askme 的兄弟目录，并说明**整套 sr-* 技能随插件分发**（见 §五）。
 

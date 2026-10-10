@@ -49,7 +49,7 @@ import { relTimeOf } from "./pure/reltime.ts";
 import { groupTimeline } from "./pure/timeline.ts";
 import { hasBold, inlineRuns } from "./pure/richtext.ts";
 import { labelLineOf } from "./pure/labels.ts";
-// ★ 技能用法快照（构建期生成；面板直接读，不走网络 —— 见 tools/gen-teaching.mjs 的文件头）
+// ★ 使用说明快照（构建期生成；面板直接读，不走网络 —— 见 tools/gen-teaching.mjs 的文件头）
 import { TEACHING } from "./generated/teaching.js";
 // ★ 设计令牌：间距/字号/圆角/动效的唯一参数源（面板里不许再写裸数字）
 import { ALIAS as V, COLOR, FONT, GAP, LEADING, LINE, RADIUS, SHADOW } from "./ui/tokens.js";
@@ -58,7 +58,7 @@ import {
 } from "./pure/configentry.ts";
 // ★ 官方 UI 原子库的唯一引入点（守卫式：拿不到就退回自绘控件）—— 见 `src/ui/atoms.js` 的文件头
 import { HAS_PRIMITIVES, PRIMITIVES, isComponent, primitivesNote } from "./ui/atoms.js";
-// ★ md 渲染器（自绘那支）：技能用法弹窗**按 md 原样渲染**；拿得到官方 MarkdownText 时优先用它
+// ★ md 渲染器（自绘那支）：使用说明弹窗**按 md 原样渲染**；拿得到官方 MarkdownText 时优先用它
 import { mdView } from "./ui/mdview.js";
 import {
 	ARCHIVED_CACHED_NOTE, FOREIGN_CACHE_NOTE, NO_ARCHIVE_INFO_NOTE,
@@ -119,6 +119,15 @@ const PRE = {
 	maxHeight: "300px", overflow: "auto"
 };
 
+/**
+ * **头部动作按钮的统一高度**（px）。
+ *
+ * 卡片墙头部（〔刷新〕〔使用说明〕）与功能详情头部（〔刷新〕〔打开会话〕）是同一套位置：
+ * 都是右侧两个按钮、刷新在前、字数也一样（2 + 4）。几何也走**同一个值** ——
+ * 见 `Btn` 的 `h` 说明（官方 `Button` 带 icon 时基线取图标底边，会与纯文字按钮差 3px）。
+ */
+const HEAD_BTN_H = 28;
+
 // ════════════════════════════════════════════════════════════════════════════
 // 小部件
 // ════════════════════════════════════════════════════════════════════════════
@@ -151,6 +160,31 @@ function Btn(props) {
 	const off = !!props.off;
 	/** ★ `big`：主行动按钮放大一档（用户口径：「这个按钮放大一下」—— 头脑风暴的〔交给工作会话〕）。 */
 	const big = !!props.big;
+	/**
+	 * ★ `h`：把头部按钮的**行内几何**钉成一套 —— 同一行里必须"看着一模一样"的一组按钮都传它。
+	 *
+	 * 2026-10-10 用户实测：卡片墙的〔刷新〕与旁边的〔技能用法〕"高度不一样"。
+	 * 量了真机截图 + 官方 `dsh-client-ui-primitives` 的 `Button.module.css` 之后，**真因不是高度**：
+	 *   · 官方 `.sm` 本来就 `height: 28px` 且 `box-sizing: border-box`（描边不吃高度）；
+	 *   · 两个按钮**都是 28px**，差的是**竖直位置**：〔刷新〕上边 y=77、〔技能用法〕上边 y=80（差 3px）。
+	 *   · 根因是那行的 `alignItems: "baseline"`：带 `icon` 的按钮，基线取的是**图标的底边**
+	 *     （图标是 replaced 元素，基线 = 其下外边距边），比纯文字按钮的**文字基线**低 ⇒
+	 *     基线对齐把纯文字那个**往下推了 3px**，看着就成了"一个高一个矮"。
+	 *
+	 * 治法：
+	 *   · `alignSelf: "center"` —— 头部动作按钮按行**居中**，绕开基线这一层（这才是那条 3px）；
+	 *   · 高度显式钉成同一个值 ⇒ 官方臂 / 自绘臂、带 icon / 不带 icon，四个按钮完全一致
+	 *     （自绘臂本来没有 `.sm` 那 28px，不钉就会跟官方臂差一截）。
+	 * ★ 只给这一组按钮加 `alignSelf`，头部那行的 `alignItems: "baseline"` **不动** ——
+	 *   「策划工作台 / 功能 N ｜ 路径」那两段不同字号的文字还得靠它压在同一条基线上。
+	 */
+	const hpx = props.h ? props.h + "px" : null;
+	const fit = hpx
+		? {
+			height: hpx, minHeight: hpx, boxSizing: "border-box", alignSelf: "center",
+			paddingTop: 0, paddingBottom: 0, display: "inline-flex", alignItems: "center", lineHeight: 1
+		}
+		: null;
 	const [hover, setHover] = React.useState(false);
 	if (HAS_PRIMITIVES) {
 		const primary = tone === "primary";
@@ -173,14 +207,15 @@ function Btn(props) {
 					// 次按钮：官方 `outline` 的描边是 `--dsw-alias-border-l3` 且只有 0.5px，白底上看不见 ——
 					// 换成契约里的 `--dsw-alias-border-l2`（1px），这才是"看得出是按钮"
 					: { border: "1px solid " + V.line2 },
-				big ? { fontSize: FONT.body, padding: "6px 16px", fontWeight: 600 } : null
+				big ? { fontSize: FONT.body, padding: "6px 16px", fontWeight: 600 } : null,
+				fit
 			)
 		}, props.label);
 	}
 	return h("button", {
 		type: "button", disabled: off, title: props.title || "",
 		onClick: off ? void 0 : props.onPick,
-		style: {
+		style: Object.assign({
 			font: "inherit", fontSize: FONT.body,
 			// ★ `big` 在这一支也要放大（两条臂观感一致：拿到官方组件 / 拿不到时的自绘）
 			padding: big ? "6px 16px" : "4px 11px",
@@ -191,7 +226,7 @@ function Btn(props) {
 			background: tone === "primary" ? ACCENT_FILL : "transparent",
 			color: tone === "primary" ? "#fff" : V.ink,
 			opacity: off ? 0.45 : 1
-		}
+		}, fit)
 	}, props.label);
 }
 
@@ -273,7 +308,7 @@ function Notice(props) {
 }
 
 /**
- * **技能用法弹窗**（T1）。
+ * **使用说明弹窗**（T1；面板上那个按钮 2026-10-10 由〔技能用法〕改名〔使用说明〕）。
  *
  * 内容**全部来自**包内 `skills/sr-askme/references/使用说明.md`：构建期由 `npm run gen:teaching`
  * 把它**整份**快照进 `src/generated/teaching.js`，弹窗直接 `import`。
@@ -324,9 +359,14 @@ function TeachingModal(props) {
 		style: { position: "fixed", inset: 0, background: "#0000002e", zIndex: 50, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "9vh" }
 	}, [
 		h("div", {
-			key: "m", role: "dialog", "aria-modal": "true", "aria-label": "SR 系列技能用法",
+			key: "m", role: "dialog", "aria-modal": "true", "aria-label": "SR 系列技能使用说明",
 			style: {
-				width: "min(820px, calc(100% - 48px))", maxHeight: "78vh", display: "flex", flexDirection: "column",
+				/**
+				 * ★ 宽度（用户口径 2026-10-10：「弹窗整体拉宽一点，参考我这个 md 查看应用的显示效果」）。
+				 *   820px 时 `skill 一览` 那张三列表被挤成窄条、长单元格频繁折行；1120px 下三列都舒展，
+				 *   观感接近一个正常的 md 阅读器。**窄屏仍然安全**：`calc(100% - 48px)` 兜住两边留白。
+				 */
+				width: "min(1120px, calc(100% - 48px))", maxHeight: "78vh", display: "flex", flexDirection: "column",
 				background: "var(--dsw-alias-bg-layer-1)", border: "1px solid " + V.line2, borderRadius: RADIUS.card, boxShadow: SHADOW.float
 			}
 		}, [
@@ -740,7 +780,7 @@ function Dashboard(props) {
 	const d = props.dash || {};
 	const feats = d.features || [];
 	const nothing = feats.length === 0 && props.phase !== "loading";
-	/** ★ 技能用法弹窗的开合状态（T1）。放在 Dashboard 里 ⇒ 不动 Panel 的 useState 位置（渲染冒烟的状态脚本按位置喂）。 */
+	/** ★ 使用说明弹窗的开合状态（T1）。放在 Dashboard 里 ⇒ 不动 Panel 的 useState 位置（渲染冒烟的状态脚本按位置喂）。 */
 	const [teachOpen, setTeachOpen] = React.useState(false);
 	return h("div", null, [
 		/**
@@ -768,9 +808,10 @@ function Dashboard(props) {
 				style: { fontSize: FONT.body, color: V.muted, fontVariantNumeric: "tabular-nums" }
 			}, "功能 " + feats.length + (d.srWs ? "　｜　" + d.srWs : "")),
 			h("div", { key: "s", style: { flex: 1 } }),
-			Btn({ key: "r", label: "刷新", icon: PRIMITIVES && PRIMITIVES.IconRefreshOutlineRegular, onPick: props.onRefresh, off: props.phase === "loading" }),
-			// ★ 〔技能用法〕（T1）：弹出 SR 系列技能的工作流程说明，内容来自宿主读的 askme 素材
-			Btn({ key: "t", label: "技能用法", onPick: () => setTeachOpen(true) })
+			Btn({ key: "r", label: "刷新", h: HEAD_BTN_H, icon: PRIMITIVES && PRIMITIVES.IconRefreshOutlineRegular, onPick: props.onRefresh, off: props.phase === "loading" }),
+			// ★ 〔使用说明〕（T1；原名〔技能用法〕—— 用户口径 2026-10-10：「改名 使用说明」）：
+			//   弹出 SR 系列技能的工作流程说明，内容来自包内 askme 素材
+			Btn({ key: "t", label: "使用说明", h: HEAD_BTN_H, onPick: () => setTeachOpen(true) })
 			// ★ 这里的〔＋ 新建功能〕按钮**挪到卡片墙最后一张卡**了（用户口径：
 			//   「新建功能改成最后一个卡片里一个大大的加号和新建功能的文本 的样式」）。
 		]),
@@ -827,7 +868,7 @@ function Dashboard(props) {
 		HAS_PRIMITIVES ? null : h("div", {
 			key: "__ui", style: { fontSize: FONT.meta, color: V.idle, marginTop: GAP.md }
 		}, primitivesNote()),
-		// ★ 技能用法弹窗（T1）：只在打开时挂载 ⇒ 关闭即卸载，Esc 监听也跟着卸掉
+		// ★ 使用说明弹窗（T1）：只在打开时挂载 ⇒ 关闭即卸载，Esc 监听也跟着卸掉
 		teachOpen ? h(TeachingModal, { key: "__teach", onClose: () => setTeachOpen(false) }) : null
 	]);
 }
@@ -1268,8 +1309,14 @@ function FeatureView(props) {
 			BackBtn({ key: "back", onPick: props.onBack }),
 			h("div", { key: "t", style: { fontSize: FONT.page, fontWeight: 700 } }, d.topic),
 			h("div", { key: "s", style: { flex: 1 } }),
-			Btn({ key: "r", label: "刷新", onPick: props.onRefresh, off: props.phase === "loading" }),
-			props.sessionId ? Btn({ key: "o", label: "打开工作会话", onPick: () => props.onOpenSession(props.sessionId) }) : null
+			/**
+			 * ★ 详情页头部这两个按钮，**与卡片墙头部那两个是同一套位置**（用户口径 2026-10-10）：
+			 *   都是"刷新 + 4 字动作"、刷新在前、右侧排开、同一套行内几何（`HEAD_BTN_H` ⇒ 等高 + 对齐）。
+			 *   ① 〔刷新〕**也带刷新小图标**（原来只有卡片墙那个有 ⇒ 两处看着不像一套）；
+			 *   ② 〔打开工作会话〕改名〔打开会话〕（与〔使用说明〕同为 4 字）。
+			 */
+			Btn({ key: "r", label: "刷新", h: HEAD_BTN_H, icon: PRIMITIVES && PRIMITIVES.IconRefreshOutlineRegular, onPick: props.onRefresh, off: props.phase === "loading" }),
+			props.sessionId ? Btn({ key: "o", label: "打开会话", h: HEAD_BTN_H, onPick: () => props.onOpenSession(props.sessionId) }) : null
 		]),
 		h("div", { key: "p", style: { marginBottom: "10px" } }, PathLine({ text: d.root, onOpen: props.onOpen })),
 		/**
