@@ -372,7 +372,12 @@ function TeachingModal(props) {
 		}, [
 			h("div", { key: "h", style: { display: "flex", alignItems: "baseline", gap: GAP.sm, padding: GAP.md + " " + GAP.lg + " " + GAP.sm, borderBottom: "1px solid " + V.line } }, [
 				h("div", { key: "t", style: { fontSize: FONT.card, fontWeight: 600 } }, "SR 系列技能 · 工作流程"),
-				h("div", { key: "n", style: { fontSize: FONT.meta, color: V.muted, flex: 1 } }, "用法都在 /sr-askme；这里把它摊开给你看"),
+				/**
+				 * ★ 这里原来是那句"用法都在 /sr-askme；这里把它摊开给你看"（用户口径 2026-10-10：**多余，删掉**）。
+				 *   但**空条不能省**：头部是 `display: flex`，这一格带着 `flex: 1` 把〔✕ 关闭〕顶到最右 ——
+				 *   删掉整格，关闭按钮会紧贴在标题后面（与卡片墙头部同一个写法，见 `Dashboard` 里那个 `<div key="s">`）。
+				 */
+				h("div", { key: "s", style: { flex: 1 } }),
 				h("button", {
 					key: "x", type: "button", onClick: props.onClose, title: "关闭（Esc）",
 					style: { font: "inherit", fontSize: FONT.meta, color: V.muted, border: 0, background: "transparent", cursor: "pointer" }
