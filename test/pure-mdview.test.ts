@@ -119,7 +119,10 @@ test("真数据：sr-askme 的使用说明必须解析得出（这是弹窗的�
 	assert.ok(mainline.items.length >= 4, "主线应当至少 4 步，实际 " + mainline.items.length);
 	assert.ok(mainline.items.some((i) => i.subs.length >= 2), "至少要有一项带子项（解析器的一层子项能力）");
 	// ★ skill 一览那张表：三列，第一列是技能名（面板上它就是那张"表"）
-	const roster = tables.find((t) => t.head.join("|") === "skill|干什么|关键产出");
-	assert.ok(roster, "找不到 skill 一览那张表");
+	//   表头**认"去标记之后"的样子**：用户会给表头单元格加 `**`（`| **skill** | **干什么** | … |`，
+	//   2026-10-10 改成这样），那只是把 `<th>` 本来就有的粗体又写了一遍，不该让判据红。
+	const plain = (s: string) => s.replace(/\*\*/g, "").trim();
+	const roster = tables.find((t) => t.head.map(plain).join("|") === "skill|干什么|关键产出");
+	assert.ok(roster, "找不到 skill 一览那张表（表头：" + tables.map((t) => t.head.map(plain).join("|")).join(" ／ ") + "）");
 	assert.ok(roster.rows.length >= 8, "skill 一览至少 8 行，实际 " + roster.rows.length);
 });

@@ -334,9 +334,9 @@ const teachText = pass("技能用法弹窗", {
 	"SR 系列技能 · 使用说明", "主线", "从头脑风暴走到正式 UE 回写。", "头脑风暴", "/sr-analysis", "/sr-concept",
 	"成稿", "/sr-gdd-human", "配置与线框图（可选）", "没有对应技能，人工做",
 	"定稿", "/sr-gdd-ai", "正式 UE 回写",
-	// ★ 两张表**没有自己的标题**（用户口径：表头写成「其他技能」「术语说明」即可）⇒ 断言直接盯表头文字
-	"其他技能", "术语说明", "skill 一览", "sr-concept", "一句话创意 → 设计核候选报告", "sr-gtgenerator", "gtypes.xml",
-	"产出落在哪", "一个功能一个目录", "决策记录.md",
+	// ★ 小表**没有自己的标题**（用户口径：表头写成「其他技能」即可）⇒ 断言直接盯表头文字
+	"其他技能", "skill 一览", "sr-concept", "一句话创意 → 设计核候选报告", "sr-gtgenerator", "gtypes.xml",
+	"产出落在哪", "一个功能一个目录", "/sr-gdd-fix", "决策记录.md",
 	"✕ 关闭", "知道了",
 	"内容来源：包内 skills/sr-askme/references/使用说明.md"
 ]);
@@ -347,10 +347,18 @@ if (WITH_PRIM) {
 		console.error("✗ [技能用法] 拿到了 primitives，但弹窗没用官方 MarkdownText");
 	}
 	const mdProps = globalThis.__mdProps || [];
-	const got = mdProps.filter((p) => typeof p.text === "string" && p.text.includes("| skill | 干什么 | 关键产出 |"));
-	if (got.length === 0) {
+	/**
+	 * ★ 判据跟**快照本体逐字节比**，不写死某一行表头。
+	 *   上一版这里写的是 `p.text.includes("| skill | 干什么 | 关键产出 |")` —— 用户把表头改成
+	 *   `| **skill** | **干什么** | **关键产出** |`（给 `<th>` 本来就有的粗体又写了一遍）之后，
+	 *   官方臂当场红，而东西是好的。判据该问的是"**整份 md 原文有没有原样交出去**"。
+	 */
+	const { TEACHING } = await import(new URL("../src/generated/teaching.js", import.meta.url).href);
+	const handed = mdProps.filter((p) => p && typeof p.text === "string" && p.text === TEACHING.markdown);
+	if (handed.length === 0) {
 		results.push({ pass: "技能用法 · 官方臂", missing: ["（官方 MarkdownText 没收到那份 md 原文）"] });
-		console.error("✗ [技能用法] 官方 MarkdownText 收到的不是那份 md 原文（收到 " + mdProps.length + " 次）");
+		console.error("✗ [技能用法] 官方 MarkdownText 收到的不是那份 md 原文（收到 " + mdProps.length + " 次，" +
+			"其中逐字节等于快照的有 " + handed.length + " 次）");
 	}
 } else {
 	// 自绘那臂：md 必须真被**排版**出来（把 md 当纯文本吐出来也能让上面那些字全在 —— 这条才拦得住）
