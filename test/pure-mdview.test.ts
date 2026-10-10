@@ -101,9 +101,14 @@ test("真数据：sr-askme 的使用说明必须解析得出（这是弹窗的�
 	assert.equal(tables.length, mdTableCount(md), "解析出的表格数要与数出来的表格数一致");
 	// 一行 `|` 都没剩下 —— 说明表格全被认出来了（退回段落的那些会以 `|` 开头）
 	for (const b of bs) if (b.kind === "para") assert.equal(b.text.startsWith("|"), false, "有表格退回了段落：" + b.text.slice(0, 60));
-	// 结构齐：一个一级标题 + 若干二级 + 一份带子项的有序列表（主线五步）
+	// 结构齐：一个一级标题 + 若干二级 + 一份带子项的有序列表（主线）
 	assert.equal(bs.filter((b) => b.kind === "heading" && b.level === 1).length, 1, "只该有一个一级标题");
-	assert.ok(bs.filter((b) => b.kind === "heading" && b.level === 2).length >= 4, "二级标题至少要 4 个");
+	/**
+	 * ★ 二级标题**也只钉下限**，不写死条数：用户会把两张小表的 `## 标题` 去掉、改写成表头
+	 *   （2026-10-10 就这么改的：`## 旁支` / `## 术语` → 表头「其他技能」「术语说明」），
+	 *   写死 `>= 4` 只会让判据替他管内容。这一层只保证"md 的标题能被认出来、层级不塌"。
+	 */
+	assert.ok(bs.filter((b) => b.kind === "heading" && b.level === 2).length >= 2, "二级标题至少要 2 个");
 	const mainline = bs.filter((b) => b.kind === "list" && b.ordered).pop();
 	assert.ok(mainline, "少了一串有序列表（主线五步）");
 	/**
