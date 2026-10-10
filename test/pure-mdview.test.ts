@@ -106,8 +106,13 @@ test("真数据：sr-askme 的使用说明必须解析得出（这是弹窗的�
 	assert.ok(bs.filter((b) => b.kind === "heading" && b.level === 2).length >= 4, "二级标题至少要 4 个");
 	const mainline = bs.filter((b) => b.kind === "list" && b.ordered).pop();
 	assert.ok(mainline, "少了一串有序列表（主线五步）");
-	assert.equal(mainline.items.length, 5, "主线应当是 5 步，实际 " + mainline.items.length);
-	assert.ok(mainline.items[2].subs.length >= 2, "第 3 步下面那两件事要挂在它身上");
+	/**
+	 * ★ 这里**不写死条数**：主线的步数（5 步 / 6 步 / 拆并）是**内容**的事，用户随时会改
+	 *   （曾经写死 `=== 5`，用户一改 md 就红，而东西是好的 —— 与 `check:host-skills` 那个
+	 *   写死 "120.9 KB" 同一个毛病）。这一层只保证：**有序列表 + 一层子项**能解析出来。
+	 */
+	assert.ok(mainline.items.length >= 4, "主线应当至少 4 步，实际 " + mainline.items.length);
+	assert.ok(mainline.items.some((i) => i.subs.length >= 2), "至少要有一项带子项（解析器的一层子项能力）");
 	// ★ skill 一览那张表：三列，第一列是技能名（面板上它就是那张"表"）
 	const roster = tables.find((t) => t.head.join("|") === "skill|干什么|关键产出");
 	assert.ok(roster, "找不到 skill 一览那张表");

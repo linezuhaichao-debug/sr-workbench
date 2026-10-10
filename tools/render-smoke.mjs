@@ -331,11 +331,11 @@ const teachText = pass("技能用法弹窗", {
 	Dashboard: [true]
 }, [
 	"SR 系列技能 · 工作流程", "用法都在 /sr-askme",
-	"SR 系列技能 · 使用说明", "主线：五步", "头脑风暴（四个入口）", "/sr-analysis", "/sr-concept",
-	"成稿", "/sr-gdd-human", "可选的两件事", "不做也能直接进第 4 步", "没有对应技能，人工做",
+	"SR 系列技能 · 使用说明", "主线：五步", "头脑风暴", "/sr-analysis", "/sr-concept",
+	"成稿", "/sr-gdd-human", "配置与线框图（可选）", "没有对应技能，人工做",
 	"输出定稿", "/sr-gdd-ai", "正式 UE 回写",
 	"旁支（不在主线上，需要时单独用）", "skill 一览", "sr-concept", "一句话创意 → 设计核候选报告", "sr-gtgenerator", "gtypes.xml",
-	"术语", "产出落在哪（摘要）", "一个功能一个目录", "决策记录.md",
+	"术语", "产出落在哪", "一个功能一个目录", "决策记录.md",
 	"✕ 关闭", "知道了",
 	"内容来源：包内 skills/sr-askme/references/使用说明.md"
 ]);
