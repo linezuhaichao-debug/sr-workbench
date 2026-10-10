@@ -49,6 +49,8 @@ import { relTimeOf } from "./pure/reltime.ts";
 import { groupTimeline } from "./pure/timeline.ts";
 import { hasBold, inlineRuns } from "./pure/richtext.ts";
 import { labelLineOf } from "./pure/labels.ts";
+// ★ 技能用法快照（构建期生成；面板直接读，不走网络 —— 见 tools/gen-teaching.mjs 的文件头）
+import { TEACHING } from "./generated/teaching.js";
 // ★ 设计令牌：间距/字号/圆角/动效的唯一参数源（面板里不许再写裸数字）
 import { COLOR, FONT, GAP, LEADING, LINE, RADIUS, SHADOW } from "./ui/tokens.js";
 import {
@@ -282,67 +284,22 @@ function Notice(props) {
 /**
  * **技能用法弹窗**（T1）。
  *
- * 内容**全部来自**宿主那一页 `/sr-workbench/teaching.json`（它现读包内 `skills/sr-askme/`）——
- * 面板不复制任何一句教学文字：技能改了，重开弹窗就变。
+ * 内容**全部来自**包内 `skills/sr-askme/`：构建期由 `npm run gen:teaching` 生成快照，面板直接 import。
+ * （用户口径：**纯静态的使用说明不该要"网站地址"** ⇒ 原来那条 HTTP 路由与多基址探测都已删掉。）
  *
  * 四块：① 主线（askme 的编号项）② 独立技能那一句 ③ 速查表 ④ 共用规则（默认折叠）＋ 教学卡一览。
  * 读不到就**如实说**（显示 problems / 网络错误），绝不显示一个空壳。
  */
 function TeachingModal(props) {
-	const [phase, setPhase] = React.useState("loading");
-	const [data, setData] = React.useState(null);
-	const [err, setErr] = React.useState("");
-	/** 数据实际来自哪个基址（多基址探测命中的那个）—— 显示在页脚，不藏。 */
-	const [base, setBase] = React.useState("");
+	/**
+	 * ★ **静态快照**（用户口径：这是纯静态的使用说明，不该要"网站地址"）：
+	 *   内容由 `npm run gen:teaching` 在构建期从包内 `skills/sr-askme/` 生成，这里**直接 import** ——
+	 *   零网络、零基址、零失败面（原来那条 HTTP 路由与多基址探测都已删掉）。
+	 *   判据 `npm run check:teaching` 盯着"快照与技能文件一致"：改了技能忘了重新生成就会红。
+	 */
+	const data = TEACHING;
 	const [rulesOpen, setRulesOpen] = React.useState(false);
 
-	React.useEffect(() => {
-		let alive = true;
-		(async () => {
-			try {
-				// 渲染冒烟那个环境里没有 fetch ⇒ 先判存在，再判失败都走"如实说"那条路（不炸）
-				if (typeof fetch !== "function") throw new Error("这个环境没有 fetch");
-				/**
-				 * ★ **多基址探测**（用户实测：桌面版里相对路径拿到 404）。
-				 *   成因很可能是"页面 origin ≠ 宿主 HTTP 服务"（Electron 窗口可能不是从宿主那个
-				 *   HTTP 服务加载的）⇒ 相对路径落到了别的服务上，表现为 404。
-				 *   顺序：① 页面 origin ② boot 载荷里的服务地址（若有）③ 本机常见端口（**最后手段**，
-				 *   只是为了让功能能用起来；明天按实测结果把它换成有依据的来源）。
-				 *   命中的那个基址会显示在弹窗页脚 —— **不藏**：用户一眼看得出数据从哪来。
-				 */
-				const bases = [];
-				if (typeof location !== "undefined" && location.origin && location.origin !== "null") bases.push(location.origin);
-				try {
-					const b = (typeof window !== "undefined" && window.__DSH_BOOT__) || null;
-					const cand = b && (b.serverUrl || b.baseUrl || b.origin || b.httpBase);
-					if (typeof cand === "string" && cand !== "") bases.push(cand.replace(/\/+$/, ""));
-				} catch (e) { /* 拿不到就算了 */ }
-				bases.push("http://127.0.0.1:19387");
-				let used = "", lastErr = "";
-				let j = null;
-				for (const base of bases) {
-					const url = base + "/sr-workbench/teaching.json";
-					try {
-						const r = await fetch(url, { cache: "no-store" });
-						if (!r.ok) { lastErr = "HTTP " + r.status + " · " + url; continue; }
-						j = await r.json();
-						used = base;
-						break;
-					} catch (e) { lastErr = String((e && e.message) || e) + " · " + url; }
-				}
-				if (j === null) throw new Error(lastErr || "三个基址都试过了，都拿不到");
-				if (!alive) return;
-				setBase(used);
-				setData(j);
-				setPhase(j && j.ok ? "ok" : "bad");
-			} catch (e) {
-				if (!alive) return;
-				setErr(String((e && e.message) || e));
-				setPhase("err");
-			}
-		})();
-		return () => { alive = false; };
-	}, []);
 
 	/** Esc 关闭（弹窗的基本礼貌）。 */
 	React.useEffect(() => {
@@ -356,9 +313,8 @@ function TeachingModal(props) {
 
 	const line = (t) => h("div", { style: { fontSize: FONT.meta, color: V.muted, lineHeight: LEADING.body } }, t);
 	const body = () => {
-		if (phase === "loading") return line("正在读技能用法…");
-		if (phase === "err") return h("div", { style: { fontSize: FONT.body, color: V.warn } }, "读不到技能用法数据：" + err + "（宿主那一页没起来？）");
-		if (phase === "bad") {
+		// 静态快照：要么有内容，要么如实说解析缺了什么（不再有"读不到网络"这种情况）
+		if (!data || !data.ok) {
 			return h("div", null, [
 				h("div", { key: "a", style: { fontSize: FONT.body, color: V.warn } }, "技能素材没解析全 —— 下面是能解析出来的部分："),
 				...((data && data.problems) || []).map((p, i) => h("div", { key: "p" + i, style: { fontSize: FONT.meta, color: V.muted } }, "· " + p))
@@ -445,7 +401,7 @@ function TeachingModal(props) {
 			]),
 			h("div", { key: "b", style: { padding: GAP.md + " " + GAP.lg, overflow: "auto" } }, body()),
 			h("div", { key: "f", style: { display: "flex", alignItems: "center", gap: GAP.sm, padding: GAP.sm + " " + GAP.lg, borderTop: "1px solid " + V.line } }, [
-				h("div", { key: "n", style: { fontSize: FONT.meta, color: V.idle, flex: 1 } }, "内容来源：包内 skills/sr-askme（技能改了，重开即变）" + (base ? "　·　数据源 " + base : "")),
+				h("div", { key: "n", style: { fontSize: FONT.meta, color: V.idle, flex: 1 } }, "内容来源：包内 skills/sr-askme（构建期生成快照 · npm run gen:teaching 更新）"),
 				Btn({ key: "ok", label: "知道了", tone: "primary", onPick: props.onClose })
 			])
 		])

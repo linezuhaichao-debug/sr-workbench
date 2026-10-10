@@ -304,35 +304,21 @@ if (real) {
 	]);
 }
 
-// ── ③'' 技能用法弹窗（T1/T2）：内容来自宿主那一页，面板只渲染 ────────────────
-const TEACH_OK = {
-	ok: true,
-	steps: [
-		{ n: 1, title: "入口", text: "- 一句话创意 → `/sr-concept`\n- 竞品录屏 → `/sr-analysis`" },
-		{ n: 2, title: "成稿", text: "`/sr-gdd-human` 出成稿" }
-	],
-	standalone: "**独立技能**（不在主线，需要时单独用）：`/sr-gtgenerator`、`/sr-gdd-review`",
-	routes: [
-		{ want: "我有个创意", skill: "`/sr-concept`" },
-		{ want: "把这条规则落成配置表", skill: "`/sr-config`" }
-	],
-	rules: [
-		{ title: "产出落盘位置", body: "features\\<主题>\\ 下只有四个桶：evidence / analysis / gdd / decisions" },
-		{ title: "数值铁律", body: "见 references/sr_project_context.md" }
-	],
-	cards: [{ id: "sr-concept", title: "SR-Concept 使用卡", body: "# SR-Concept 使用卡", rel: "references/teaching/sr-concept.md" }],
-	problems: []
-};
-pass("技能用法弹窗", { Panel: [INDEX, "idle", null, DASH, null, { kind: "cards" }, null, 0, false, false, "", false, null], Dashboard: [true], TeachingModal: ["ok", TEACH_OK, "", false] }, [
-	"SR 系列技能 · 工作流程", "用法都在 /sr-askme", "主线：2 步",
-	"入口", "/sr-concept", "成稿", "/sr-gdd-human",
-	"独立技能", "我想做什么 → 用哪个", "把这条规则落成配置表", "/sr-config",
+// ── ③'' 技能用法弹窗：内容来自**构建期快照**（面板直接 import，不走网络）──────────
+//   ★ 断言盯的是**真快照**（真 askme 素材）：技能改了忘了 gen:teaching，这里的字就会对不上，
+//     与 check:teaching 那道门形成两道网。
+pass("技能用法弹窗", {
+	Panel: [INDEX, "idle", null, DASH, null, { kind: "cards" }, null, 0, false, false, "", false, null],
+	Dashboard: [true]
+}, [
+	"SR 系列技能 · 工作流程", "用法都在 /sr-askme",
+	"主线：5 步", "头脑风暴（四个入口）", "/sr-analysis", "/sr-concept",
+	"成稿", "/sr-gdd-human", "可选的两件事", "不做也能直接进第 4 步", "没有对应技能，人工做",
+	"输出定稿", "/sr-gdd-ai", "正式 UE 回写",
+	"独立技能", "我想做什么 → 用哪个", "我有个创意 / 想个新玩法 / 这个点子能不能做", "/sr-config",
 	"共用规则", "产出落盘位置", "数值铁律",
-	"SR-Concept 使用卡", "✕ 关闭", "知道了", "内容来源"
-]);
-// 反面：解析不全时**如实说**（显示 problems），而不是显示空壳
-pass("技能用法弹窗 · 解析不全", { Panel: [INDEX, "idle", null, DASH, null, { kind: "cards" }, null, 0, false, false, "", false, null], Dashboard: [true], TeachingModal: ["bad", { ok: false, problems: ["速查表解析不出来"] }, "", false] }, [
-	"技能素材没解析全", "速查表解析不出来"
+	"sr-analysis 使用卡：分析素材 / 拆解竞品", "✕ 关闭", "知道了",
+	"内容来源：包内 skills/sr-askme"
 ]);
 
 // ── ③' 配置向导：这台机器还没配好时，卡片墙位置必须出现向导 ────────────────

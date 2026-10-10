@@ -27,7 +27,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parseSkillFile } from "./pure/skillmeta.ts";
-import { parseTeaching } from "./pure/teaching.ts";
 
 /** 要求 `ctx.skills`（`@deepseek-ai/dsh-skill` 的注册表服务）；插件行落在宿主 ⇒ 注册进 global 层。 */
 export const inject = ["skills"];
@@ -127,74 +126,9 @@ export function apply(ctx, config) {
 	}
 
 	/**
-	 * ── 技能用法数据（面板弹窗读的那一页）──────────────────────────────────
-	 *
-	 * ★ 为什么由**宿主半侧**递：面板只有"借会话读绝对路径"这一种读文件能力，
-	 *   而技能在 `<某个 node_modules>/dsh-client-ui-sr-workbench/skills/…` —— 面板不知道这个路径，
-	 *   也不该猜（和 `%USERPROFILE%` 是同一类问题）。宿主这里本来就知道包根。
-	 *
-	 * ★ `webServer` 走**可选访问**（`ctx.get`）而不是写进 `inject`：
-	 *   写进去就成了硬依赖 —— 没有 web 服务器的场合（如 headless profile）会连技能都注册不了。
-	 *   拿不到就跳过并说清原因（面板那边会显示"这一版拿不到技能用法"，不假装）。
+	 * ★ 技能用法**不再需要宿主路由**（用户口径：这是纯静态的使用说明，不该要"网站地址"）。
+	 *   内容改为构建期生成快照 `src/generated/teaching.js`，面板直接 import —— 零网络、零基址。
+	 *   判据 `npm run check:teaching`：快照与技能一致 / 内容齐 / 出处可查 / 产物里不许再有这条路由。
 	 */
-	const disposers = [];
-	try {
-		const webServer = typeof ctx.get === "function" ? ctx.get("webServer") : undefined;
-		if (!webServer || typeof webServer.register !== "function") {
-			ctx.logger?.info?.("[sr-workbench] 没有 webServer 服务 ⇒ 技能用法弹窗的数据这一版拿不到（技能本身不受影响）");
-		} else {
-			disposers.push(
-				webServer.register({
-					kind: "exact",
-					path: "/sr-workbench/teaching.json",
-					/**
-					 * 每次请求**现读**（不缓存）：技能改了 → 重开弹窗即变，与"改 references 即生效"一致。
-					 * 只读包内 `skills/sr-askme/` 下的固定文件，不接受任何路径参数（无穿越面）。
-					 */
-					handler: (req, res) => {
-						let payload;
-						try {
-							const askme = path.join(root, "sr-askme");
-							const skillMd = fs.readFileSync(path.join(askme, "SKILL.md"), "utf8");
-							const cardsDir = path.join(askme, "references", "teaching");
-							const cards = fs.existsSync(cardsDir)
-								? fs.readdirSync(cardsDir).filter((n) => n.endsWith(".md")).map((n) => ({
-									rel: "references/teaching/" + n,
-									text: fs.readFileSync(path.join(cardsDir, n), "utf8")
-								}))
-								: [];
-							const model = parseTeaching({ skillMd: skillMd, cards: cards });
-							payload = Object.assign({ source: askme }, model);
-						} catch (e) {
-							// 读不到就**如实说**（面板会显示原因，而不是显示一个空壳）
-							payload = {
-								ok: false, steps: [], standalone: "", routes: [], rules: [], cards: [],
-								problems: ["读不到技能素材：" + String((e && e.message) || e)]
-							};
-						}
-						const body = JSON.stringify(payload);
-						try {
-							res.writeHead(200, {
-								"Content-Type": "application/json; charset=utf-8",
-								"Cache-Control": "no-store",
-								"Content-Length": Buffer.byteLength(body, "utf8")
-							});
-							res.end(body);
-						} catch (e) { /* 连接已断，忽略 */ }
-					}
-				})
-			);
-			ctx.logger?.info?.("[sr-workbench] 技能用法数据：/sr-workbench/teaching.json（面板弹窗读它）");
-		}
-	} catch (e) {
-		ctx.logger?.warn?.("[sr-workbench] 注册技能用法路由失败：" + String((e && e.message) || e));
-	}
-	// 路由随插件生命周期释放（HMR 重载时不会重复注册 —— 同名路由重复注册会抛）
-	if (disposers.length > 0 && typeof ctx.effect === "function") {
-		ctx.effect(() => () => {
-			for (const d of disposers) {
-				try { d(); } catch (e) { /* 已经没了就算了 */ }
-			}
-		});
-	}
+
 }

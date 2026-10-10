@@ -1,6 +1,6 @@
 {
   "name": "dsh-client-ui-sr-workbench",
-  "version": "6.9.3",
+  "version": "7.0.0",
   "private": true,
   "description": "策划工作台：DSH Web 全局面板（只读）。host 半侧 + 浏览器半侧源码，tsdown 打包成单个 lib/client.js",
   "type": "module",
@@ -50,7 +50,8 @@
     "lint": "eslint .",
     "verify": "npm run lint && npm run build:safe && npm test",
     "check:bundled-skills": "node tools/check-bundled-skills.mjs",
-    "check:teaching": "node tools/check-teaching.mjs"
+    "check:teaching": "node tools/check-teaching.mjs",
+    "gen:teaching": "node tools/gen-teaching.mjs"
   },
   "devDependencies": {
     "eslint": "^9.39.1",
