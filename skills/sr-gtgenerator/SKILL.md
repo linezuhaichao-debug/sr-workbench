@@ -17,7 +17,7 @@ description: 维护《文明之跃》GTGenerator 配置（GID 类型 gtypes.xml 
 
 本 skill 额外需要一个路径：**GTGenerator 工作目录**（含 gtypes.xml 与
 normaltxt.xml，通常即 GTGenerator.exe 所在目录）。检查
-`../sr-askme/config.local.json` 的 `gtgenerator_workdir` 字段：
+`%USERPROFILE%\.dsh\sr-workbench\config.local.json` 的 `gtgenerator_workdir` 字段：
 - 存在且非空 → 直接使用（通常由 `/sr-askme` 首次配置时一并收集）；
 - 缺失 → 询问用户一次，确认后写回 `config.local.json`（并同步告知用户已固化，
   改路径直接编辑该文件），下次不再问。本 skill 可独立于 `/sr-askme` 引导使用，

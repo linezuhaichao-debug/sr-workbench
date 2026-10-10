@@ -6,7 +6,7 @@
 
 ## 本机目录
 
-`config_root` 首选来源是 `../../sr-askme/config.local.json` 的 `config_root` 字段（首次配置由 sr-askme 引导生成，并同步写成本目录的 `timemachine.local.yaml`）。两者任一存在且 `config_root` 有效时直接采用并写入 change set（**两者不一致时以 `config.local.json` 为准**）；缺失、失效或目录中没有 `.xlsx/.xlsm` 时询问用户，确认后更新 `config.local.json` 与 `timemachine.local.yaml`。绝对路径只保存在本机配置，不写入本 profile。
+`config_root` 首选来源是 `../%USERPROFILE%\.dsh\sr-workbench\config.local.json` 的 `config_root` 字段（首次配置由 sr-askme 引导生成，并同步写成本目录的 `timemachine.local.yaml`）。两者任一存在且 `config_root` 有效时直接采用并写入 change set（**两者不一致时以 `config.local.json` 为准**）；缺失、失效或目录中没有 `.xlsx/.xlsm` 时询问用户，确认后更新 `config.local.json` 与 `timemachine.local.yaml`。绝对路径只保存在本机配置，不写入本 profile。
 
 配置目录扫描排除名称包含 `.backup.`、`.tmp.`、`.failed.` 的工作簿。
 

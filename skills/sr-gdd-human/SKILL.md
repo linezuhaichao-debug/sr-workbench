@@ -35,7 +35,7 @@ description: 功能 GDD 成稿工作流——把入口产出（sr-concept 设计
 
 ## 路径约定
 
-`<SR_WORKSPACE>` / `<SR_PROJECT>` 取自 `../sr-askme/config.local.json`；字段缺失、为空或路径失效时运行 `/sr-askme` 补齐；成组安装见 `../sr-askme/SKILL.md` §四。**`<功能目录>` = `<SR_WORKSPACE>\features\<主题>\`** —— 一个功能的全部工作都在它里面；从策划工作台进来的会话，工作目录就是它。
+`<SR_WORKSPACE>` / `<SR_PROJECT>` 取自 `%USERPROFILE%\.dsh\sr-workbench\config.local.json`；字段缺失、为空或路径失效时运行 `/sr-askme` 补齐；成组安装见 `../sr-askme/SKILL.md` §四。**`<功能目录>` = `<SR_WORKSPACE>\features\<主题>\`** —— 一个功能的全部工作都在它里面；从策划工作台进来的会话，工作目录就是它。
 GDD 进 `gdd\`、决策记录进 `decisions\决策记录.md`，与 `sr-gdd-ai` 一致。
 
 ## 撰写纪律（第 3、4 步的判据来源）

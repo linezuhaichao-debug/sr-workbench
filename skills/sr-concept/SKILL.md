@@ -40,7 +40,7 @@ description: 创新功能设计工作流——一句话创意 → 设计核三�
 
 ## 路径约定
 
-`<SR_WORKSPACE>` / `<SR_PROJECT>` 取自 `../sr-askme/config.local.json`；字段缺失、为空或路径失效时运行 `/sr-askme` 补齐；成组安装见 `../sr-askme/SKILL.md` §四。
+`<SR_WORKSPACE>` / `<SR_PROJECT>` 取自 `%USERPROFILE%\.dsh\sr-workbench\config.local.json`；字段缺失、为空或路径失效时运行 `/sr-askme` 补齐；成组安装见 `../sr-askme/SKILL.md` §四。
 
 ## 执行流程
 

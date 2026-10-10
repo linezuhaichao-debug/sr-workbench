@@ -60,7 +60,7 @@ disable-model-invocation: true
 
 ## 路径约定
 
-`<SR_WORKSPACE>` / `<SR_PROJECT>` 取自 `../sr-askme/config.local.json`；字段缺失、为空或路径失效时运行 `/sr-askme` 补齐；成组安装见 `../sr-askme/SKILL.md` §四。
+`<SR_WORKSPACE>` / `<SR_PROJECT>` 取自 `%USERPROFILE%\.dsh\sr-workbench\config.local.json`；字段缺失、为空或路径失效时运行 `/sr-askme` 补齐；成组安装见 `../sr-askme/SKILL.md` §四。
 
 本 skill 自身资源以**相对路径**引用（`resources/toolkit/...`、`tools/lint_content.py`），保证 skill 目录可整体搬迁。
 

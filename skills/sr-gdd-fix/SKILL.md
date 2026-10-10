@@ -36,7 +36,7 @@ description: "功能 GDD 定稿修改工作流（定稿之后的维护入口）�
 
 ## 路径约定
 
-`<SR_WORKSPACE>` / `<SR_PROJECT>` 取自 `../sr-askme/config.local.json`；字段缺失、为空或路径失效时运行 `/sr-askme` 补齐；成组安装见 `../sr-askme/SKILL.md` §四。
+`<SR_WORKSPACE>` / `<SR_PROJECT>` 取自 `%USERPROFILE%\.dsh\sr-workbench\config.local.json`；字段缺失、为空或路径失效时运行 `/sr-askme` 补齐；成组安装见 `../sr-askme/SKILL.md` §四。
 
 ## 执行流程
 

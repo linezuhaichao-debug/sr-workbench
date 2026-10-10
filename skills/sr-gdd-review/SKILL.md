@@ -31,7 +31,7 @@ description: 功能 GDD 定稿审查工作流——对 sr-gdd-ai / sr-gdd-fix �
 
 ## 路径约定
 
-`<SR_WORKSPACE>` / `<SR_PROJECT>` 取自 `../sr-askme/config.local.json`；字段缺失、为空或路径失效时运行 `/sr-askme` 补齐；成组安装见 `../sr-askme/SKILL.md` §四。
+`<SR_WORKSPACE>` / `<SR_PROJECT>` 取自 `%USERPROFILE%\.dsh\sr-workbench\config.local.json`；字段缺失、为空或路径失效时运行 `/sr-askme` 补齐；成组安装见 `../sr-askme/SKILL.md` §四。
 
 产出落**本功能的目录**（`features\<主题>\`）：审查报告进 `gdd\<主题>_<日期>_审查.md`。
 本 skill **只读、不改定稿**，但审查结论同样是决策（「这份定稿能不能交程序」就是这么一条）：

@@ -15,8 +15,8 @@ description: 将游戏策划规则转换为可追溯的配置数据契约——�
 - 生成 change set、风险或确认门时，完整读取 [change set 与确认](references/change_set.md)。
 - 新建任何运行时表时，完整读取 [新表与配置测试数据](references/new_table.md)。
 - 实际写入工作簿时，完整读取 [最小事务写入与验收](references/mutation_protocol.md)。
-- TimeMachine 项目任务读取 [TimeMachine profile](profiles/timemachine.md)；`config_root` 取自 `../sr-askme/config.local.json` 的 `config_root` 字段（首次使用由 sr-askme 引导生成，并同步写成本目录 `profiles/timemachine.local.yaml`，含私有路径不入仓库；手工配置参照 `timemachine.local.example.yaml`）。**以 `config.local.json` 为准**，yaml 是该值的本机副本；两者不一致时按 `config.local.json` 回写 yaml。
-- 涉及功能设计时读 `../sr-askme/references/gdd-pipeline.md`（成稿 / 配置表 / 定稿三份产出契约）：**字段与记录从 `sr-gdd-human` 成稿的规则派生**（规则 → 字段），成稿的规则是配置表的唯一设计依据。`<SR_WORKSPACE>`（定稿所在）同样取自 `../sr-askme/config.local.json` 的 `sr_workspace` 字段。
+- TimeMachine 项目任务读取 [TimeMachine profile](profiles/timemachine.md)；`config_root` 取自 `%USERPROFILE%\.dsh\sr-workbench\config.local.json` 的 `config_root` 字段（首次使用由 sr-askme 引导生成，并同步写成本目录 `profiles/timemachine.local.yaml`，含私有路径不入仓库；手工配置参照 `timemachine.local.example.yaml`）。**以 `config.local.json` 为准**，yaml 是该值的本机副本；两者不一致时按 `config.local.json` 回写 yaml。
+- 涉及功能设计时读 `../sr-askme/references/gdd-pipeline.md`（成稿 / 配置表 / 定稿三份产出契约）：**字段与记录从 `sr-gdd-human` 成稿的规则派生**（规则 → 字段），成稿的规则是配置表的唯一设计依据。`<SR_WORKSPACE>`（定稿所在）同样取自 `%USERPROFILE%\.dsh\sr-workbench\config.local.json` 的 `sr_workspace` 字段。
 - 决策记录：**只要定下了一件事就记**（选表 / 定字段 / 命名 / 改记录 / 放弃某个方案 / 更正之前的判断…，不只确认门那一次）。落点与格式见 `../sr-askme/references/decision-recording.md` —— 追加进**本功能**的 `decisions\决策记录.md`（一个功能只有一个决策文件）。
 
 ## 附带工具
@@ -46,7 +46,7 @@ description: 将游戏策划规则转换为可追溯的配置数据契约——�
 当任务需要既有表证据时，按以下顺序确定 `config_root`：
 
 1. 使用用户本次明确指定的目录；
-2. 否则取 `../sr-askme/config.local.json` 的 `config_root`（与 `profiles/timemachine.local.yaml` 同值；两者不一致时以 `config.local.json` 为准，并回写 yaml）；
+2. 否则取 `%USERPROFILE%\.dsh\sr-workbench\config.local.json` 的 `config_root`（与 `profiles/timemachine.local.yaml` 同值；两者不一致时以 `config.local.json` 为准，并回写 yaml）；
 3. 路径缺失、失效或不含 `.xlsx/.xlsm` 时询问用户，确认后同时更新 `config.local.json` 与 `timemachine.local.yaml`。
 
 新建运行时表必须有有效 `config_root`，用于取得**真实引用 ID**（引用 ID 必须来自配置目录里已存在的记录）。
