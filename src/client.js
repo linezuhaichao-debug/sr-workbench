@@ -370,18 +370,23 @@ function TeachingModal(props) {
 				background: "var(--dsw-alias-bg-layer-1)", border: "1px solid " + V.line2, borderRadius: RADIUS.card, boxShadow: SHADOW.float
 			}
 		}, [
-			h("div", { key: "h", style: { display: "flex", alignItems: "baseline", gap: GAP.sm, padding: GAP.md + " " + GAP.lg + " " + GAP.sm, borderBottom: "1px solid " + V.line } }, [
-				h("div", { key: "t", style: { fontSize: FONT.card, fontWeight: 600 } }, "SR 系列技能 · 工作流程"),
-				/**
-				 * ★ 这里原来是那句"用法都在 /sr-askme；这里把它摊开给你看"（用户口径 2026-10-10：**多余，删掉**）。
-				 *   但**空条不能省**：头部是 `display: flex`，这一格带着 `flex: 1` 把〔✕ 关闭〕顶到最右 ——
-				 *   删掉整格，关闭按钮会紧贴在标题后面（与卡片墙头部同一个写法，见 `Dashboard` 里那个 `<div key="s">`）。
-				 */
-				h("div", { key: "s", style: { flex: 1 } }),
-				h("button", {
-					key: "x", type: "button", onClick: props.onClose, title: "关闭（Esc）",
-					style: { font: "inherit", fontSize: FONT.meta, color: V.muted, border: 0, background: "transparent", cursor: "pointer" }
-				}, "✕ 关闭")
+			/**
+			 * ★ 头部：标题**居中**（用户口径 2026-10-10），右边是〔✕ 关闭〕。
+			 *
+			 * 为什么用 grid 的 `1fr auto 1fr` 而不是 flex：flex 里想居中得靠左右两个**等宽占位**，
+			 * 而右格要放那个关闭按钮 ⇒ 左右天然不等宽，标题会往左偏半个按钮宽。
+			 * 三列布局里两侧恒等宽，中列（标题）落在**整条头部的正中**，与按钮多宽无关。
+			 * （原来这里还有一句副标题"用法都在 /sr-askme…"，用户说多余，已删 —— 它同时也兼着
+			 *  那个把按钮顶到最右的 `flex: 1` 占位，改 grid 之后这个角色由第三列接手。）
+			 */
+			h("div", { key: "h", style: { display: "grid", gridTemplateColumns: "1fr auto 1fr", alignItems: "baseline", gap: GAP.sm, padding: GAP.md + " " + GAP.lg + " " + GAP.sm, borderBottom: "1px solid " + V.line } }, [
+				h("div", { key: "l" }),
+				h("div", { key: "t", style: { fontSize: FONT.card, fontWeight: 600 } }, "使用说明"),
+				h("div", { key: "r", style: { textAlign: "right" } },
+					h("button", {
+						key: "x", type: "button", onClick: props.onClose, title: "关闭（Esc）",
+						style: { font: "inherit", fontSize: FONT.meta, color: V.muted, border: 0, background: "transparent", cursor: "pointer" }
+					}, "✕ 关闭"))
 			]),
 			h("div", { key: "b", style: { padding: GAP.md + " " + GAP.lg, overflow: "auto" } }, body()),
 			h("div", { key: "f", style: { display: "flex", alignItems: "center", gap: GAP.sm, padding: GAP.sm + " " + GAP.lg, borderTop: "1px solid " + V.line } }, [

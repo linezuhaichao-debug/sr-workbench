@@ -330,7 +330,7 @@ const teachText = pass("技能用法弹窗", {
 	Panel: [INDEX, "idle", null, DASH, null, { kind: "cards" }, null, 0, false, false, "", false, null],
 	Dashboard: [true]
 }, [
-	"SR 系列技能 · 工作流程",
+	"使用说明",
 	"SR 系列技能 · 使用说明", "主线", "从头脑风暴走到正式 UE 回写。", "头脑风暴", "/sr-analysis", "/sr-concept",
 	"成稿", "/sr-gdd-human", "配置与线框图（可选）", "没有对应技能，人工做",
 	"定稿", "/sr-gdd-ai", "正式 UE 回写",
