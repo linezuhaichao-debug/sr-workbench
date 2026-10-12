@@ -4,14 +4,16 @@
  * 面板点进一张功能卡片只看三块（用户口径）：
  *   ① 头脑风暴 —— `analysis\`（已有结论）+ 四入口（四入口的**指令组装**在 `pure/intake.ts`）
  *   ② 决策记录 —— `decisions\决策记录.md`（解析在 `pure/decisions.ts`）
- *   ③ 最终产物 —— 头脑风暴的产物 / 成稿 / 定稿 / HTML 宣讲稿（分组在 `pure/artifacts.ts`）
+ *   ③ 最终产物 —— 头脑风暴的产物 / 成稿 / 定稿 / 宣讲稿 / 配置表（分组在 `pure/artifacts.ts`）
+ *      ＋ 页签底部一行**过程留痕报数**（变更集 / 读回验收报告 / 审查报告 / 修订点清单 ——
+ *      留痕该留，但不作为"这个功能产出了什么"列出来）
  *
  * 这一层**只吃 port、只读**；目录列举深度=2（桶 → 再下一层，如 `gdd\UI\`）。
- * 磁盘上有什么就列什么：**一个文件都不许静默丢**（不属四类的进「其它」组）。
+ * 磁盘上有什么就列什么：**一个文件都不许静默丢**（不属五类的进「其它」组，留痕进报数）。
  */
 
-import { annotateFinals, featureArtifacts } from "../pure/artifacts.ts";
-import { BUCKETS, BUCKET_LABEL, BUCKET_MEANING, configArtifactOf } from "../pure/buckets.ts";
+import { annotateCurrent, featureArtifacts } from "../pure/artifacts.ts";
+import { BUCKETS, BUCKET_LABEL, BUCKET_MEANING, configArtifactOf, traceArtifactOf } from "../pure/buckets.ts";
 import { DECISION_REL, parseDecisionLog, type DecisionLog } from "../pure/decisions.ts";
 import type { WorkspacePort } from "../port/types.ts";
 import { loadBrainstorm } from "./brainstorm.ts";
@@ -123,7 +125,7 @@ export interface FeatureDetail {
 	brainstorm: any;
 	/** ② 决策记录（解析后的账本 + 原始文本）。 */
 	decisions: { rel: string; abs: string; readError: string; log: DecisionLog };
-	/** ③ 最终产物（四类 + 其它）。 */
+	/** ③ 最终产物（五类 + 其它 + 一份不进列表的留痕账）。 */
 	outputs: ReturnType<typeof featureArtifacts>;
 	/** 计数（卡片与页签上的数字，界面不自己数）。 */
 	counts: Record<string, number>;
@@ -144,14 +146,20 @@ export async function loadFeatureDetail(
 	/**
 	 * 交给头脑风暴读通道的 `analysis\` 文件。
 	 *
-	 * ★ **配置表那条线的文件要剔掉**：`CS-*.yaml` 变更集、`*_读回验收报告.md`、`.xlsx/.xlsm/.csv`
+	 * ★ **配置这条线的文件要剔掉**：`CS-*.yaml` 变更集、`*_读回验收报告.md`、`.xlsx/.xlsm/.csv`
 	 *   是配置交付物（口径：**只落 `gdd\`**，`analysis\` 只放头脑风暴产物），它们不是四个入口的产物 ——
 	 *   混进来会让"四入口分组的总数"对不上，也会在头脑风暴里冒出一张不相干的表。
-	 *   判据用**同一份** `configArtifactOf`（不在这里另判一次）。
+	 * ★ **过程留痕也剔掉**（2026-10-12 起）：审查报告 / 修订点清单 / **产物历史版本**
+	 *   （`experience-report_x_20260915_20261012_1.md` 这种）都不是"想出来的内容" ——
+	 *   它们是过程档案，面板在「最终产物」底部报数，不进任何工作面。
+	 *
+	 * ★ 所以这里是**两个判据的并集**，缺一不可（各自覆盖对方盖不住的一类）：
+	 *   `configArtifactOf` 认**表本体**（`traceArtifactOf` 不认），
+	 *   `traceArtifactOf` 认**历史版本 / 审查报告 / 修订点**（`configArtifactOf` 不认）。
 	 */
 	const analysisFiles: Array<{ name: string; rel: string; subdir: string }> = [];
 	const pushAnalysis = (n: string, sub: string) => {
-		if (configArtifactOf(n)) return;
+		if (configArtifactOf(n) || traceArtifactOf(n)) return;
 		analysisFiles.push({ name: n, rel: sub ? "analysis/" + sub + "/" + n : "analysis/" + n, subdir: sub });
 	};
 	for (const n of scan.dirs.analysis.files) pushAnalysis(n, "");
@@ -168,12 +176,12 @@ export async function loadFeatureDetail(
 	// ② 决策记录
 	const decisions = await loadDecisionLog(port, scan.root, signal);
 
-	// ③ 最终产物：analysis + gdd 两个桶的列举 → 四类分组
+	// ③ 最终产物：analysis + gdd 两个桶的列举 → 五类 + 其它（**过程留痕拆出去只报数**）
 	const outputs = featureArtifacts({
 		analysis: { files: scan.dirs.analysis.files, nested: scan.dirs.analysis.nested },
 		gdd: { files: scan.dirs.gdd.files, nested: scan.dirs.gdd.nested }
 	});
-	annotateFinals(outputs.groups);
+	annotateCurrent(outputs.groups);
 
 	let evidence = scan.dirs.evidence.files.length;
 	for (const k of Object.keys(scan.dirs.evidence.nested)) evidence += scan.dirs.evidence.nested[k].length;
@@ -183,7 +191,10 @@ export async function loadFeatureDetail(
 		draft: outputs.counts.draft || 0,
 		final: outputs.counts.final || 0,
 		speech: outputs.counts.speech || 0,
+		config: outputs.counts.config || 0,
 		other: outputs.counts.other || 0,
+		/** ★ 过程留痕（不在产物列表里，但卡片与详情页仍走同一份计数 —— 不许两个数）。 */
+		trace: outputs.counts.trace || 0,
 		evidence: evidence,
 		decisions: decisions.log.entries.length,
 		total: outputs.total

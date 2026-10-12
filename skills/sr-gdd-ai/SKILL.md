@@ -129,10 +129,11 @@ approve / approve_with_conditions / request_missing_evidence / revise / reject
 
 | 产出 | 路径（`<SR_WORKSPACE>\` 下） |
 |------|------|
-| 功能 GDD 定稿 / 工作版 | `<功能目录>\gdd\<主题>_<日期>_定稿.md`（头部 `doc_type: final_gdd`；主线路径生成时 `pending`、通过后 `active`；直接调用为 `provisional` 或 `blocked`） |
+| 功能 GDD 定稿 / 工作版 | `<功能目录>\gdd\<主题>_定稿.md`（头部 `doc_type: final_gdd`；主线路径生成时 `pending`、通过后 `active`；直接调用为 `provisional` 或 `blocked`） |
 | 修订点清单（仅退回成稿时） | `<功能目录>\gdd\<主题>_<日期>_修订点.md` |
 | 审查报告（第 5 步产出，由 `/sr-gdd-review` 落盘） | `<功能目录>\gdd\<主题>_<日期>_审查.md` |
 | 决策记录 | `<功能目录>\decisions\决策记录.md`（**追加**一条；格式见 `../sr-askme/references/decision-recording.md`） |
+| **历史版本** | 改写已有产物**之前**留的那一版（含门内迭代改定稿）：产物同目录 `<原名>_<YYYYMMDD>_<序号>.<ext>`（口径与命令见 `../sr-askme/references/version-history.md`） |
 
 目录不存在时直接创建。日期格式 `YYYYMMDD`。定稿文件名带 `_定稿` 后缀，与同日成稿并存不覆盖。
 

@@ -145,7 +145,11 @@ export async function loadDashboardInner(port: WorkspacePort, srWs: string, sign
 			for (const n of d.files) allFiles.push({ dir: dir, name: n });
 			for (const k of Object.keys(d.nested)) for (const n of d.nested[k]) allFiles.push({ dir: dir, name: n });
 		}
-		const groups: Record<string, number> = { brainstorm: 0, draft: 0, final: 0, speech: 0, config: 0, other: 0 };
+		/**
+		 * ★ `trace`（过程留痕）也数进来：卡片上**不展示**它（留痕不是产物），
+		 *   但计数必须与详情页同源 —— `load-dashboard-counts` 那条回归钉子盯的就是这件事。
+		 */
+		const groups: Record<string, number> = { brainstorm: 0, draft: 0, final: 0, ue: 0, speech: 0, config: 0, other: 0, trace: 0 };
 		for (const f of allFiles) {
 			const g = outputGroupOf(f.dir, f.name);
 			groups[g] = (groups[g] || 0) + 1;
@@ -157,8 +161,9 @@ export async function loadDashboardInner(port: WorkspacePort, srWs: string, sign
 			Object.keys(scan.dirs.gdd.nested).reduce<Array<string>>((a, k) => a.concat(scan.dirs.gdd.nested[k]), []));
 
 		const counts: Record<string, number> = {
-			brainstorm: groups.brainstorm, draft: groups.draft, final: groups.final, speech: groups.speech,
-			config: groups.config, other: groups.other, evidence: evidence, decisions: log.entries.length
+			brainstorm: groups.brainstorm, draft: groups.draft, final: groups.final, ue: groups.ue, speech: groups.speech,
+			config: groups.config, other: groups.other, trace: groups.trace,
+			evidence: evidence, decisions: log.entries.length
 		};
 		const latestDate = gddFiles.reduce((best, n) => (dateOf(n) > best ? dateOf(n) : best), "");
 		const at = lastDecisionAt(log);

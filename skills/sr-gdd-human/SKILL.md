@@ -95,9 +95,10 @@ approve / approve_with_conditions / revise / reject
 
 | 产出 | 路径（`<SR_WORKSPACE>\` 下） |
 |------|------|
-| 功能 GDD 成稿 | `<功能目录>\gdd\<主题>_<日期>.md` |
+| 功能 GDD 成稿 | `<功能目录>\gdd\<主题>_成稿.md`（**不带日期**） |
 | 修订点清单（仅被定稿退回时） | `<功能目录>\gdd\<主题>_<日期>_修订点.md` |
 | 决策记录 | `<功能目录>\decisions\决策记录.md`（**追加**一条；格式见 `../sr-askme/references/decision-recording.md`） |
+| **历史版本** | 改写已有产物**之前**留的那一版：产物同目录 `<原名>_<YYYYMMDD>_<序号>.<ext>`（口径与命令见 `../sr-askme/references/version-history.md`） |
 
 日期格式 `YYYYMMDD`。目录不存在时创建。
 

@@ -18,6 +18,9 @@
        仍活着只杀**本实例自己那个 PID**（绝不碰你自己开着的 Excel）。
     另有：保存**之前**一切检查都不通过就中止（目标文件一个字节都没动）；保存前在同目录做字节级备份；
     验收不过自动从备份恢复（`--no-restore` 可关）。
+    写入**且验收通过**之后，还会把"改前那一版"留成一份**历史版本**
+    （`<原名>_<YYYYMMDD>_<序号>.<ext>`，累积留档；口径见 `skills/sr-askme/references/version-history.md`）——
+    落点取计划里的 `history_dir`，不给就落目标文件同目录。
 
 用法:
     python excel_com_edit.py --plan plan.json [--dry-run] [--no-restore] [--recalc]
@@ -28,6 +31,7 @@
   "schema_version": 1,
   "change_set_id": "CS-20261010-001",
   "target_file": "D:\\...\\A016-联盟等级.xlsx",
+  "history_dir": "D:\\...\\features\\联盟讨伐\\gdd",   // 可选：历史版本落点（既有表**建议给**）
   "recalc": false,
   "new_file": {"sheets": ["联盟里程碑"]},          // 仅新建表时给（目标文件不存在）
   "ops": [
@@ -43,6 +47,9 @@
     {"change_id": "CHG-006", "kind": "add_sheet",      "sheet": "联盟里程碑"}
   ]
 }
+
+★ `history_dir` 为什么对**既有表**重要：`config_root`（`策划配置\`）是程序运行时读的目录，
+  多出来的工作簿会进导出 / INDEX / 引用扫描的视野 ⇒ 既有表的历史版本要落**该功能的 `gdd\`**。
 
 返回码: 0=写入且验收通过; 1=验收失败(已恢复/新文件保留为 .failed.); 2=拒绝写入或计划有问题(目标未动);
         3=写入过程异常或 Excel 未确认退出(已尽力恢复, 见输出)。
@@ -70,6 +77,23 @@ XL_OPENXML_WORKBOOK_MACRO = 52
 MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3
 
 CONTENT_KINDS = {"value", "formula"}
+
+
+def _setup_stdout():
+    """输出编码：**真人终端保持系统默认**（老 conhost 是 GBK），**被管道/重定向采集时用 UTF-8**。
+
+    ★ 为什么要有这段（2026-10-13 实测的一次真事故）：本文件会输出 `✓` `✗` `⇒` `⚠` 这些符号，
+      它们在 GBK 下编不出来。**终端里跑没事**（Python 在 Windows 控制台上直接写 UTF-16），
+      但**被管道采集时**（agent / CI / 自检脚本调它）会抛 UnicodeEncodeError ——
+      引擎崩在半路、**退出码变成 1**，看上去就跟"验收失败"一模一样。
+      当时的表现：自检在管道里跑，前三个用例全被误判成 FAIL，查了半天才发现是编码。
+      按"有没有 tty"分两种口径，两边都能读。
+    """
+    try:
+        if not sys.stdout.isatty():
+            sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001 —— 老 Python / 特殊流：编不出来也不该让引擎挂掉
+        pass
 
 
 def log(msg):
@@ -146,10 +170,39 @@ def load_and_check_plan(plan_path):
     if not isinstance(target, str) or not target.strip():
         raise ValueError("计划缺 target_file")
     plan["target_file"] = os.path.abspath(target)
+    # 可选：**历史版本落点**（口径见 skills/sr-askme/references/version-history.md）
+    # ★ `config_root` 里的既有表**要给**：不给就落目标表同目录，而配置目录里多出来的工作簿
+    #   会进导出 / INDEX / 引用扫描的视野。要给就给**该功能的 `gdd\`**。
+    hist = plan.get("history_dir")
+    if hist is not None and (not isinstance(hist, str) or not hist.strip()):
+        raise ValueError("history_dir 要么不给，要么给一个非空路径字符串")
+    if isinstance(hist, str) and hist.strip():
+        plan["history_dir"] = os.path.abspath(hist)
+    else:
+        plan.pop("history_dir", None)
     for op in plan["ops"]:
         if op.get("kind") == "add_sheet" and op.get("ref"):
             raise ValueError("add_sheet 不该带 ref")
     return plan, expect
+
+
+def load_history_tool():
+    """加载兄弟 skill 的 `history_snapshot.py`（产物历史版本）—— **序号判据只有一份**，不在这里重写。
+
+    位置：`skills/sr-config/tools/` 往上三级是 `skills/` ⇒ `skills/sr-askme/tools/history_snapshot.py`
+    （与布局绑定的**唯一**假设；找不到就返回 `None`，调用方如实报告、**不阻塞**已经成功的写入）。
+    """
+    tool = Path(__file__).resolve().parent.parent.parent / "sr-askme" / "tools" / "history_snapshot.py"
+    if not tool.is_file():
+        return None
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("sr_history_snapshot", str(tool))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ── COM 小工具 ─────────────────────────────────────────────────────────────────
@@ -315,6 +368,7 @@ def _dependents(wb, ops):
 # ── 主流程 ─────────────────────────────────────────────────────────────────────
 
 def main():
+    _setup_stdout()
     ap = argparse.ArgumentParser(description="经 Excel COM 改表：只改目标 / 保真 / 保存并退出 Excel")
     ap.add_argument("--plan", required=True)
     ap.add_argument("--dry-run", action="store_true", help="只做预检与打开-关闭，不写不存")
@@ -327,7 +381,8 @@ def main():
     started = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     t0 = time.time()
     result = {"started_at": started, "plan": args.plan, "verdict": "unknown", "steps": [],
-              "backup": None, "verify_report": None, "excel": {}, "errors": []}
+              "backup": None, "verify_report": None, "history_version": None, "history_error": None,
+              "excel": {}, "errors": []}
 
     def finish(code):
         result["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -376,6 +431,39 @@ def main():
         result["backup"] = str(backup)
         log("备份: %s" % backup.name)
         return backup
+
+    # ── 历史版本（**累积留档**，与 `.backup.` 不是一回事）
+    #
+    # 用户口径（2026-10-13，权威见 skills/sr-askme/references/version-history.md）：
+    # **每次产物的修改都留下历史版本**，按 `<原名>_<YYYYMMDD>_<序号>.<ext>` 区分。
+    #
+    # ★ 两处刻意的选择：
+    #   ① 从**备份**派生、并且**只在写入且验收通过之后**才落 —— 备份就是"改前状态"，
+    #      写入没成（回滚了）就不会白留一版；
+    #   ② 序号算在 `history_snapshot.py` 里，这里**只调用**，不重写算法（判据两份 = 本仓库头号毛病）。
+    def make_history_version():
+        if is_new or backup is None:
+            return None
+        mod = load_history_tool()
+        if mod is None:
+            result["history_error"] = "找不到 history_snapshot.py（历史版本没留成）"
+            log("  ! 历史版本没留成：找不到 history_snapshot.py（本包应当随 skill 分发）")
+            return None
+        out_dir = plan.get("history_dir") or str(target.parent)
+        try:
+            code, msg, dest = mod.do_snapshot(backup, out_dir=out_dir)
+        except Exception as e:  # noqa: BLE001 —— 留版本失败**不许**影响已经成功的写入
+            result["history_error"] = "%s: %s" % (type(e).__name__, e)
+            log("  ! 历史版本没留成：%s" % result["history_error"])
+            return None
+        if code != 0 or dest is None:
+            result["history_error"] = msg
+            log("  ! 历史版本没留成：%s" % msg)
+            return None
+        result["history_version"] = str(dest)
+        result["history_dir"] = out_dir
+        log("历史版本: %s" % dest.name)
+        return dest
 
     # ── COM
     try:
@@ -438,7 +526,11 @@ def main():
             if sheets:
                 wb.Worksheets(1).Name = sheets[0]
                 for name in sheets[1:]:
-                    wb.Worksheets.Add(After=wb.Worksheets(wb.Worksheets.Count)).Name = name
+                    # ★ 位置参数而非 After=：中文版 Excel 不认英文命名参数，
+                    #   实测 `Add(After=Worksheets(Count))` 被当成 Before，导致新建表的
+                    #   sheet 顺序整体倒序（2026-10-12 实测：8 张表声明 [INDEX,…,配置说明] 得到逆序）。
+                    #   Add(Before, After, Count, Type) —— 传 (None, <最后一页>) 才是"追加到末尾"。
+                    wb.Worksheets.Add(None, wb.Worksheets(wb.Worksheets.Count)).Name = name
             result["steps"].append({"step": "new_workbook", "sheets": sheets})
         else:
             try:
@@ -616,6 +708,8 @@ def main():
 
     if verdict == "pass":
         result["verdict"] = "pass"
+        # ★ 写入且验收通过之后，才把"改前那一版"留成历史版本（见上面 make_history_version 的说明）
+        make_history_version()
         log("✓ 验收通过：只改了声明区域，批注/公式/格式/缓存值保真，Excel 已退出")
         return finish(0)
 

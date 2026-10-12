@@ -5,7 +5,7 @@ description: sr 系列 skill 的配置与使用教学：首次用 sr-* 时（con
 
 # SR-AskMe：sr 系列的配置与使用教学
 
-本 skill 是 SR 团队工作流 skill（`sr-concept` / `sr-analysis` / `sr-gdd-human` / `sr-gdd-ai` / `sr-gdd-fix` / `sr-gdd-review` / `sr-gdd-html` / `sr-config` / `sr-gtgenerator`）的**共享基础设施**：**配置**与**教学**。它自己不产出策划内容。
+本 skill 是 SR 团队工作流 skill（`sr-concept` / `sr-analysis` / `sr-gdd-human` / `sr-gdd-ai` / `sr-gdd-fix` / `sr-gdd-review` / `sr-gdd-UE` / `sr-gdd-html` / `sr-config` / `sr-gtgenerator`）的**共享基础设施**：**配置**与**教学**。它自己不产出策划内容。
 
 ## 一、本机配置（一处契约）
 
@@ -37,7 +37,7 @@ description: sr 系列 skill 的配置与使用教学：首次用 sr-* 时（con
 | --- | --- | --- |
 | `evidence\` | **进来的原件 + 过程证据** | 竞品截图/录屏/PV · 旧文档原件 · 外部交付包 `UE交付_<日期>\` · 抽帧与证据包 · 校准流水 `calibration_<主题>.jsonl` |
 | `analysis\` | **想出来的内容** | 设计核三角报告 · 功能设计稿 · 体验报告 · 问题卡 · 复刻规格 · 各类交接 JSON · 旧文档分析 · 人工补充 |
-| `gdd\` | **写出来的正文与交付物** | 成稿 `<主题>_<日期>.md` · 定稿 `<主题>_<日期>_定稿.md` · 修订点清单 · 审查报告 `<主题>_<日期>_审查.md` · 评审宣讲 HTML（+ content.json） |
+| `gdd\` | **写出来的正文与交付物** | 成稿 `<主题>_成稿.md` · 定稿 `<主题>_定稿.md` · 修订点清单 · 审查报告 `<主题>_<日期>_审查.md` · **UE 界面稿 `<主题>_UE.html`（+ `.content.json`）** · 宣讲 HTML `<主题>_宣讲.html`（+ 草稿 `<主题>_宣讲.md`）（**一律不带日期** —— 日期只出现在历史版本后缀里，见 `references/version-history.md`） |
 | `decisions\` | **定下来的事** | `决策记录.md` —— **一个功能只有一个决策文件**，所有决策按时间追加（见 `references/decision-recording.md`） |
 
 ★ 旧口径里的 `source\` 并入 `evidence\`、`delivery\` 并入 `gdd\`；工作区根下平铺的 `proposals\ analysis\ decisions\ evidence\` 是**历史结构**，新工作一律进功能目录。
@@ -50,13 +50,14 @@ description: sr 系列 skill 的配置与使用教学：首次用 sr-* 时（con
 
 | 文件 | 内容 | 引用方（按各 skill 自身指针实测） |
 | --- | --- | --- |
-| `references/sr_project_context.md` | 项目语境：数值铁律、写作约束、受众默认 | sr-concept / sr-analysis / sr-gdd-human / sr-gdd-ai / sr-gdd-fix / sr-gdd-review / sr-gdd-html / sr-gtgenerator 第 0 步；sr-config 只取路径（`config_root`）与配置说明口径，不读本文；`skill-hero-config` 也不读 |
+| `references/sr_project_context.md` | 项目语境：数值铁律、写作约束、受众默认 | sr-concept / sr-analysis / sr-gdd-human / sr-gdd-ai / sr-gdd-fix / sr-gdd-review / sr-gdd-UE / sr-gdd-html / sr-gtgenerator 第 0 步；sr-config 只取路径（`config_root`）与配置说明口径，不读本文；`skill-hero-config` 也不读 |
 | `references/gdd-pipeline.md` | 成稿 / 配置表 / 定稿三份产出契约：分工、生命周期、章节对应、两道门、退回方式 | sr-gdd-human / sr-gdd-ai / sr-gdd-fix / sr-gdd-review 第 0 步；sr-config 按需（派生依据） |
 | `references/gdd-writing-discipline.md` | GDD 撰写纪律（成稿 / 定稿共用；编号与判据的唯一出处，按 `适用` 列取用） | sr-gdd-human / sr-gdd-fix 第 0 步；sr-gdd-ai / sr-gdd-review 第 0 步（按适用列自查 / 作审查基准，不复制编号） |
 | `references/evidence-boundary.md` | 证据边界：来源标签、Evidence Ledger、证据优先级、轻量标注、高风险断言 | sr-gdd-human 第 0 步（填附录 A 台账用全篇）；sr-gdd-ai / sr-gdd-fix / sr-gdd-review 第 0 步（只用「轻量标注」）；sr-concept / sr-analysis 未挂指针——其内嵌方法卡自带同类规则，按需自取 |
 | `references/governance-check.md` | 治理检查五条规则 + 治理引用五条 | sr-concept 第 3 步 / sr-analysis 第 4 步；sr-gdd-human 写附录 A.9 时；sr-gdd-ai 仅直接调用路径（结论随决策记录留档，定稿不设治理引用节） |
 | `references/decision-recording.md` | 决策记录写入规范：**一个功能只有一个决策文件** `decisions\决策记录.md`，条目 = 时间（年月日时分秒）+ 决策内容；什么时候写、怎么写、写完怎么说 | **10 个 sr-* skill 全部挂了指针**（在「按需读取」或第 0 步的共享语境清单里）；配套技能 `skill-hero-config` 也挂了 —— v5 起**不止 Human Gate**：只要定下了一件事就记 |
-| `references/bare-invocation.md` | 裸调用行为：先说明需要什么输入再停下等用户 | sr-concept / sr-analysis / sr-gdd-human / sr-gdd-ai / sr-gdd-fix / sr-gdd-review / sr-gdd-html 的「无输入时的行为」节；config 系三个 skill 无此节 |
+| `references/version-history.md` | **产物历史版本**：每次**改写已有产物之前**先存一版，命名 `<原名>_<YYYYMMDD>_<序号>.<ext>`；什么时候存、放哪、命令、与 `.backup.` 的区别 | 会改写产物的 skill：sr-concept / sr-analysis / sr-gdd-human / sr-gdd-ai / sr-gdd-fix / sr-gdd-review / sr-gdd-UE / sr-gdd-html / sr-gtgenerator 的「产出规范」节；**sr-config 不用手跑**（写入引擎自动留）；工具 `tools/history_snapshot.py` |
+| `references/bare-invocation.md` | 裸调用行为：先说明需要什么输入再停下等用户 | sr-concept / sr-analysis / sr-gdd-human / sr-gdd-ai / sr-gdd-fix / sr-gdd-review / sr-gdd-UE / sr-gdd-html 的「无输入时的行为」节；config 系三个 skill 无此节 |
 | `references/calibration-recording.md` | 校准记录：Gate 前用户迭代输入的实时留痕（触发时机、jsonl 格式、会话恢复） | sr-concept 第 5 步 / sr-analysis 第 6 步（设计稿与规格迭代循环）；sr-gdd-human 第 5 步 / sr-gdd-ai 第 6 步（门内 revise 循环）；无迭代循环的 skill 不写 |
 | `references/使用说明.md` | **使用教学正文**（给人看的那份）：主线五步、旁支、skill 一览、术语、产出落盘摘要、两条共用规矩的指针 | sr-askme 自己（用户问用法时**按原文讲**）；面板〔使用说明〕弹窗（构建期快照，见 `tools/gen-teaching.mjs`）—— 其它 sr-* skill 不引用它 |
 

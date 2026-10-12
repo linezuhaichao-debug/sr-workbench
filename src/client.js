@@ -1236,20 +1236,32 @@ function DecisionsModule(props) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// ④ 模块三 · 最终产物（四类 + 一个折叠的兜底）
+// ④ 模块三 · 最终产物（五类 + 一个折叠的兜底 + 一行留痕报数）
 // ════════════════════════════════════════════════════════════════════════════
 
 function OutputsModule(props) {
 	const d = props.detail;
-	const o = d.outputs || { groups: [], total: 0, counts: {} };
+	const o = d.outputs || { groups: [], total: 0, counts: {}, trace: null };
 	const main = (o.groups || []).filter((g) => g.key !== "other");
 	const other = (o.groups || []).filter((g) => g.key === "other")[0];
+	/**
+	 * ★ **过程留痕**（变更集 / 读回验收报告 / 审查报告 / 修订点清单）——**不列出来，只报数**
+	 *   （用户口径 2026-10-12：留痕该留、留着有用，但工作台回答的是"这个功能产出了什么"，
+	 *   过程档案不是产物）。
+	 *
+	 *   这一行是"一个文件都不许静默丢"那条老纪律的落点：**不列 ≠ 不告诉你** ——
+	 *   有多少份、是些什么、在哪，都得写清楚（`total + trace.count` 等于两个桶的全部文件）。
+	 */
+	const trace = o.trace || null;
+	const traceN = (trace && trace.count) || 0;
+	const traceDirs = [];
+	for (const f of (trace && trace.files) || []) if (f.dir && traceDirs.indexOf(f.dir) < 0) traceDirs.push(f.dir);
 
 	return h("div", null, [
 		/**
 		 * ★ 卡片头与「这个功能的 4 个桶」整块**去掉**（用户口径）：上面那排页签已经写着「最终产物（N）」，
 		 *   再顶一行标题+说明是重复占位；想看目录就点功能根那行的〔打开路径〕。
-		 *   于是这里**只有四组产物**，不再有别的字。
+		 *   于是这里**只有几组产物**，不再有别的字。
 		 */
 		h(Card, { key: "h" }, [
 			o.total === 0
@@ -1274,12 +1286,30 @@ function OutputsModule(props) {
 						})))
 				])),
 			other && other.count > 0
-				? h(Fold, { key: "o", label: "其它（不属上面四类）", note: "（" + other.count + " 件 —— 如实列出，不丢）" },
+				// ★ 标签**取组自己的**（`other.label`）——原来这里硬编码「不属上面四类」，
+				//   加了「配置表」之后就成了错的（判据两份的头号毛病：改了一处、另一处没跟上）。
+				? h(Fold, { key: "o", label: other.label, note: "（" + other.count + " 件 —— 如实列出，不丢）" },
 					h("div", { style: { paddingLeft: "2px" } },
 						other.files.map((f) => h(FileRow, {
 							key: f.rel, name: f.name, rel: f.rel, root: d.root,
 							note: f.kindLabel, sub: f.subdir ? f.subdir + "\\" : "", onOpen: props.onOpen
 						}))))
+				: null,
+			/** 留痕报数（没有留痕就一个字节都不出现 —— 干净的功能看不到它）。 */
+			traceN > 0
+				? h("div", {
+					key: "tr",
+					style: {
+						marginTop: GAP.md, paddingTop: GAP.sm, borderTop: "1px solid " + V.line,
+						fontSize: FONT.meta, color: V.idle, lineHeight: 1.7
+					}
+				}, [
+					"另有 " + traceN + " 份",
+					h("span", { key: "b", style: { fontWeight: 600, color: V.muted } }, "过程留痕"),
+					"（" + (trace.summary || "") + "）不在上面列出 —— 它们是过程档案、不是这个功能的产物；",
+					traceDirs.length ? "文件在 " + traceDirs.join(" · ") + "\\ 里" : "文件在功能目录里",
+					"，要看就点上面的〔打开路径〕。"
+				])
 				: null
 		])
 	]);

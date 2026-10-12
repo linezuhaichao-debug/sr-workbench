@@ -16,17 +16,18 @@ description: 将游戏策划规则转换为可追溯的配置数据契约——�
 - 建立规则、字段 schema、codec 或 `INDEX` 映射时，完整读取 [规则与 schema](references/rules_and_schema.md)。
 - 生成 change set、风险或确认门时，完整读取 [change set 与确认](references/change_set.md)。
 - 新建任何运行时表时，完整读取 [新表与配置测试数据](references/new_table.md)。
-- 实际写入工作簿时，完整读取 [最小事务写入与验收](references/mutation_protocol.md)——写入计划格式、Excel COM 流程、验收判据（V1–V7）、已知归一化与重算口径都在那里。
+- 实际写入工作簿时，完整读取 [最小事务写入与验收](references/mutation_protocol.md)——写入计划格式、Excel COM 流程、验收判据（V1–V7，外加追加记录专用的 V1c / V5c）、已知归一化与重算口径都在那里。
 - TimeMachine 项目任务读取 [TimeMachine profile](profiles/timemachine.md)；`config_root` 取自 `%USERPROFILE%\.dsh\sr-workbench\config.local.json` 的 `config_root` 字段（首次使用由 sr-askme 引导生成，并同步写成本目录 `profiles/timemachine.local.yaml`，含私有路径不入仓库；手工配置参照 `timemachine.local.example.yaml`）。**以 `config.local.json` 为准**，yaml 是该值的本机副本；两者不一致时按 `config.local.json` 回写 yaml。
 - 涉及功能设计时读 `../sr-askme/references/gdd-pipeline.md`（成稿 / 配置表 / 定稿三份产出契约）：**字段与记录从 `sr-gdd-human` 成稿的规则派生**（规则 → 字段），成稿的规则是配置表的唯一设计依据。`<SR_WORKSPACE>`（定稿所在）同样取自 `%USERPROFILE%\.dsh\sr-workbench\config.local.json` 的 `sr_workspace` 字段。
 - 决策记录：**只要定下了一件事就记**（选表 / 定字段 / 命名 / 改记录 / 放弃某个方案 / 更正之前的判断…，不只确认门那一次）。落点与格式见 `../sr-askme/references/decision-recording.md` —— 追加进**本功能**的 `decisions\决策记录.md`（一个功能只有一个决策文件）。
+- 历史版本：**不用手跑** —— 改表的"改前那一版"由写入引擎在**验收通过之后**自动留成 `<原名>_<YYYYMMDD>_<序号>.<ext>`，落 `plan.json` 的 `history_dir`（既有表指向该功能的 `gdd\`）。口径见 `../sr-askme/references/version-history.md`。
 
 ## 附带工具
 
 - [tools/probe_workbook.py](tools/probe_workbook.py)：工作簿标准探查（**只读**）。凡需要读取既有工作簿结构（表头、样本、`INDEX`、批注、结构特性），一律运行该脚本而不是临时手写 openpyxl 代码——脚本默认输出**全部单元格批注**，批注是项目字段契约（枚举含义、codec 规则、取值边界）的权威载体，只读 `cell.value` 会漏读契约；对零批注的运行时表它会显式告警。
 - [tools/excel_com_edit.py](tools/excel_com_edit.py)：**唯一写入通道**——经 Excel COM 改表：独占实例、只写声明区域、批注/公式/格式/缓存值保真、写公式只重算该格、保存后彻底退出并核对本实例 PID 消失；预检不过或缓存值对不上就**不保存**（目标文件一个字节都没动），验收不过自动从备份恢复。用法见脚本头部注释；先跑 `--dry-run` 可以不写盘试一遍。
 - [tools/verify_table_edit.py](tools/verify_table_edit.py)：**只改目标 + 保真**验收（只读，不写任何文件）。比对「改前备份 vs 改后文件」：结构 / 只改声明区域 / 缓存值 / 批注 / 格式 / VBA / 未覆盖部件。写入引擎会自动调用它，也可以单独对任一对文件跑。
-- [tools/selftest_excel_com.py](tools/selftest_excel_com.py)：工具链自检（**不碰你的配置表**，全程在临时目录里）。一条命令跑完：新建表 → 改一格 → 越界检测 → 原值守卫 → 缓存值守卫 → dry-run → Excel 是否彻底退出。换机器、升级 Office、或怀疑工具坏了时先跑它；8/8 通过才算工具链可用。
+- [tools/selftest_excel_com.py](tools/selftest_excel_com.py)：工具链自检（**不碰你的配置表**，全程在临时目录里）。一条命令跑完：新建表 → 改一格 → 越界检测 → 原值守卫 → 缓存值守卫 → dry-run → **追加记录（V1c/V5c 正例 + V1c/V5 两条负例）** → Excel 是否彻底退出。换机器、升级 Office、或怀疑工具坏了时先跑它；**11/11 通过**才算工具链可用。
 - [tools/check_pattern_fields.py](tools/check_pattern_fields.py)：项目 profile「已验证模式」的字段级校验。建表/写字段前先跑它——全部通过则模式直接采用，有字段缺失则降级 `candidate` 并登记 `profile_conflict`。它取代对来源工作簿的哈希校验（配置表是活文档，以字段存在性为验证依据）。
 - [tools/readback_report_template.md](tools/readback_report_template.md)：读回验收报告模板。验收报告必须逐条对照模板必达项填写 `pass|fail|not_applicable`，**禁止自拟另一套"全部通过"式清单替代模板**——`pass` 总数不能掩盖任何必达项缺失。
 
@@ -98,17 +99,19 @@ description: 将游戏策划规则转换为可追溯的配置数据契约——�
 
 **产物落点**：change set（`CS-*.yaml`）与读回验收报告（`*_读回验收报告.md`）写在 **`<功能目录>\gdd\`**（不再写 `analysis\`）；新建的表也落那里；既有表在 `config_root` **就地更新**。
 
-实际写入遵循 [最小事务写入与验收](references/mutation_protocol.md)：**改表一律经 Excel COM**（`tools/excel_com_edit.py`；openpyxl 禁止写表）。顺序是：冻结 change set → 生成写入计划 `plan.json`（每条 op 带 `change_id`、引用与本计划改动前的原值 `expect_before`）→ 引擎独占实例打开目标表、**只对声明引用写入**、写公式的格只重算它自己 → 备份 → 保存 → **彻底退出 Excel 并核对本实例 PID 消失** → 自动跑 `tools/verify_table_edit.py` 验收。验收不过就**从备份恢复**（新表保留为 `.failed.`）并置 `BLOCKED`，不得宣称完成。
+**产物历史版本**：改表**之前**的那一版会被留成历史版本（`<原名>_<YYYYMMDD>_<序号>.<ext>`，如 `A079-联盟讨伐_20261012_1.xlsx`）—— 为此 `plan.json` 要带 `history_dir`，**既有表指向该功能的 `gdd\`**。落点绝不放配置目录（那里多出来的工作簿会进扫描视野）。口径与命令见 [`../sr-askme/references/version-history.md`](../sr-askme/references/version-history.md)。
 
-三条硬要求必须逐条落到报告里：① 只改声明的单元格/区域（V2：全表差异集合 ⊆ 声明区域）；② 批注、公式、格式、缓存值全部保留（V3/V3b/V4/V5，`--recalc` 时缓存值变化必须逐格列出）；③ 保存并彻底退出 Excel（引擎退出核对：本实例 PID 消失 + 用户原有的 Excel 进程未受影响）。Excel 保存固有的归一化痕迹（打印设置默认值、色阶尾数、VBA 重新序列化）由 V1b/V5b/V6/V7 如实报 WARN —— **不许当"全部通过"**，也不许抹掉。
+实际写入遵循 [最小事务写入与验收](references/mutation_protocol.md)：**改表一律经 Excel COM**（`tools/excel_com_edit.py`；openpyxl 禁止写表）。顺序是：冻结 change set → 生成写入计划 `plan.json`（每条 op 带 `change_id`、引用与本计划改动前的原值 `expect_before`）→ 引擎独占实例打开目标表、**只对声明引用写入**、写公式的格只重算它自己 → 备份 → 保存 → **彻底退出 Excel 并核对本实例 PID 消失** → 自动跑 `tools/verify_table_edit.py` 验收 → **验收通过后留一份产物历史版本**。验收不过就**从备份恢复**（新表保留为 `.failed.`）并置 `BLOCKED`，不得宣称完成。
 
-配置目录扫描排除名称包含 `.backup.`、`.tmp.`、`.failed.` 的工作簿；这些文件不能成为配置模式、引用或 `INDEX` 的证据来源。
+三条硬要求必须逐条落到报告里：① 只改声明的单元格/区域（V2：全表差异集合 ⊆ 声明区域）；② 批注、公式、格式、缓存值全部保留（V3/V3b/V4/V5，`--recalc` 时缓存值变化必须逐格列出）；③ 保存并彻底退出 Excel（引擎退出核对：本实例 PID 消失 + 用户原有的 Excel 进程未受影响）。Excel 保存固有的归一化痕迹（打印设置默认值、色阶尾数、VBA 重新序列化）由 V1b/V5b/V6/V7 如实报 WARN；**追加记录**（`record_change`）另有两类 WARN —— **V1c**（行/列增长只在声明区域内）与 **V5c**（声明写入的空白格被 Excel 补默认样式）—— 同样要如实列条数，**不许当"全部通过"**，也不许抹掉。
+
+配置目录扫描排除名称包含 `.backup.`、`.tmp.`、`.failed.` 的工作簿，以及**产物历史版本**（名字尾部是 `_<8 位日期>_<序号>`，如 `A079-联盟讨伐_20261012_1.xlsx`）；这些文件不能成为配置模式、引用或 `INDEX` 的证据来源。
 
 验收报告必须按 [tools/readback_report_template.md](tools/readback_report_template.md) 逐条对照必达项（含「配置说明、字段批注写入项 100% 匹配」与三条硬要求），每项标注 `pass|fail|not_applicable`；不得以自拟检查项的通过总数替代模板必达项。引擎产出的 `*_验收报告.json` 是原始证据，必须与 md 报告一并交出。
 
-**已有定稿时同步定稿**：若该功能已有定稿（`<功能目录>\gdd\<主题>_<日期>_定稿.md`；多份时以用户指定或最新为准），改表完成后**顺手回写定稿**——只动涉及的行：§4 规则与字段的对应、§6 配置契约（该工作簿**表清单**里的那一行 + 该表的**字段行**；`状态` 在表级，字段表不带状态列）。这是**最小编辑**：不重跑整合、不过 Human Gate。没有定稿时跳过——成稿阶段由 `sr-gdd-ai` 首次整合时从配置表读回。
+**已有定稿时同步定稿**：若该功能已有定稿（`<功能目录>\gdd\<主题>_定稿.md` —— **不带日期**，一个功能一个活定稿），改表完成后**顺手回写定稿**——只动涉及的行：§4 规则与字段的对应、§6 配置契约（该工作簿**表清单**里的那一行 + 该表的**字段行**；`状态` 在表级，字段表不带状态列）。这是**最小编辑**：不重跑整合、不过 Human Gate。没有定稿时跳过——成稿阶段由 `sr-gdd-ai` 首次整合时从配置表读回。
 
-完成判据：写入引擎的退出核对通过（本实例 Excel PID 消失、用户原有的 Excel 未受影响）、V1–V7 验收全部 pass（WARN 项已如实记录）、最终目标中的所有 change 和测试数据均已 100% 读回验证、不存在计划外配置数据差异；已有定稿时 §4 对应行与 §6 契约已同步；否则状态为 `BLOCKED`，不宣称完成。
+完成判据：写入引擎的退出核对通过（本实例 Excel PID 消失、用户原有的 Excel 未受影响）、V1–V7 验收全部 pass（**追加记录时另含 V1c / V5c**；WARN 项已如实列条数）、最终目标中的所有 change 和测试数据均已 100% 读回验证、不存在计划外配置数据差异；已有定稿时 §4 对应行与 §6 契约已同步；否则状态为 `BLOCKED`，不宣称完成。
 
 ## 最终交付
 

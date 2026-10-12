@@ -14,7 +14,7 @@ description: "功能 GDD 定稿修改工作流（定稿之后的维护入口；�
 - **配置侧不自己改表**：需要动配置表时调 `/sr-config`；改表后的定稿同步（§4 对应行、§6 契约）由它按自己的第 5 步完成。
 - **文本不落表**：§7 只维护条目；文本表的增删改由用户自行发起。
 
-形态基准：`../sr-gdd-ai/resources/templates/feature-gdd.md`（定稿骨架，本 skill 不重排结构）。原地修改当前定稿时沿用其头部（`doc_type: final_gdd` + 原 `status`：`active` 保持 `active`，`pending` 保持 `pending`，不代用户过门）；用户要求留版本时，新文件为 `active`，旧文件为 `archived`。
+形态基准：`../sr-gdd-ai/resources/templates/feature-gdd.md`（定稿骨架，本 skill 不重排结构）。**原地修改**当前定稿（`gdd\<主题>_定稿.md` —— 它**永远是同一个名字，不换版**），沿用其头部（`doc_type: final_gdd` + 原 `status`：`active` 保持 `active`，`pending` 保持 `pending`，不代用户过门）。每次**改写之前**先按 `../sr-askme/references/version-history.md` 存一版历史版本，见「产出规范」。
 
 ## 使用方法
 
@@ -28,7 +28,7 @@ description: "功能 GDD 定稿修改工作流（定稿之后的维护入口；�
 
 裸调用纪律见 `../sr-askme/references/bare-invocation.md`。本 skill 收集：
 
-1. **定稿路径**：要改哪份定稿（`<功能目录>\gdd\<主题>_<日期>_定稿.md`；只给主题时在**本功能目录的 `gdd\`** 下定位，多份候选项列给用户选，不默认取最新）。
+1. **定稿路径**：要改哪份定稿（`<功能目录>\gdd\<主题>_定稿.md`；只给主题时在**本功能目录的 `gdd\`** 下定位，多份候选项列给用户选，不默认取最新）。
 2. **要改什么**：一句话说清改动意图（哪条规则 / 哪个界面 / 哪个字段 / 哪段文本）。
 3. **状态**：目标文件头部必须是 `doc_type: final_gdd`，且 `status` 为 `active`（已生效定稿）或 `pending`（定稿门之前的门内迭代）；`provisional` / `blocked` 定稿先回 `/sr-gdd-ai` 补齐，未写头部字段的旧文档先让用户确认其是否为当前有效定稿。
 
@@ -82,7 +82,8 @@ description: "功能 GDD 定稿修改工作流（定稿之后的维护入口；�
 - [ ] 改动清单每条都已落地，无漏改、无超范围改动
 - [ ] 影响面全部闭合（规则 / 界面 / 范围门 / 埋点 / 验收 / §6 / §7）
 - [ ] 定稿结构未变（章节顺序与骨架与 `feature-gdd.md` 一致）
-- [ ] 定稿顶部 `status` 保持原值（`active` 保持 `active`；`pending` 保持 `pending`，不代用户过门）；用户要求留版本时，新文件为 `active`、旧文件为 `archived`
+- [ ] 定稿顶部 `status` 保持原值（`active` 保持 `active`；`pending` 保持 `pending`，不代用户过门）；文件名保持 `<主题>_定稿.md`（**不换版** —— 定稿永远同一个名字）
+- [ ] **改之前那一版已留成历史版本**（`<原名>_<YYYYMMDD>_<序号>.md`，落在同一个 `gdd\`；口径见 `../sr-askme/references/version-history.md`）
 - [ ] **每节表头列名与 `../sr-gdd-ai/resources/templates/feature-gdd.md` 逐字一致；任何层级的标题都不得超出模板声明（含 `####` 及更深）；子节只出现在模板声明的位置**（`### R1 <规则组名>` / `### 5.1 UI-M1 <界面名>` / `### 6.N <工作簿文件名>.xlsx（<角色>）` 这类占位模式按实例数实例化，显得比模板"多"不算越界；**把元素拆成小标题写＝越界**，细节写进该子节正文的 `**元素名**：` 行内加粗、图注或既有表格子）——**界面子节图数 1 张 + UE 表，正文不重复 UE 表已写过的事实**
 
 完成判据：清单全部通过；不过关则修订后复查。用户需要独立复核时，可在本步之后调 `/sr-gdd-review` 复审（它按"定稿改过之后"分诊）。
@@ -97,17 +98,25 @@ pending：revise / done（门内迭代不设 approve——是否过门由 `/sr-g
 ```
 完成判据：用户已从上述选项中明确选择其一；**用户没表态之前不许替他写任何决策** —— 但用户每给一次拍板或纠偏，就按 `../sr-askme/references/decision-recording.md` 当场追加一条（门内迭代也各记一条）。
 
-本 skill 不设 `request_missing_evidence`——输入就是定稿本身，缺什么在第 1 步已问。用户选择后按 `../sr-askme/references/decision-recording.md` **追加一条决策记录**：`**决策**：` 写这次拍板（approve / revise / reject）与改动清单要点（编号 · 改动点 · 涉及章节 · 改前 → 改后 · 是否动配置表）；`**依据**` 写判断依据；`**影响**` 写留版本时的新旧定稿路径与要同步的配置表。**选择发生在门内迭代里就当场记**，别攒到最后。
+本 skill 不设 `request_missing_evidence`——输入就是定稿本身，缺什么在第 1 步已问。用户选择后按 `../sr-askme/references/decision-recording.md` **追加一条决策记录**：`**决策**：` 写这次拍板（approve / revise / reject）与改动清单要点（编号 · 改动点 · 涉及章节 · 改前 → 改后 · 是否动配置表）；`**依据**` 写判断依据；`**影响**` 写**留历史版本**时的新旧定稿路径与要同步的配置表。**选择发生在门内迭代里就当场记**，别攒到最后。
 
 ## 产出规范
 
 | 产出 | 路径（`<SR_WORKSPACE>\` 下） |
 |------|------|
-| 改后的定稿（**原地更新**，维持唯一活文档） | `<功能目录>\gdd\<主题>_<日期>_定稿.md` |
+| 改后的定稿（**原地更新**，维持唯一活文档） | `<功能目录>\gdd\<主题>_定稿.md` |
+| **改之前那一版**（历史版本，每次改都留） | `<功能目录>\gdd\<主题>_定稿_<YYYYMMDD>_<序号>.md` |
 | 改动清单 | **不单独落盘**——要点写进决策记录那一条的正文 |
 | 决策记录 | `<功能目录>\decisions\决策记录.md`（**追加**一条；格式见 `../sr-askme/references/decision-recording.md`） |
 
-用户要求留版本时，定稿另存为 `<主题>_<新日期>_定稿.md`，新旧路径写进决策记录那一条的 `**影响**`。
+**改写定稿之前先存一版历史版本**（**每次改都存**，不是"用户要求才存"）：动笔前跑一次
+`python "<sr-askme 技能目录>/tools/history_snapshot.py" "<定稿绝对路径>"` —— 它读目录实况算序号、
+打印新版本路径。口径唯一权威：[`../sr-askme/references/version-history.md`](../sr-askme/references/version-history.md)。
+新旧路径写进决策记录那一条的 `**影响**`。
+
+★ **不再有「换版」**（2026-10-12 口径）：定稿**永远是同一个名字**（`gdd\<主题>_定稿.md`）——
+不再"另存为新日期的定稿、新 `active` 旧 `archived`"。历代样子一律由**历史版本**承担；
+`status` 只在 `pending → active` 这条线上走（旧的 `archived` 语义随之退休）。
 
 ## 上游依赖（只读，勿改）
 

@@ -543,7 +543,17 @@ def compare(plan, expect, before, after, recalc, max_examples=40):
 
     # ── V1 结构
     bad = []
+    grown = []          # ★ 追加记录（record_change）：声明区域内的「行/列增长」，单列 V1c 如实报 WARN
     added = expect.get("added_sheets") or set()
+    # 声明区域 → 每张表已声明的行号/列号集合（判「增长是否落在声明区域内」用）
+    decl_rows, decl_cols = {}, {}
+    for k in expect["touched"]:
+        sh, _, coord = k.rpartition("!")
+        m = re.match(r"^([A-Z]+)(\d+)$", coord)
+        if not m:
+            continue
+        decl_cols.setdefault(sh, set()).add(column_index_from_string(m.group(1)))
+        decl_rows.setdefault(sh, set()).add(int(m.group(2)))
     order_after = [s for s in after["order"] if s not in added]
     if before["order"] != order_after:
         bad.append("工作表集合/顺序变了: %r → %r" % (before["order"], after["order"]))
@@ -556,9 +566,26 @@ def compare(plan, expect, before, after, recalc, max_examples=40):
             continue
         for f in ("state", "freeze_panes", "auto_filter", "protection", "merged", "sheet_format",
                   "sheet_props", "page_setup", "print_options", "views", "data_validations",
-                  "conditional_formatting", "tables", "hyperlinks", "max_row", "max_col"):
+                  "conditional_formatting", "tables", "hyperlinks"):
             if b.get(f) != a.get(f):
                 bad.append("%s 的 %s 变了" % (name, f))
+        # ★ 维度（max_row / max_col）：只允许**追加方向**，且增长出来的每一行/列都必须在本次声明区域内。
+        #   既有尺寸变小、或增长越过声明区域 ⇒ 仍判 fail（那是"多写了东西"，不是追加记录）。
+        for f, dr in (("max_row", decl_rows), ("max_col", decl_cols)):
+            bv, av = b.get(f) or 0, a.get(f) or 0
+            if bv == av:
+                continue
+            if av < bv:
+                bad.append("%s 的 %s 变小了（%r → %r）—— 只允许追加方向" % (name, f, bv, av))
+                continue
+            allowed = dr.get(name) or set()
+            outside = [x for x in range(bv + 1, av + 1) if x not in allowed]
+            if outside:
+                bad.append("%s 的 %s 增长到 %d，但有 %d 行/列不在声明区域内（例：%s）"
+                           % (name, f, av, len(outside), outside[:5]))
+            else:
+                grown.append("%s 的 %s：%d → %d（增长 %d，全部落在声明区域内）"
+                             % (name, f, bv, av, av - bv))
         bad += ["%s 的 %s" % (name, line) for line in
                 _dims_diff(b.get("cols") or {}, a.get("cols") or {}, "列宽/列隐藏")]
         bad += ["%s 的 %s" % (name, line) for line in
@@ -568,8 +595,15 @@ def compare(plan, expect, before, after, recalc, max_examples=40):
             bad.append("多出来工作表: %s" % name)
     diffs["structure"] = bad[:max_examples]
     check("V1", "结构一致（表/合并/行列尺寸/冻结/筛选/保护/定义名/验证/条件格式/超链接）",
-          bad, "工作表、合并区、行列尺寸、冻结、筛选、保护、定义名、表对象、数据验证、条件格式、超链接、页面设置逐项一致",
+          bad, "工作表、合并区、行列尺寸、冻结、筛选、保护、定义名、表对象、数据验证、条件格式、超链接、页面设置逐项一致（行/列增长见 V1c）",
           {"sheets": len(before["sheets"])})
+    # ★ V1c：追加记录带来的维度增长 —— 只在声明区域内、且只有增长方向，如实报 WARN（不判 fail）
+    checks.append({"id": "V1c", "title": "追加记录：行/列增长仅限本次声明区域内（record_change）",
+                   "result": "warn" if grown else "pass",
+                   "detail": ("%d 处维度增长，全部落在声明区域内 —— 追加记录的固有结果，既有内容零变化"
+                              % len(grown)) if grown else "没有维度增长",
+                   "evidence": {"grown": grown[:max_examples]}})
+
 
     # ── V1b 打印设置的"序列化归一化"（有效值没变，只是 Excel 把默认值写成了显式值）
     raw_only = []
@@ -689,6 +723,7 @@ def compare(plan, expect, before, after, recalc, max_examples=40):
 
     # ── V5 格式
     bad = []
+    new_style_declared = []      # ★ 追加记录：声明写入的空白格被 Excel 补默认样式 → 单列 V5c 报 WARN
     for k in _diff_keys(before["styles"], after["styles"]):
         b = before["styles"].get(k)
         a = after["styles"].get(k)
@@ -697,6 +732,13 @@ def compare(plan, expect, before, after, recalc, max_examples=40):
             # 一侧没格式：只有「声明过的数字格式变更」才放过（另一侧默认格式无从逐项比对）
             side = a or b
             if want_fmt is not None and side and side[0] == want_fmt:
+                continue
+            # ★ V5c：改前**无格式** + 这一格在本次声明区域内 ⇒ Excel 给人写过的空白格补了一条默认样式记录
+            #   （追加记录的固有痕迹，与"把既有格式改坏"无关）→ 记 WARN，逐格列出。
+            #   反例仍判 fail：改前**有**格式而改后丢失（a is None），或该格根本不在声明区域内。
+            if b is None and k in expect["touched"]:
+                new_style_declared.append("%s 无格式 → %r（本次声明写入，Excel 给空白格补的默认样式）"
+                                          % (k, side[0] if side else None))
                 continue
             bad.append("%s %s" % (k, "新增了格式（改前无格式）" if b is None else "丢失了格式（改后有值无格式）"))
             continue
@@ -712,6 +754,14 @@ def compare(plan, expect, before, after, recalc, max_examples=40):
           "全表逐格格式指纹一致（%d 格有格式；数字格式仅声明的 %d 格变更）"
           % (len(after["styles"]), len(expect["number_format"])),
           {"styled_cells": len(after["styles"])})
+    # ★ V5c：追加记录时，声明写入的空白格会被 Excel 补一条默认样式记录 —— 如实报 WARN，不判 fail
+    diffs["styles_new_declared"] = new_style_declared[:max_examples]
+    checks.append({
+        "id": "V5c", "title": "追加记录：声明写入的空白格被 Excel 补默认样式（不判 fail，逐格列出）",
+        "result": "warn" if new_style_declared else "pass",
+        "detail": ("%d 格由「无格式」变为 Excel 的默认样式（本次声明写入的追加行固有结果）"
+                   % len(new_style_declared)) if new_style_declared else "没有声明写入的空白格新增样式",
+        "evidence": {"count": len(new_style_declared), "cells": new_style_declared[:max_examples]}})
 
     # ── V5b 只差「Excel 序列化尾数」的格子（色阶 tint / 字体 family-charset）：如实报 WARN，不判 fail
     labels = ("数字格式", "字体", "填充", "边框", "对齐", "保护")
@@ -899,7 +949,24 @@ def run(before_path, after_path, plan_path, recalc=False, max_examples=40):
     return report
 
 
+def _setup_stdout():
+    """输出编码：**真人终端保持系统默认**（老 conhost 是 GBK），**被管道/重定向采集时用 UTF-8**。
+
+    ★ 为什么要有这段（2026-10-13 实测的一次真事故）：本工具的判据输出会被**别的进程捕获**
+      （写入引擎的自动验收、自检脚本、agent）。而捕获端一律按 **UTF-8** 解（`encoding="utf-8"`），
+      这边却按 GBK 吐字节 ⇒ 解码器会把一个汉字的两字节当成 UTF-8 前导，
+      **连带吃掉紧随其后的 ASCII** —— 实测 `content_outside` / `B6` 就是这么整段消失的，
+      自检有一格因此时红时绿，看着像验收器坏了。统一成"非 tty 就 UTF-8"后两边才对齐。
+    """
+    try:
+        if not sys.stdout.isatty():
+            sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001 —— 编不出来也不该让验收器挂掉
+        pass
+
+
 def main():
+    _setup_stdout()
     ap = argparse.ArgumentParser(description="「只改目标 + 保真」验收（只读，不写表）")
     ap.add_argument("--before", required=True, help="改前文件（备份副本）")
     ap.add_argument("--after", required=True, help="改后文件")

@@ -98,15 +98,25 @@ test("详情：三块数据都有，4 个桶的计数 == 磁盘真值", async ()
 	}
 });
 
-test("详情：最终产物五类 + 其它 = analysis 与 gdd 两个桶的全部文件（一个都不丢）", async () => {
+test("详情：最终产物五类 + 其它 + **留痕只报数** = analysis 与 gdd 两个桶的全部文件（一个都不丢）", async () => {
 	requireRealData();
 	const port = testPort();
 	const topic = topics()[0];
 	const d = await loadFeatureDetail(port, { root: featureRoot(topic) });
 	const onDisk = diskFiles(topic, "analysis").length + diskFiles(topic, "gdd").length;
-	assert.equal(d.outputs.total, onDisk, "面板列出的条目数 == 磁盘上这两个桶里的文件数");
+	assert.equal(d.outputs.total + d.outputs.trace.count, onDisk, "列出的 + 留痕 == 磁盘上这两个桶里的文件数");
 	assert.deepEqual(d.outputs.allPaths.length, d.outputs.total);
-	assert.deepEqual(d.outputs.groups.map((g: any) => g.key), ["brainstorm", "draft", "final", "speech", "config", "other"]);
+	assert.equal(d.outputs.trace.allPaths.length, d.outputs.trace.count);
+	assert.deepEqual(d.outputs.groups.map((g: any) => g.key), ["brainstorm", "draft", "final", "ue", "speech", "config", "other"]);
+	assert.equal(d.outputs.groups.filter((g: any) => g.key === "trace").length, 0, "留痕不成组（不列进列表）");
+	// ★ 报数不是拍脑袋写的：每一份留痕都得真在盘上
+	for (const f of d.outputs.trace.files) {
+		const abs = path.join(featureRoot(topic), f.rel.replace(/\//g, "\\"));
+		assert.ok(fs.existsSync(abs), "留痕报出来的这一份要真在盘上：" + f.rel);
+	}
+	// 详情 counts 与 outputs 同源（卡片墙也吃 counts）
+	assert.equal(d.counts.trace, d.outputs.trace.count, "counts.trace 与 outputs.trace 同源");
+	assert.equal(d.counts.config, d.outputs.counts.config, "配置表的计数也别漏（原来 counts 里没有这一项）");
 });
 
 test("详情：列举失败不抛给界面（缺桶 / 目录不在 = 空 + 如实标注）", async () => {

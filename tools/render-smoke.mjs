@@ -367,12 +367,27 @@ if (real) {
 		// ★ 「已有的分析结论」这个**标题**已按用户口径删掉（2026-10-09）—— 列表本体还在，断言改盯列表
 	"四个入口", "竞品分析", "问答式访谈", "旧文档分析", "人工补充"
 	]);
-	// ★ 「这个功能的 4 个桶」整块已去掉；这里只该有五组产物（组头带桶名小字）
-	//   搬完位置后：变更集与验收报告在 gdd\ 那一类里（这两条断言就是搬迁的实测证据）
-	pass("详情 · 真数据（" + real.topic + "）· 最终产物", { Panel: realPanel("outputs") }, [
-		"最终产物", "头脑风暴的产物", "成稿", "定稿", "宣讲稿", "配置表", "analysis\\", "gdd\\",
-		"CS-20261009-001.yaml", "CS-20261009-001_读回验收报告.md"
+	// ★ 「这个功能的 4 个桶」整块已去掉；这里只该有五组产物（组头带桶名小字）。
+	//   ★ 2026-10-13 口径：**过程留痕不在列表里**（变更集 / 读回验收报告 / 审查报告），
+	//     只在页签底部报数 —— 所以下面既钉"报数那句话真出现"，又钉"留痕没被列成条目"。
+	const realOut = pass("详情 · 真数据（" + real.topic + "）· 最终产物", { Panel: realPanel("outputs") }, [
+		"最终产物", "头脑风暴的产物", "成稿", "定稿", "UE 界面稿", "宣讲稿", "配置表", "analysis\\", "gdd\\"
 	]);
+	const realTrace = real.detail.outputs.trace || { count: 0, files: [] };
+	if (realTrace.count > 0) {
+		const must = ["另有 " + realTrace.count + " 份", "过程留痕", "要看就点上面的〔打开路径〕"];
+		const missing = must.filter((s) => !realOut.includes(s));
+		if (missing.length) {
+			results.push({ pass: "详情 · 真数据 · 留痕报数", missing: missing });
+			console.error("✗ [最终产物] 留痕报数那句话没出现：" + missing.join("、"));
+		}
+		// ★ 反面钉子：留痕里的**每一份**都不许作为条目出现（真数据里就有这些文件）
+		const leaked = realTrace.files.map((f) => f.name).filter((n) => realOut.includes(n));
+		if (leaked.length) {
+			results.push({ pass: "详情 · 真数据 · 留痕不该列出", missing: leaked });
+			console.error("✗ [最终产物] 留痕被当成条目列出来了：" + leaked.join("、"));
+		}
+	}
 }
 
 // ── ③'' 技能用法弹窗：内容来自**构建期快照**（面板直接 import，不走网络）──────────
@@ -475,21 +490,31 @@ const DETAIL = {
 	},
 	outputs: {
 		total: 6, allPaths: [],
-		counts: { brainstorm: 1, draft: 1, final: 1, speech: 1, config: 1, other: 1 },
+		counts: { brainstorm: 1, draft: 1, final: 1, ue: 1, speech: 1, config: 1, other: 1, trace: 2 },
 		groups: [
 			{ key: "brainstorm", label: "头脑风暴的产物", note: "analysis\\ 里的全部内容", dynamic: "", dir: "analysis", count: 1, files: [{ name: "experience-report_x_20260915.md", rel: "analysis/experience-report_x_20260915.md", dir: "analysis", subdir: "", group: "brainstorm", kindLabel: "", note: "" }] },
-			{ key: "draft", label: "成稿", note: "gdd\\<主题>_<日期>.md", dynamic: "", dir: "gdd", count: 1, files: [{ name: "联盟讨伐_20260918.md", rel: "gdd/联盟讨伐_20260918.md", dir: "gdd", subdir: "", group: "draft", kindLabel: "", note: "" }] },
+			{ key: "draft", label: "成稿", note: "gdd\\<主题>.md", dynamic: "", dir: "gdd", count: 1, files: [{ name: "联盟讨伐_20260918.md", rel: "gdd/联盟讨伐_20260918.md", dir: "gdd", subdir: "", group: "draft", kindLabel: "", note: "" }] },
 			{ key: "final", label: "定稿", note: "gdd\\*_定稿.md", dynamic: "现有 2 份，按文件名日期标最新的一份", dir: "gdd", count: 1, files: [{ name: "联盟讨伐_20260923_定稿.md", rel: "gdd/联盟讨伐_20260923_定稿.md", dir: "gdd", subdir: "", group: "final", kindLabel: "", note: "最新定稿" }] },
-			{ key: "speech", label: "宣讲稿", note: "gdd\\*_宣讲_<日期>.html", dynamic: "", dir: "gdd", count: 1, files: [{ name: "联盟讨伐_宣讲_20260924.html", rel: "gdd/联盟讨伐_宣讲_20260924.html", dir: "gdd", subdir: "", group: "speech", kindLabel: "", note: "" }] },
-			// ★ 新分类：配置表（表本体 + change set 都能落进来）
-			{ key: "config", label: "配置表", note: "配置这条线的交付物", dynamic: "", dir: "gdd · analysis", count: 2, files: [
-				{ name: "联盟讨伐_配置表_20261009.xlsx", rel: "gdd/联盟讨伐_配置表_20261009.xlsx", dir: "gdd", subdir: "", group: "config", kindLabel: "", note: "" },
-				{ name: "CS-20261009-001.yaml", rel: "analysis/CS-20261009-001.yaml", dir: "analysis", subdir: "", group: "config", kindLabel: "", note: "" }
+			// ★ UE 界面稿是 sr-gdd-UE 的产出（只出定稿 §5 的界面与交互规则）
+			{ key: "ue", label: "UE 界面稿", note: "gdd\\<主题>_UE.html —— 给 UE/UI 同事看的界面与交互规则", dynamic: "", dir: "gdd", count: 1, files: [{ name: "联盟讨伐_UE.html", rel: "gdd/联盟讨伐_UE.html", dir: "gdd", subdir: "", group: "ue", kindLabel: "", note: "" }] },
+			{ key: "speech", label: "宣讲稿", note: "gdd\\<主题>_宣讲.html —— 定稿的人读版网页", dynamic: "", dir: "gdd", count: 1, files: [{ name: "联盟讨伐_宣讲.html", rel: "gdd/联盟讨伐_宣讲.html", dir: "gdd", subdir: "", group: "speech", kindLabel: "", note: "" }] },
+			// ★ 配置表这一类**只装表本体**（变更集是留痕，见下面的 trace）
+			{ key: "config", label: "配置表", note: "配置这条线的交付物", dynamic: "", dir: "gdd", count: 1, files: [
+				{ name: "联盟讨伐_配置表_20261009.xlsx", rel: "gdd/联盟讨伐_配置表_20261009.xlsx", dir: "gdd", subdir: "", group: "config", kindLabel: "", note: "" }
 			] },
-			{ key: "other", label: "其它（不属上面五类）", note: "审查 / 修订点 / 定稿 HTML 派生件 —— 如实列出，不丢", dynamic: "", dir: "", count: 1, files: [{ name: "联盟讨伐_20260921_定稿_审查.md", rel: "gdd/联盟讨伐_20260921_定稿_审查.md", dir: "gdd", subdir: "", group: "other", kindLabel: "审查", note: "" }] }
-		]
+			// ★ 其它：真产物里认不出五类的（定稿 HTML 派生件 / 界面图…）—— 审查报告那种已经挪进留痕
+			{ key: "other", label: "其它（不属上面几类）", note: "定稿 HTML 派生件 / 界面图 —— 如实列出，不丢", dynamic: "", dir: "gdd", count: 1, files: [{ name: "联盟讨伐_20260923_定稿.html", rel: "gdd/联盟讨伐_20260923_定稿.html", dir: "gdd", subdir: "", group: "other", kindLabel: "定稿 HTML", note: "" }] }
+		],
+		// ★ 过程留痕：不列出来，只在页签底部**报数**（用户口径 2026-10-13）
+		trace: {
+			count: 2, summary: "1 份变更集 · 1 份审查报告", allPaths: [],
+			files: [
+				{ name: "CS-20261009-001.yaml", rel: "gdd/CS-20261009-001.yaml", dir: "gdd", subdir: "", group: "trace", kindLabel: "", note: "" },
+				{ name: "联盟讨伐_20260921_定稿_审查.md", rel: "gdd/联盟讨伐_20260921_定稿_审查.md", dir: "gdd", subdir: "", group: "trace", kindLabel: "", note: "" }
+			]
+		}
 	},
-	counts: { brainstorm: 1, draft: 1, final: 1, speech: 1, config: 2, other: 1, evidence: 1, decisions: 2, total: 6 }
+	counts: { brainstorm: 1, draft: 1, final: 1, ue: 1, speech: 1, config: 1, other: 1, trace: 2, evidence: 1, decisions: 2, total: 6 }
 };
 
 /**
@@ -521,18 +546,24 @@ pass("详情 · 决策记录（合成）", featureScript("decisions"), [
 ]);
 
 const outText = pass("详情 · 最终产物（合成）", featureScript("outputs"), [
-	"最终产物", "头脑风暴的产物", "成稿", "定稿", "宣讲稿", "最新定稿", "现有 2 份",
-	"其它（不属上面四类）",
-	"不是 4 个桶的目录（如实列出）：source", "功能根下的散文件：feature.json"
+	"最终产物", "头脑风暴的产物", "成稿", "定稿", "UE 界面稿", "宣讲稿", "最新定稿", "现有 2 份",
+	"其它（不属上面几类）",
+	"不是 4 个桶的目录（如实列出）：source", "功能根下的散文件：feature.json",
+	// ★ 留痕那一行（用户口径 2026-10-13）：**只报数、不列条目**
+	"另有 2 份", "过程留痕", "1 份变更集 · 1 份审查报告", "要看就点上面的〔打开路径〕"
 ]);
 // 反面：那一整块不该再出现
 for (const gone of ["这个功能的 4 个桶", "只有四类", "evidence\\", "decisions\\"]) {
 	if (outText.includes(gone)) { results.push({ pass: "最终产物 · 不该有", missing: [gone] }); console.error("✗ [最终产物] 还有该去掉的：" + gone); }
 }
+// ★ 反面钉子：留痕**不作为条目列出来**（合成数据里那两份就该只在报数那句话里出现）
+for (const gone of ["CS-20261009-001.yaml", "联盟讨伐_20260921_定稿_审查.md"]) {
+	if (outText.includes(gone)) { results.push({ pass: "最终产物 · 留痕不该列出", missing: [gone] }); console.error("✗ [最终产物] 留痕被当成条目列出来了：" + gone); }
+}
 
 // 折叠区**默认是收起的**（收起时里面的字根本不渲染）——把 Fold 强制展开，走一遍展开分支
 pass("详情 · 最终产物（展开「其它」）", Object.assign(featureScript("outputs"), { Fold: [true] }), [
-	"其它（不属上面四类）", "审查", "联盟讨伐_20260921_定稿_审查.md"
+	"其它（不属上面几类）", "定稿 HTML", "联盟讨伐_20260923_定稿.html"
 ]);
 
 // ── ④' 决策记录：有真实条目时**不该**出现「条目格式」模板 ──────────────

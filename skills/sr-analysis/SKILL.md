@@ -135,6 +135,7 @@ route_to_gdd / revise_spec / stop
 | 复刻规格（仅 enter_dissection 后） | `analysis\replication-spec_<主题>_<日期>.md` |
 | GDD 交接（仅 route_to_gdd 时，交接目标 sr-gdd-human） | `analysis\sr-gdd-handoff_<主题>_<日期>.json` |
 | 决策记录 | `<功能目录>\decisions\决策记录.md`（追加；格式见 `../sr-askme/references/decision-recording.md`） |
+| **历史版本** | 改写已有产物**之前**留的那一版：产物同目录 `<原名>_<YYYYMMDD>_<序号>.<ext>`（口径与命令见 `../sr-askme/references/version-history.md`） |
 
 目录不存在时直接创建。日期格式 `YYYYMMDD`。
 

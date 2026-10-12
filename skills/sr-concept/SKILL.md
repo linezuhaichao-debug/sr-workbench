@@ -149,6 +149,7 @@ route_to_gdd / revise_concept / stop
 | 功能设计稿（仅选定设计核后） | `analysis\feature-concept_<主题>_<日期>.md` |
 | GDD 交接（仅 route_to_gdd 时） | `analysis\sr-gdd-handoff_<主题>_<日期>.json` |
 | 决策记录 | `<功能目录>\decisions\决策记录.md`（追加；格式见 `../sr-askme/references/decision-recording.md`） |
+| **历史版本** | 改写已有产物**之前**留的那一版：产物同目录 `<原名>_<YYYYMMDD>_<序号>.<ext>`（口径与命令见 `../sr-askme/references/version-history.md`） |
 
 目录不存在时直接创建。日期格式 `YYYYMMDD`。
 

@@ -10,4 +10,4 @@
 /sr-gdd-ai 把神话宝库的成稿和配置变更整合成定稿
 ```
 
-**产出**（本功能目录 `<功能目录>\` 下）：定稿 `gdd\<主题>_<日期>_定稿.md`（带 `_定稿` 后缀，头部 `doc_type: final_gdd` + `status: pending`，过门后 `active`）；退回成稿时另出 `_修订点.md`；每次拍板追加一条 `decisions\决策记录.md`。
+**产出**（本功能目录 `<功能目录>\` 下）：定稿 `gdd\<主题>_定稿.md`（带 `_定稿` 后缀、**不带日期**，头部 `doc_type: final_gdd` + `status: pending`，过门后 `active`；历代样子按 `../version-history.md` 留成 `_定稿_<日期>_<序号>.md`，不进正文）；退回成稿时另出 `_修订点.md`；每次拍板追加一条 `decisions\决策记录.md`。

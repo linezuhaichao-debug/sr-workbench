@@ -2,7 +2,8 @@
 """selftest_excel_com.py — 改表工具链自检（sr-config skill 附带，**不碰你的配置表**）。
 
 在一份临时目录里：用写入引擎自己建一张新表（顺带验新建表路径）→ 改它一格 →
-跑三条守卫与一次 dry-run → 核对 Excel 真的退出了。任何一步不符合预期就退出码非 0。
+跑三条守卫与一次 dry-run → 追加记录（验 V1c/V5c 两条追加分支的正例与负例）→
+核对 Excel 真的退出了。任何一步不符合预期就退出码非 0。
 
 用法:
     python selftest_excel_com.py [--keep] [--json 结果.json]
@@ -25,6 +26,21 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 EDITOR = HERE / "excel_com_edit.py"
 VERIFIER = HERE / "verify_table_edit.py"
+
+
+def _setup_stdout():
+    """输出编码：**真人终端保持系统默认**（老 conhost 是 GBK），**被管道/重定向采集时用 UTF-8**。
+
+    ★ 为什么要有这段（2026-10-13 实测）：用例名里有 `⇒`，GBK 编不出来。终端里跑没事
+      （Python 在 Windows 控制台直接写 UTF-16），但**被管道采集时**会抛 UnicodeEncodeError，
+      自检自己崩在打印那一步 —— 而且**引擎那边也会一起崩**（它的 `✓` 同理），
+      于是用例被误判成 FAIL、退出码看起来像"验收失败"。两边都得按"有没有 tty"分口径。
+    """
+    try:
+        if not sys.stdout.isatty():
+            sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def sha256(p):
@@ -64,6 +80,7 @@ def write_plan(path, plan):
 
 
 def main():
+    _setup_stdout()
     ap = argparse.ArgumentParser(description="改表工具链自检（只动临时文件）")
     ap.add_argument("--keep", action="store_true", help="保留临时目录（排障用）")
     ap.add_argument("--json", dest="json_out")
@@ -139,6 +156,31 @@ def main():
         "ops": [{"change_id": "X03", "kind": "value", "sheet": "数据", "ref": "B6", "value": 11,
                  "expect_before": 10}],
     })
+    # 追加记录（record_change）：往既有表末尾加行 —— 会同时触发 V1c（行增长）与 V5c（空白格补默认样式）
+    append_plan = write_plan(tmp / "plan-append.json", {
+        "schema_version": 1, "change_set_id": "SELFTEST-APPEND", "target_file": str(target),
+        "ops": [
+            {"change_id": "A01", "kind": "value", "sheet": "数据", "ref": "B7", "value": "新行1"},
+            {"change_id": "A02", "kind": "value", "sheet": "数据", "ref": "C7", "value": 11},
+            {"change_id": "A03", "kind": "value", "sheet": "数据", "ref": "B8", "value": "新行2"},
+            {"change_id": "A04", "kind": "value", "sheet": "数据", "ref": "C8", "value": 12},
+        ],
+    })
+    # 同一批追加，但**只声明第 7 行** —— 给 V1c 造负例：增长出的第 8 行落在声明区域外
+    append_narrow_plan = write_plan(tmp / "plan-append-narrow.json", {
+        "schema_version": 1, "change_set_id": "SELFTEST-APPEND-NARROW", "target_file": str(target),
+        "ops": [{"change_id": "A01", "kind": "value", "sheet": "数据", "ref": "B7", "value": "新行1"}],
+    })
+    # 给 V5 造负例：声明过 B6 的数字格式变更（引擎自己会放行）…
+    fmt_plan = write_plan(tmp / "plan-fmt.json", {
+        "schema_version": 1, "change_set_id": "SELFTEST-FMT", "target_file": str(target),
+        "ops": [{"change_id": "M01", "kind": "number_format", "sheet": "数据", "ref": "B6", "value": "0"}],
+    })
+    # …但拿一份**没声明数字格式**的窄计划去验收：既有格格式被改 ⇒ V5 必须判 fail
+    fmt_narrow_plan = write_plan(tmp / "plan-fmt-narrow.json", {
+        "schema_version": 1, "change_set_id": "SELFTEST-FMT-NARROW", "target_file": str(target),
+        "ops": [{"change_id": "M02", "kind": "value", "sheet": "数据", "ref": "B6", "value": 10}],
+    })
 
     cases = []
 
@@ -207,6 +249,37 @@ def main():
              "B6=%r E6=%r D6=%r 缓存=%r（零重算下应仍为 7）· 下游公式提醒=%r" % (b6, e6, d6f, d6v, dep))
     except Exception as e:  # noqa: BLE001
         case("⑧改后读回", False, "openpyxl 读不动：%s" % e)
+
+    # ⑨ 追加记录（正例）：往既有表末尾加两行 ⇒ V1c（行增长）与 V5c（空白格补默认样式）各报一条 WARN，
+    #    V1 / V5 仍判 pass，整体验收通过（exit 0）
+    code, out = run([EDITOR, "--plan", append_plan, "--json", tmp / "r9.json"])
+    ok9 = (code == 0 and "[WARN] V1c" in out and "[WARN] V5c" in out
+           and "[FAIL] V1 " not in out and "[FAIL] V5 " not in out and "验收通过" in out)
+    case("⑨追加记录：行增长与新增默认样式报 WARN（V1c/V5c），V1/V5 仍 pass",
+         ok9, "exit=%d；%s" % (code, [l.strip() for l in out.splitlines() if "V1c" in l or "V5c" in l][:2]))
+
+    # ⑩ V1c 负例：同一批追加只声明第 7 行 ⇒ 第 8 行落在声明区域外，必须判 fail
+    backups = sorted(glob.glob(str(tmp / "自检表.backup.*.xlsx")))
+    if not backups:
+        case("⑩V1c 负例", False, "没找到 ⑨ 产生的备份")
+    else:
+        code, out = run([VERIFIER, "--before", backups[-1], "--after", target,
+                         "--plan", append_narrow_plan])
+        ok10 = code == 1 and "V1c" in out and "不在声明区域内" in out
+        case("⑩V1c 负例：增长越过声明区域 ⇒ 判 fail（不接受'多写了东西'）",
+             ok10, "exit=%d" % code)
+
+    # ⑪ V5 负例：既有格（B6）的数字格式被改、而验收计划没声明它 ⇒ V5 必须判 fail
+    code, out = run([EDITOR, "--plan", fmt_plan, "--json", tmp / "r11.json"])
+    backups = sorted(glob.glob(str(tmp / "自检表.backup.*.xlsx")))
+    if code != 0 or not backups:
+        case("⑪V5 负例", False, "声明数字格式的那次写入没成功（exit=%d）" % code)
+    else:
+        code2, out2 = run([VERIFIER, "--before", backups[-1], "--after", target,
+                           "--plan", fmt_narrow_plan])
+        ok11 = code2 == 1 and "V5" in out2 and "数字格式被改动" in out2
+        case("⑪V5 负例：既有格格式被改而计划未声明 ⇒ 判 fail（V5c 不放过既有格）",
+             ok11, "声明格式那次 exit=%d；窄计划验收 exit=%d" % (code, code2))
 
     failed = [c for c in cases if not c["ok"]]
     summary = {"excel_version": version, "tmpdir": str(tmp), "cases": cases,

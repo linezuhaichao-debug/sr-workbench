@@ -25,6 +25,7 @@ normaltxt.xml，通常即 GTGenerator.exe 所在目录）。检查
 兼容 `config.local.example.json` 未列出的新字段：写入时保留原文件已有字段。
 
 - 决策记录：**只要定下了一件事就记**（选表 / 定字段 / 命名 / 改记录 / 放弃某个方案 / 更正之前的判断…，不只确认门那一次）。落点与格式见 `../sr-askme/references/decision-recording.md` —— 追加进**本功能**的 `decisions\决策记录.md`（一个功能只有一个决策文件）。
+- 历史版本：**改写已有的 xml / 导出物之前**，先按 `../sr-askme/references/version-history.md` 存一版（`python "<sr-askme 技能目录>/tools/history_snapshot.py" "<产物绝对路径>"`）。
 
 ## 环境准备（每次会话首次使用前检查一次）
 
