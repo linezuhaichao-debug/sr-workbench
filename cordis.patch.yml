@@ -172,7 +172,7 @@
                 `sr-askme/references/version-history.md` —— 本文不复述，免得出现第二份权威。
 
                 ★ 为什么这条要进 persona：它**跨 skill** —— 改稿的可能是 `sr-gdd-fix`、覆盖渲染 HTML 的可能是
-                `sr-gdd-html` / `sr-gdd-UE`、改表的是 `/sr-config`，而 persona **每轮都在上下文里**，与当前跑哪个 skill 无关。
+                `sr-gdd-html` / `sr-gdd-ue`、改表的是 `/sr-config`，而 persona **每轮都在上下文里**，与当前跑哪个 skill 无关。
                 这与上面「决策记录契约」靠 persona 兜底是同一个道理。
 
                 ### 存完怎么说

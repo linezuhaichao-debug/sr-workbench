@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""评审宣讲 content.json 校验器（sr-gdd-html 专用）。
+"""界面 UE 规则 content.json 校验器（sr-gdd-ue 专用）。
 
 在渲染之前跑，补上生成器不查的那一层：
 
   * 内容红线：确认编号（Q1/Q2…）、"拍板 / 已确认 / 跟推荐 / 用户原话"等过程措辞；
+  * **越线判据**：验收标准编号（AC…）等**非界面内容**混进来 —— 本 skill 只出定稿 §5；
+  * 疑似非界面内容（警告，需人工核对）：范围门 / 埋点 / 交接清单；
   * 承载红线：外链图片、`src=`/`href=` 注入、散装资源目录引用；
   * 注入安全：规则正文会被原样写进 HTML，除白名单标签外不得出现任何 `<...>`；
   * 结构完整性：字段、id/num 唯一性与格式、有图或有指路（不留空）、图片存在性；
@@ -27,13 +29,23 @@ from pathlib import Path
 
 # 内容红线：(标签, 正则)。全部为 FAIL。
 RED_LINES = [
-    ("确认编号（Q1/Q2…）——过程性信息不进宣讲页", re.compile(r"(?<![A-Za-z0-9])Q\d+(?![A-Za-z0-9])")),
+    ("确认编号（Q1/Q2…）——过程性信息不进界面稿", re.compile(r"(?<![A-Za-z0-9])Q\d+(?![A-Za-z0-9])")),
     ("过程措辞「拍板」", re.compile(r"拍板")),
     ("过程措辞「已确认」", re.compile(r"已确认")),
     ("过程措辞「跟推荐」", re.compile(r"跟推荐")),
     ("用户原话引用", re.compile(r"用户原话|用户说|用户要求原话")),
     ("Human Gate 选项词泄漏（approve/revise/reject）", re.compile(r"(?<![A-Za-z_])(approve|revise|reject)(?![A-Za-z_])")),
     ("证据/拍板编号（E001/T01/C1 式）", re.compile(r"(?<![A-Za-z0-9])(?:E\d{3}|T\d{2}|C\d+)(?![A-Za-z0-9])")),
+    ("验收标准编号（AC…）——定稿 §10 的内容，界面稿不出", re.compile(r"(?<![A-Za-z0-9])AC\d+(?![A-Za-z0-9])")),
+]
+
+# 越线嫌疑：(标签, 正则)。全部为 WARN —— 命中不等于越线，但必须人工核对来源章节。
+# 判据的理由：本 skill 只抽定稿 §5，这几类词在 §5 里要么不该出现（范围门 / 交接清单），
+# 要么合法但要确认（埋点上报本身就是 UE 要实现的行为）。
+SUSPECT_NONUI = [
+    ("疑似定稿 §8 范围门（界面稿不含纳入/排除）", re.compile(r"范围门|明确排除|不在本轮")),
+    ("疑似定稿 §9 埋点（确认是界面要上报的行为，而不是埋点信号表）", re.compile(r"埋点")),
+    ("疑似定稿 §11 交接清单", re.compile(r"交接清单|负责人[:：]")),
 ]
 
 # 承载红线：(标签, 正则)。FAIL。
@@ -97,6 +109,10 @@ class Report:
             hits = hits_of(pat, text)
             if hits:
                 self.fail(where, f"{label} —— 命中 {fmt_hits(hits)}")
+        for label, pat in SUSPECT_NONUI:
+            hits = hits_of(pat, text)
+            if hits:
+                self.warn(where, f"{label} —— 命中 {fmt_hits(hits)}")
         for m in TAG_RE.finditer(text):
             if m.group(1).lower() not in ALLOWED_TAGS:
                 self.fail(where, f"出现白名单外的标签 «{m.group(0)}»（正文只允许 <b>/<br>/<i> 这类轻量强调）")
@@ -140,8 +156,9 @@ def lint(data: dict, img_dir: Path | None) -> Report:
     if not isinstance(sections, list) or not sections:
         rep.fail("sections", "必须是非空数组")
         return rep
-    if len(sections) < 2:
-        rep.warn("sections", f"只有 {len(sections)} 节；宣讲页通常 ≥2 节（逐界面节 + 收尾三节）")
+    if len(sections) < 3:
+        rep.warn("sections", f"只有 {len(sections)} 节；界面稿通常是「界面清单 + 逐界面节 + 全局交互规范」≥3 节"
+                             "——请核对定稿 §5 是不是漏抽了")
 
     seen_ids, seen_nums, n_img = set(), set(), 0
     for idx, sec in enumerate(sections):
@@ -231,7 +248,14 @@ def lint(data: dict, img_dir: Path | None) -> Report:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="sr-gdd-html content.json 校验器")
+    # Windows 控制台默认按本地代码页输出，中文在 UTF-8 终端（DSH 会话）里会乱码；统一成 UTF-8。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+    ap = argparse.ArgumentParser(description="sr-gdd-ue content.json 校验器")
     ap.add_argument("--content", required=True, help="content.json 路径")
     ap.add_argument("--img-dir", default=None, help="截图目录（给了就校验图片存在性）")
     ap.add_argument("--strict", action="store_true", help="把警告也当作失败")
@@ -259,7 +283,7 @@ def main() -> int:
     for line in rep.warns:
         print(line)
     if not rep.fails and not rep.warns:
-        print("[OK] 红线、承载、结构与图片检查全部通过（0 失败 / 0 警告）")
+        print("[OK] 红线、越线、承载、结构与图片检查全部通过（0 失败 / 0 警告）")
     else:
         n_sec = len(data.get("sections", []) or [])
         n_img = sum(1 for s in (data.get("sections") or []) if isinstance(s, dict) and s.get("image"))

@@ -62,10 +62,10 @@
 
 | 项 | 值（`npm run check:bundled-skills` 实跑） |
 |---|---|
-| 技能数 | **10 个** `sr-*`（9 个模型可见 + 1 个用户专用：`sr-gdd-html`）← `sr-config-heroskill` 已改名 `skill-hero-config`、搬回工作区技能目录（不算 sr 系列） |
-| 正文合计 | **121.8 KB**（11 个 `SKILL.md`） |
-| 兄弟资源 | **127 个文件**（references / scripts / tools / resources / examples）—— **都在包里** |
-| 包体积 | tgz **1.2 MB**（技能是主体；旧设计只有正文时是 137 KB） |
+| 技能数 | **11 个** `sr-*`（9 个模型可见 + 2 个用户专用：`sr-gdd-ue` / `sr-gdd-html`）← `sr-config-heroskill` 已改名 `skill-hero-config`、搬回工作区技能目录（不算 sr 系列）；2026-10-13 `sr-gdd-html` 拆成 `sr-gdd-ue`（**只出定稿 §5** 的界面与 UE 规则）+ `sr-gdd-html`（**定稿全貌**的人读版） |
+| 正文合计 | **139.5 KB**（11 个 `SKILL.md`） |
+| 兄弟资源 | **132 个文件**（references / scripts / tools / resources / examples）—— **都在包里** |
+| 包体积 | tgz **2 MB / 136 个文件**（技能是主体；其中 `sr-gdd-html/resources/am/am.mjs` 单文件 0.5 MB —— 内置的 MIT 渲染器，换来"同事装插件即可出人读版 HTML"） |
 | 不打包的 | `*.local.json`（本机私有）、`__pycache__`/`*.pyc`（缓存） |
 
 ### 技能源就在本仓库 `skills/`（唯一那份）
@@ -276,7 +276,7 @@ tgz 里**只有运行期要的东西**：`package.json` · `cordis.patch.yml`（
 
 ```powershell
 npm run pack:check -- D:\TimeMachine\outputs\dsh-client-ui-sr-workbench-<版本>.tgz
-# 验收（五关）：顶层 5 个文件 + 包内技能齐全（11 个 SKILL.md + 127 个资源 · 无私有文件）
+# 验收（五关）：顶层 5 个文件 + 包内技能齐全（11 个 SKILL.md + 132 个资源 · 无私有文件）
 #              + bundle patch 自带挂载行 + 客户端加载/渲染冒烟 + 宿主半侧注册 11 条
 ```
 
@@ -403,8 +403,8 @@ git show pre-migration-baseline:legacy/pre-migration/package.json
 
 | 仓库内 | 来源 | 改哪一份 |
 |---|---|---|
-| `CONTEXT.md` | `D:\TimeMachine\outputs\CONTEXT.md` | **改工作区那一份**（它是权威源，被 spec/ADR 引用）；改完再复制进来 |
-| `docs/adr/*.md` | `D:\TimeMachine\outputs\docs\adr\*.md` | 同上：新增/修改 ADR 在工作区侧做，再复制进来 |
+| `CONTEXT.md` | （原本从 `D:\TimeMachine\outputs\CONTEXT.md` 复制；**那份已不在**，现在仓库这份是唯一一份） | 直接改仓库这份 |
+| `docs/adr/*.md` | `D:\TimeMachine\outputs\docs\adr\*.md` | 新增/修改 ADR 在工作区侧做，再复制进来 |
 
 仓库里这两份是**副本**，不是权威源——避免出现"两个都对"的漂移。
 

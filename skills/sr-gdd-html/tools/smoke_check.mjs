@@ -1,21 +1,24 @@
 #!/usr/bin/env node
 /**
- * 评审宣讲 HTML 视觉冒烟检查器（sr-gdd-html 可选工具）。
+ * 定稿人读版 HTML 的视觉冒烟检查器（sr-gdd-html 可选工具）。
  *
- * 把模板末尾那份"轻量视觉冒烟清单"落成可执行的五项检查 + 整页截图：
- *   1) 无破图          —— 每张 <img> 都真的解码成功（naturalWidth > 0）
- *   2) 无横向溢出      —— 文档不出现横向滚动条
- *   3) 无文字墙        —— 单条规则正文过长时点名（阈值与 lint_content.py 保持一致）
- *   4) 无布局失衡      —— 长章节的左图必须处于 sticky（否则滚动时图先消失、右侧还剩多屏文字）
- *   5) 章节导航可用    —— 每个 .toc 锚点都能命中对应节点
+ * 渲染是 am 干的，这里只回答"这一页真的打开了吗、还是不是单文件"：
+ *   1) 无破图            —— 每张 <img> 都真的解码成功（naturalWidth > 0）
+ *   2) 无横向溢出        —— 文档不出现横向滚动条
+ *   3) 图片全部内嵌      —— 每张图的 src 都必须是 data:（承载红线：外发不能丢图）
+ *   4) 无外部资源        —— 没有 <link> / 外链 <script> / http(s) 图片（离线可用）
+ *   5) 面板与目录可用    —— 面板数 > 0；doc 模板的每个目录锚点都能命中节点
+ *   6) 草稿源内嵌        —— #am-source 在（说明这页能 am patch 局部改，不必整页重渲）
+ *   7) 界面图吸顶        —— 「图 + 正文」面板的图必须 sticky，并实测滚动后图还在视口里
+ *      （规则再长也能对着图读；靠 tools/apply_reading_layout.mjs 打版式补丁）
  * 另外输出整页截图，供人目视复核——机器检查不替代眼睛。
  *
  * 依赖：Node.js ≥ 22（用到内置 WebSocket 与 fetch），本机已装 Chrome 或 Edge。无第三方包。
  *
  * 用法：
- *   node smoke_check.mjs --html 01_评审宣讲.html [--out smoke.png] [--width 1440] [--chrome <路径>]
+ *   node smoke_check.mjs --html 联盟讨伐_宣讲.html [--out smoke.png] [--width 1440] [--chrome <路径>]
  *
- * 退出码：0 = 五项全过；1 = 有失败项或环境不可用。
+ * 退出码：0 = 全过；1 = 有失败项或环境不可用。
  */
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -23,10 +26,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const RULE_TEXT_WARN = 240;
-
 function parseArgs(argv) {
-  const out = { html: null, out: null, width: 1440, chrome: null, port: 9333 };
+  const out = { html: null, out: null, width: 1440, chrome: null, port: 9334 };
   for (let i = 2; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--html') out.html = argv[++i];
@@ -103,21 +104,22 @@ function cdp(ws) {
 }
 
 const PAGE_CHECKS = `(() => {
-  const RULE_TEXT_WARN = ${RULE_TEXT_WARN};
   const result = {
     title: document.title,
     scrollWidth: document.documentElement.scrollWidth,
     clientWidth: document.documentElement.clientWidth,
     scrollHeight: document.documentElement.scrollHeight,
+    panels: document.querySelectorAll('.am-panel').length,
+    tables: document.querySelectorAll('.am-table-wrap > table').length,
+    diagrams: document.querySelectorAll('.am-diagram').length,
     images: [],
     brokenImages: [],
-    overflowImages: [],
+    externalImages: [],
+    externalRefs: [],
     tocTotal: 0,
     tocBroken: [],
-    sections: [],
-    stickyMissing: [],
-    longRules: [],
-    textP: document.querySelectorAll('main p').length,
+    hasSource: !!document.getElementById('am-source'),
+    sourceChars: (document.getElementById('am-source') || {}).value ? document.getElementById('am-source').value.length : 0,
   };
   for (const img of document.images) {
     const src = img.currentSrc || img.src || '';
@@ -125,27 +127,54 @@ const PAGE_CHECKS = `(() => {
     const broken = !img.complete || img.naturalWidth === 0;
     result.images.push({ kind, broken, w: img.naturalWidth, h: img.naturalHeight, alt: img.alt || '' });
     if (broken) result.brokenImages.push(img.alt || src.slice(0, 60));
-    if (kind !== 'data:') result.overflowImages.push(kind);
+    if (kind !== 'data:') result.externalImages.push(kind + ' ' + (img.alt || src.slice(0, 60)));
   }
-  const tocLinks = Array.from(document.querySelectorAll('.toc a[href^="#"]'));
+  for (const el of document.querySelectorAll('link[href], script[src], iframe[src], object[data], embed[src]')) {
+    const url = el.getAttribute('href') || el.getAttribute('src') || el.getAttribute('data') || '';
+    result.externalRefs.push(el.tagName.toLowerCase() + ' → ' + String(url).slice(0, 80));
+  }
+  const tocLinks = Array.from(document.querySelectorAll('.am-toc a[href^="#"]'));
   result.tocTotal = tocLinks.length;
   for (const a of tocLinks) {
     const id = decodeURIComponent(a.getAttribute('href').slice(1));
     if (!document.getElementById(id)) result.tocBroken.push(id);
   }
-  let idx = 0;
-  for (const sec of document.querySelectorAll('main section')) {
-    idx += 1;
-    const h = sec.getBoundingClientRect().height;
-    const shot = sec.querySelector('.shot, figure');
-    const sticky = shot ? getComputedStyle(shot).position : null;
-    const rules = Array.from(sec.querySelectorAll('.rules p, .rules div')).map((p) => (p.textContent || '').trim());
-    const longOne = rules.filter((t) => t.length > RULE_TEXT_WARN).length;
-    for (const t of rules) {
-      if (t.length > RULE_TEXT_WARN) result.longRules.push({ section: idx, len: t.length, head: t.slice(0, 40) });
+
+  // ── 界面图吸顶（阅读版版式补丁的判据：规则再长，图也留在视野里）──────────
+  const mdWithFigure = Array.from(document.querySelectorAll('.am-md'))
+    .filter((md) => md.querySelector(':scope > .am-figure'));
+  result.figurePanels = mdWithFigure.length;
+  result.stickyFigures = mdWithFigure.filter((md) => getComputedStyle(md.querySelector(':scope > .am-figure')).position === 'sticky').length;
+  result.stickyProbe = null;
+  // 「吸顶可用行程」= 面板高 − 图高：这是图能粘住多久、规则能多滚多少的真实余量
+  result.stickyRoom = mdWithFigure.map((md) => {
+    const r = md.getBoundingClientRect();
+    const f = md.querySelector(':scope > .am-figure').getBoundingClientRect();
+    return { panel: Math.round(r.height), figure: Math.round(f.height), room: Math.round(r.height - f.height) };
+  });
+  result.vh = window.innerHeight;
+  // 行程够长（>60px）就滚得动、测得准；滚进面板内部，图应当还在视口里
+  const tall = mdWithFigure
+    .filter((md, i) => result.stickyRoom[i].room > 60)
+    .filter((md) => getComputedStyle(md.querySelector(':scope > .am-figure')).position === 'sticky')[0];
+  if (tall) {
+    const fig = tall.querySelector(':scope > .am-figure');
+    const rect = tall.getBoundingClientRect();
+    const vh = window.innerHeight;
+    const y0 = window.scrollY;
+    window.scrollTo(0, y0 + rect.top + Math.min(result.stickyRoom[mdWithFigure.indexOf(tall)].room, vh * 0.35));
+    const after = fig.getBoundingClientRect();
+    result.stickyProbe = { top: Math.round(after.top), inView: after.top > -2 && after.bottom < vh + 2 };
+    // 没吸住时把祖先链带回来：sticky 失效几乎总是某个祖先的 overflow / display 干的
+    if (!result.stickyProbe.inView) {
+      result.stickyChain = [];
+      for (let el = fig.parentElement; el && el !== document.documentElement; el = el.parentElement) {
+        const cs = getComputedStyle(el);
+        result.stickyChain.push(el.tagName.toLowerCase() + '.' + String(el.className || '').split(' ')[0] +
+          ' [overflow=' + cs.overflow + ' display=' + cs.display + ' position=' + cs.position + ']');
+      }
     }
-    result.sections.push({ idx, height: Math.round(h), hasImage: !!shot, sticky, longRules: longOne });
-    if (shot && h > 900 && sticky !== 'sticky') result.stickyMissing.push(idx);
+    window.scrollTo(0, y0);
   }
   return result;
 })()`;
@@ -153,7 +182,7 @@ const PAGE_CHECKS = `(() => {
 async function main() {
   const args = parseArgs(process.argv);
   if (args.help || !args.html) {
-    console.log('用法: node smoke_check.mjs --html <宣讲HTML> [--out <截图png>] [--width 1440] [--chrome <浏览器路径>]');
+    console.log('用法: node smoke_check.mjs --html <定稿人读版HTML> [--out <截图png>] [--width 1440] [--chrome <浏览器路径>]');
     return args.help ? 0 : 1;
   }
   const html = resolve(args.html);
@@ -205,7 +234,7 @@ async function main() {
     const loaded = once('Page.loadEventFired');
     await send('Page.navigate', { url: pathToFileURL(html).href });
     await loaded;
-    await sleep(400); // 给 base64 大图解码留一点时间
+    await sleep(600); // 给 base64 大图解码与页面脚本留一点时间
 
     const evalRes = await send('Runtime.evaluate', { expression: PAGE_CHECKS, returnByValue: true });
     const r = evalRes.result.value;
@@ -224,7 +253,8 @@ async function main() {
     const warns = [];
 
     console.log(`页面标题: ${r.title}`);
-    console.log(`页面尺寸: ${r.scrollWidth} x ${r.scrollHeight}（视口宽 ${r.clientWidth}，${r.sections.length} 节 / ${r.images.length} 图）`);
+    console.log(`页面尺寸: ${r.scrollWidth} x ${r.scrollHeight}（视口宽 ${r.clientWidth}）`);
+    console.log(`内容规模: ${r.panels} 面板 / ${r.tables} 表格 / ${r.diagrams} 图 / ${r.images.length} 图片`);
     console.log('');
 
     // 1 破图
@@ -235,34 +265,59 @@ async function main() {
     if (r.scrollWidth > r.clientWidth + 1) fails.push(`2) 横向溢出：文档宽 ${r.scrollWidth} > 视口宽 ${r.clientWidth}`);
     else console.log('[OK]   2) 无横向溢出');
 
-    // 3 文字墙
-    if (r.longRules.length) {
-      fails.push(`3) 疑似文字墙 ${r.longRules.length} 处（阈值 ${RULE_TEXT_WARN} 字）：${r.longRules
-        .map((x) => `第${x.section}节 ${x.len}字「${x.head}…」`)
-        .join(' / ')}`);
-    } else console.log(`[OK]   3) 无文字墙（规则块 ${r.textP} 条，均在阈值内）`);
-
-    // 4 布局失衡
-    if (r.stickyMissing.length) {
-      warns.push(`4) 第 ${r.stickyMissing.join('、')} 节较高但没有 sticky 左图：滚动时图会先消失、右侧还剩多屏文字`);
-      console.log(`[WARN] 4) ${r.stickyMissing.length} 个长章节的左图不是 sticky`);
+    // 3 承载红线：图片必须内嵌
+    if (r.externalImages.length) {
+      fails.push(`3) 承载红线：${r.externalImages.length} 张图不是 data: 内嵌 —— ${r.externalImages.join(' / ')}（外发会丢图）`);
     } else {
-      const stickyCount = r.sections.filter((s) => s.sticky === 'sticky').length;
-      console.log(`[OK]   4) 长章节左图吸顶正常（sticky 左图 ${stickyCount} 个）`);
-    }
-    if (r.images.length === 0) {
-      warns.push('4) 全篇无截图：左栏全是占位框、右栏全是规则，双栏会呈"左空右满"的失衡版式——'
-        + '交付前必须已与用户确认（补图，或明确接受纯文字版并在页脚标注）');
-      console.log('[WARN] 4) 全篇无截图，左空右满的失衡风险无法靠吸顶缓解');
+      console.log(`[OK]   3) 图片全部 data: base64 内嵌（${r.images.length} 张）`);
     }
 
-    // 5 导航锚点
-    if (r.tocBroken.length) fails.push(`5) 导航锚点失效：${r.tocBroken.join('、')}`);
-    else console.log(`[OK]   5) 章节导航全部可用（${r.tocTotal} 个锚点，逐个命中）`);
+    // 4 无外部资源
+    if (r.externalRefs.length) {
+      fails.push(`4) 存在外部资源引用，页面不再单文件自包含：${r.externalRefs.join(' / ')}`);
+    } else {
+      console.log('[OK]   4) 无外部资源引用（无 link / 外链 script / iframe）');
+    }
 
-    // 附带：承载红线（图片必须内嵌）
-    if (r.overflowImages.length) fails.push(`承载红线：存在非 data: 内嵌图片（${r.overflowImages.join('、')}）——宣讲 HTML 必须单文件自包含`);
-    else console.log('[OK]   承载：全部图片均为 data: base64 内嵌，无外链/散装目录');
+    // 5 面板与目录
+    if (r.panels === 0) fails.push('5) 一个 .am-panel 都没有 —— 草稿没有 ## 面板，渲染结果不是一页文档');
+    else console.log(`[OK]   5) 面板 ${r.panels} 个`);
+    if (r.tocBroken.length) fails.push(`5) 目录锚点失效：${r.tocBroken.join('、')}`);
+    else if (r.tocTotal > 0) console.log(`[OK]   5) 目录 ${r.tocTotal} 个锚点逐个命中`);
+    else warns.push('5) 页面没有目录（面板少于 3 个时 am 不出目录）—— 定稿人读版通常不止 3 个面板，请确认没漏节');
+
+    // 6 草稿源内嵌
+    if (r.hasSource) console.log(`[OK]   6) 草稿源已内嵌（#am-source，${r.sourceChars} 字符）—— 可用 am patch 局部改`);
+    else warns.push('6) 页面里没有 #am-source —— 改一处只能整页重渲（多半是手写 HTML 而不是 am 渲染的产物）');
+
+    // 7 界面图吸顶（图与规则并排、规则再长图也在视野里）
+    const rooms7 = r.stickyRoom || [];
+    const maxRoom7 = rooms7.length ? Math.max(...rooms7.map((x) => x.room)) : null;
+    if (r.figurePanels === 0) {
+      console.log('[--]   7) 本页没有「界面图 + 正文」的面板，图吸顶这项不适用');
+    } else if (r.stickyFigures === 0) {
+      fails.push(`7) ${r.figurePanels} 个「界面图 + 正文」面板的图**没有吸顶** —— 规则一长图就滚走了。` +
+        '渲染后要跑 tools/apply_reading_layout.mjs（漏跑或 am 的 DOM 变了）');
+    } else if (rooms7.some((x) => x.figure > r.vh * 0.55)) {
+      // 图没受视口高度约束 ⇒ 比右栏还高、吸顶在结构上不可能（补丁里的 max-height 没生效）
+      const worst = rooms7.filter((x) => x.figure > r.vh * 0.55).map((x) => `${x.figure}px`).join('、');
+      fails.push(`7) 界面图没有视口高度上限（${worst}，视口 ${r.vh}px）—— 图比右栏还高，sticky 没有可移动空间、滚起来照样走。` +
+        '版式补丁里的 max-height 没生效（am 的 DOM 变了？）');
+    } else {
+      const probe = r.stickyProbe;
+      const room = rooms7[0];
+      const roomText = room ? `（面板 ${room.panel}px / 图 ${room.figure}px ⇒ 吸顶可用行程 ${room.room}px）` : '';
+      let tail;
+      if (probe) tail = probe.inView ? `；实测滚进面板后图仍在视口（top ${probe.top}px）` : `；⚠ 滚动后图跑出了视口（top ${probe.top}px）`;
+      else if (maxRoom7 !== null && maxRoom7 <= 0) tail = '；右栏比图短（一屏能看完），这个面板本来就不需要吸顶';
+      else tail = '；行程不足 60px，未做滚动实测';
+      const tone = (!probe && maxRoom7 !== null && maxRoom7 <= 0) ? '[--]  ' : '[OK]  ';
+      console.log(`${tone} 7) 界面图吸顶：${r.stickyFigures}/${r.figurePanels} 个面板的图是 sticky${roomText}${tail}`);
+      if (probe && !probe.inView) {
+        fails.push(`7) 滚动实测：界面节里的图跑出了视口（top ${probe.top}px）—— sticky 没真正生效`);
+        for (const line of r.stickyChain || []) console.log('       祖先链: ' + line);
+      }
+    }
 
     console.log('');
     console.log(`整页截图: ${outPath}`);
@@ -271,7 +326,7 @@ async function main() {
     if (fails.length) {
       console.log('');
       for (const f of fails) console.log(`[FAIL] ${f}`);
-      console.log(`\n结论：冒烟不通过（${fails.length} 项失败 / ${warns.length} 项警告）——修 content.json 后重跑。`);
+      console.log(`\n结论：冒烟不通过（${fails.length} 项失败 / ${warns.length} 项警告）——改草稿后重渲。`);
       exitCode = 1;
     } else {
       console.log(`\n结论：冒烟通过（0 失败 / ${warns.length} 警告）。截图仍需人目视复核一遍再交付。`);

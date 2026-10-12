@@ -217,7 +217,7 @@ test("analysis\\ 里的一切都算头脑风暴产物（含子目录）", () => 
 	assert.equal(a.counts.other, 0);
 });
 
-test("UE 界面稿自成一类（sr-gdd-UE 的产出），它的源数据与宣讲草稿都进「其它」——一个都不丢", () => {
+test("UE 界面稿自成一类（sr-gdd-ue 的产出），它的源数据与宣讲草稿都进「其它」——一个都不丢", () => {
 	const a = featureArtifacts({
 		gdd: { files: ["X_UE.html", "X_UE.content.json", "X_UE_20261013_1.html", "X_宣讲.html", "X_宣讲.md"] }
 	});

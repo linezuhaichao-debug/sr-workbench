@@ -60,7 +60,7 @@ export function gddKindOf(name: unknown): string {
 	if (/_定稿\.md$/i.test(n)) return "final";
 	if (/_定稿\.html?$/i.test(n)) return "finalHtml";
 	if (/_修订点\.md$/i.test(n)) return "fixpoints";
-	// ★ 2026-10-13：sr-gdd-UE 的产物（界面 UE 规则 HTML + 它的可复跑源）
+	// ★ 2026-10-13：sr-gdd-ue 的产物（界面 UE 规则 HTML + 它的可复跑源）
 	if (/_UE\.html$/i.test(n)) return "ue";
 	if (/_UE\.content\.json$/i.test(n)) return "ueSrc";
 	if (/_宣讲(_.*)?\.html$/i.test(n)) return "speech";

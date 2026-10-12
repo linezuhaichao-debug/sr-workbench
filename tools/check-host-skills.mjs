@@ -3,7 +3,7 @@
  *
  * 为什么单独一条、而且挂在 build 之后：`src/generated/skills.ts` 是**入库产物**，但它要**内联进
  * `lib/index.js`** 才真的随包走。这里在**真的构建完之后**把产物 import 进来、拿假 ctx 跑一遍
-  * `apply`，钉住"10 条 sr 技能真的在产物里"（否则路径算错 / 打包漏 skills 就静默一条都没有，
+  * `apply`，钉住"11 条 sr 技能真的在产物里"（否则路径算错 / 打包漏 skills 就静默一条都没有，
  * 而源码和测试都还是绿的）。
  *
  * 它**不**替代真机验收（`01-evidence\run-verify05.ps1 -Arm plugin`）：这里没有 cordis、没有
@@ -57,7 +57,7 @@ const fakeCtx = {
 check("inject 必须是 ['skills']", () => assert.deepEqual(mod.inject, ["skills"]));
 check("必须导出 apply", () => assert.equal(typeof mod.apply, "function"));
 check("apply 不能抛错", () => mod.apply(fakeCtx, {}));
-check("注册条数必须是 10", () => assert.equal(registered.length, 10));
+check("注册条数必须是 11", () => assert.equal(registered.length, 11));
 check("每条都要有 source='bundled' / 非空 description / 非空正文", () => {
 	for (const s of registered) {
 		assert.equal(s.source, "bundled", s.name + " 的 source 不是 bundled");
@@ -70,12 +70,15 @@ check("模型可见 9 个 + 用户专用 2 个（两个 user-only 必须在册�
 	const modelVisible = registered.filter((s) => s.invocation.modelInvocable).map((s) => s.name);
 	assert.equal(modelVisible.length, 9, "模型可见的应为 9 个，实际 " + modelVisible.length);
 	const userOnly = registered.filter((s) => !s.invocation.modelInvocable).map((s) => s.name).sort();
-	assert.deepEqual(userOnly, ["sr-gdd-html"]);
+	// 顺序按 code point 排序：'sr-gdd-html' < 'sr-gdd-ue'（h < u）。
+	// ★ 名字必须是小写 kebab-case —— DSH 的 runtime 注册只收 /^[a-z0-9]+(?:-[a-z0-9]+)*$/，
+	//   写成 `sr-gdd-UE` 会让**整批** 11 条一起注册失败（2026-10-12 实测）。
+	assert.deepEqual(userOnly, ["sr-gdd-html", "sr-gdd-ue"]);
 	for (const s of registered.filter((x) => !x.invocation.modelInvocable)) {
 		assert.equal(s.invocation.userInvocable, true, s.name + " 用户必须仍可 /名字 调用");
 	}
 });
-check("正文合计与磁盘上那 10 份 SKILL.md 同量级（证明整批正文都在产物里）", () => {
+check("正文合计与磁盘上那 11 份 SKILL.md 同量级（证明整批正文都在产物里）", () => {
 	/**
 	 * ★ 原来这里写死"~120.9 KB（>110KB 且 <130KB）"—— 2026-10-10 把 sr-askme 的使用教学
 	 *   搬出 SKILL.md 之后，正文合计掉到 108.8 KB，于是**判据红了而东西是好的**。

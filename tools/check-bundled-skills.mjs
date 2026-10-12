@@ -26,7 +26,7 @@ import { apply, loadBundledSkills, packageRootOf, skillsRootOf } from "../src/in
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..");
 const ROOT = skillsRootOf(REPO);
-const EXPECTED = 10;   // sr-config-heroskill 已改名 skill-hero-config 并搬出插件（不算 sr 系列）
+const EXPECTED = 11;   // sr-config-heroskill 已改名 skill-hero-config 并搬出插件（不算 sr 系列）；2026-10-13 起 sr-gdd-html 拆成 sr-gdd-ue + sr-gdd-html 两个
 /**
  * **纯文本技能**：本来就只有 SKILL.md，没有 references / scripts。
  * （以前它们靠随包的 `CONTRIBUTORS` 署名文件凑够 2 个文件；用户 2026-10-09 把署名文件删了。）
@@ -67,7 +67,12 @@ for (const s of skills) {
 			n++;
 		}
 	};
-	walk(path.join(ROOT, s.name), "");
+	// ★ 用 s.dir（loadBundledSkills 给的真实目录），不要用 s.name 拼路径：
+	//   注册名来自 SKILL.md 的 frontmatter，目录名是另一件事，两者可以不同
+	//   （2026-10-12 实测：`sr-gdd-UE` 目录里的 name 必须是小写 `sr-gdd-ue` ——
+	//    DSH 的 runtime 注册只收 /^[a-z0-9]+(?:-[a-z0-9]+)*$/，一条大写会让**整批**注册回滚）。
+	//   ★ 本判据**不查**目录名与注册名一致，也不该查：目录名只是磁盘位置。
+	walk(s.dir, "");
 	resourceFiles += n;
 	if (n <= 1 && !PROSE_ONLY.has(s.name)) {
 		problems.push(`${s.name}：除 SKILL.md 外没有兄弟资源（references 才是技能的精华）—— 实际 ${n} 个文件`);

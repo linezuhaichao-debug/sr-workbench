@@ -1,4 +1,4 @@
-# 内置工具包来源与校验（PROVENANCE）
+# 内置渲染器来源与校验（PROVENANCE）
 
 本文内相对路径一律相对 **skill 根**（`sr-gdd-html/`）解析。
 
@@ -6,58 +6,63 @@
 
 | 项 | 值 |
 | --- | --- |
-| 名称 | 宣讲 HTML 生成工具包 |
-| 版本 | 20260910 |
-| 归档 | `design\策划案\宣讲HTML生成工具包_20260910.zip`（工作区，非本仓库内） |
-| 归档 SHA256 | `33B61DCCD6C51053D5E5A2252227DD98DFA12E6F3BC4AA8E106269492F3F028D` |
-| 提供方 | AI_SR 交互交付流程（SR），2026-09-10 整理 |
-| 规格同源 | 团队既有交付物 `01_宣讲会交付.html`（交互交付三件套之一） |
-| 引入日期 | 2026-09-10（sr-gdd-html skill 建立时） |
+| 名称 | answer-me-with-html（命令行 `am`） |
+| 上游仓库 | https://github.com/QingYunA/answer-me-with-html |
+| 许可 | **MIT**（全文见 `resources/am/LICENSE`，随文件一起内置） |
+| 内置版本 | `0.4.15`（`node resources/am/am.mjs --version`） |
+| 引入日期 | 2026-10-13（sr-gdd-html 重建为"定稿人读版"时） |
+| 运行要求 | **Node.js 20+**（只用内置模块，无第三方依赖、无需 `npm install`） |
 
 ## 已入库文件（原样，未改动一个字节）
 
-`resources/toolkit/` 下四个文件与归档内同名文件**逐字节一致**，SHA256 对得上即视为未被就地修改。安装到本机 skill 目录后同样逐字节一致——skill 文件不含路径占位符，镜像同步应原样复制（不要经文本重写，否则 LF 行尾会被改成 CRLF，校验就不成立了）：
-
-| 文件 | SHA256 |
-| --- | --- |
-| `01_宣讲会模板.md` | `01D7B780D8D488AB876D5F4630E4AB3FD999EF99E2C82F0C5840283F4A743D8D` |
-| `README_先读.md` | `E9A20D1A2CBF77EBB124F9F1438E3A0BC3F958403F558EB24714F24F0CE1024E` |
-| `双栏版式参考_outside-callout-module.md` | `BEF08C6EB65FCCB7B49F5C84030E297C6686E010D697B3F602B0B3EDDD5B49EF` |
-| `生成脚本/gen_01.py` | `D0940C573278E46570AC372BF5BEDEFD45B4CE287E53A85E22C2F4A1838EAD2C` |
-
-## 未入库文件（有意为之，不是遗漏）
-
-本仓库的 remote 指向公开仓库，仓库自身的安全边界写明"不把用户真实项目资料提交到公开仓库"。以下两个文件含**真实项目界面与真实活动规则**，因此**不纳入仓库**，仍留在原始归档里：
-
-| 未入库文件 | SHA256 | 未入库原因 |
+| 文件 | SHA256 | 字节数 |
 | --- | --- | --- |
-| `合格样例_01_宣讲会交付.html`（31 MB） | `B554E00E12CDFA1E6309EEE60D17062CD01C7A3DBFD55A0077AD7D54A06120E6` | 内容为《神话宝库》真实交付样例，截图已 base64 内嵌；入库等于把未公开界面图提交到公开仓库，且体积巨大 |
-| `截图/`（3 张 PNG，7.2 MB） | — | 真实项目界面截图 |
-| `生成脚本/content_示例.json`（4.8 KB） | `5DE7818E2A9EC1E32BC7B8853E665ED9331BFF0B8EF017F2F87E57D77C3A5E8D` | 内容为真实活动的逐控件规则；改用同结构的**合成示例**替代（见 `examples/合成示例/content.json`） |
+| `resources/am/am.mjs` | `BAEFF6D3EE90FDCB0D095275FC3D46DD3F5114A0E84367442753BC70E24B769B` | 532768 |
+| `resources/am/LICENSE` | —（上游 LICENSE 原文 + 出处说明；新增文件，非上游原件） | — |
 
-需要看形态基准时，直接从原始归档解压（`Expand-Archive` 到任意临时目录）即可；不要在仓库里补回这几个文件。
+`am.mjs 逐字节一致`是这份内置关系的唯一判据：`Get-FileHash resources\am\am.mjs -Algorithm SHA256` 对得上即视为未被就地修改。
 
-## 本 skill 自研件（非工具包原件）
+### 为什么不整包安装、而是内置单文件
+
+上游 `answer-me-with-html` 是一个**技能包**（SKILL.md + references + scripts）。本 skill 只借它的**渲染器**，不借它的技能语义（"把一次回答画成一页"是另一回事，不是 GDD 的职责）。所以只内置 `scripts/am.mjs` 这一个文件 + LICENSE：
+
+- 它是**单文件、零依赖**的 CLI，拷进来就能跑，同事装策划工作台插件即完整可用（不需要自己装 answer-me-with-html）；
+- 版本、字节数与 hash 都记在这里，升级时整体替换、更新三行数字即可；
+- 上游若改了页面语汇，本 skill 的 `references/draft-format.md` 要跟着复核一遍（组件的**最小语法**在那里有示例）。
+
+## 本 skill 自研件（非 am 原件）
 
 | 文件 | 说明 |
 | --- | --- |
-| `tools/lint_content.py` | 内容红线 + 结构校验器。生成器 `gen_01.py` 只校验字段与图片存在性，不查"确认编号/过程措辞"这类红线；本脚本补上这一层，在渲染前必须跑 |
-| `tools/smoke_check.mjs` | 视觉冒烟检查器。把模板末尾的"轻量视觉冒烟清单"落成可执行判定：破图 / 横向溢出 / 文字墙 / 左图吸顶 / 锚点命中，外加"图片必须 data: 内嵌"的承载红线，并输出整页截图供人目视复核。Node ≥ 22 + 本机 Chrome/Edge，无第三方依赖 |
-| `examples/合成示例/` | 合成形态基准（content.json + 占位截图 + 生成产物），替代未入库的真实样例 |
+| `tools/cover_check.py` | **不漏信息校验器**：把定稿当成"信息基线"抽出锚点（章节、表格行的首列、反引号里的表名/字段名、Rn/UEn/ACn 编号），逐个查草稿里有没有落点；未命中一律列出来，必须逐条处置。`--list` 只列锚点（第 2 步盘点用） |
+| `tools/apply_reading_layout.mjs` | **阅读版版式补丁**：往 am 渲染出的页面里加一段样式，让「界面图 + 正文」的面板变成**图左、规则右、图吸顶**（规则再长图也留在视野里，与 `sr-gdd-ue` 的宣讲版式同一个用意）。只加样式、不碰内容，幂等。两条**必须如此**的实测理由：① 图要受视口高度约束（`46vh`），否则竖屏截图比右栏还高、吸顶行程是 0；② am 的 `.am-panel` 带 `overflow: hidden`，它是 sticky 的裁剪祖先，不放开就**完全吸不住**（声明在、滚起来照样走） |
+| `tools/smoke_check.mjs` | 视觉冒烟检查器：无头浏览器真渲染，查破图 / 横向溢出 / 图片是否 data: 内嵌 / 无外部资源 / 面板数 / 目录锚点 / 草稿源内嵌 / **界面图是否真吸顶**（含滚动实测），并输出整页截图供人目视复核。Node ≥ 22 + 本机 Chrome/Edge，无第三方依赖 |
+| `references/draft-format.md` | **定稿 → 草稿的映射规范**：哪一节用什么组件、面板怎么切、写作纪律与红线 |
+| `examples/合成示例/` | 合成形态基准（草稿 + 占位图 + 生成产物），形态是"一份定稿 §1–§11 的人读版" |
+| `resources/am/LICENSE` | 上游 MIT 全文 + 出处（合规需要的版权声明） |
 
-## 再同步（上游更新时）
+## 上游更新时
 
-1. 取到新版归档，先校验归档 SHA256 与本文件记录是否一致——一致则无需动作；
-2. 不一致时解压，逐个比对上表四个文件的 SHA256，**有变化的整体替换**（不要局部改写）；
-3. 替换后更新本文件的版本、归档 SHA256 与逐文件 SHA256；
-4. 跑一次 `examples/合成示例/` 的复现命令，确认生成器仍与本 skill 的 `content.json` 结构兼容（生成器若改了 JSON 结构，`SKILL.md` 第 2 步的映射表与 `tools/lint_content.py` 需同步改）；
-5. 工具包 README 明确写着"拷贝文件夹当技能装会跟源头漂移"——本条同步流程就是应对漂移的手段，不要省。
+1. 取到新版 `am.mjs`，先看版本号与 CHANGELOG（上游仓库）；
+2. 整体替换 `resources/am/am.mjs`（**不要局部改**——改了就不再是上游那一份，hash 也就失去意义）；
+3. 更新本文的版本、SHA256 与字节数；LICENSE 若上游有变，一并替换；
+4. 跑一次 `examples/合成示例/` 的复现命令，确认草稿仍能渲染；再抽查 `references/draft-format.md` 里引用的组件最小语法（跑 `node resources/am/am.mjs list` 与 `am help <组件>` 对一遍）。
 
 ## 复现命令
 
 ```bash
-python resources/toolkit/生成脚本/gen_01.py \
-  --content examples/合成示例/content.json \
-  --img-dir examples/合成示例/截图 \
-  --out examples/合成示例/01_评审宣讲_示例.html
+node resources/am/am.mjs render "examples/合成示例/draft.md" --no-open -o "examples/合成示例/01_人读版_示例.html"
+node tools/apply_reading_layout.mjs "examples/合成示例/01_人读版_示例.html"   # 版式补丁（图左文右 + 图吸顶）
 ```
+
+## 日常用法（本 skill 只用到这几条）
+
+```bash
+node <skill>/resources/am/am.mjs render <草稿.md> -o <输出.html> --no-open   # 渲染
+node <skill>/resources/am/am.mjs lint   <草稿.md>                            # 只跑 STE 文风检查
+node <skill>/resources/am/am.mjs patch  <输出.html> --panel "<面板标题>" --from <新面板.md>   # 只改一个面板，原地覆盖
+node <skill>/resources/am/am.mjs list                                        # 模板 / 主题 / 组件清单
+node <skill>/resources/am/am.mjs help <组件|format|image|code>               # 某个组件的语法
+```
+
+`am render` 默认把页面写进 `~/.answer-me-with-html/pages/`；本 skill **一律用 `-o` 指定到功能目录**（见 `SKILL.md` 的「产出规范」）。渲染器只读草稿与图片，不写别处。

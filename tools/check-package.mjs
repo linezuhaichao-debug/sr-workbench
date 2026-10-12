@@ -78,7 +78,7 @@ try {
 	 */
 	const skillMd = files.filter((f) => /^skills\/sr-[^/]+\/SKILL\.md$/.test(f));
 	const skillFiles = files.filter((f) => f.startsWith("skills/"));
-	if (skillMd.length !== 10) bad("包里应当有 10 个 skills/sr-*/SKILL.md，实际 " + skillMd.length);
+	if (skillMd.length !== 11) bad("包里应当有 11 个 skills/sr-*/SKILL.md，实际 " + skillMd.length);
 	else ok("包内技能：" + skillMd.length + " 个 SKILL.md · 技能文件合计 " + skillFiles.length + " 个");
 	// 兄弟资源（references 等）必须在 —— 只有正文等于空壳，那正是旧设计的病
 	const refFiles = files.filter((f) => /^skills\/sr-[^/]+\/(references|scripts|tools|resources|examples)\//.test(f));
@@ -137,7 +137,7 @@ try {
 	const registered = [];
 	try {
 		host.apply({ skills: { register: (s) => registered.push(s) }, logger: { info() {}, warn() {}, error() {} } }, {});
-		if (registered.length !== 10) bad("宿主半侧应注册 10 条 sr 技能", String(registered.length));
+		if (registered.length !== 11) bad("宿主半侧应注册 11 条 sr 技能", String(registered.length));
 		else {
 			const bytes = registered.reduce((a, s) => a + Buffer.byteLength(s.content, "utf8"), 0);
 			ok("④ 宿主半侧自足：独立 import 后注册 " + registered.length + " 条（模型可见 " +
