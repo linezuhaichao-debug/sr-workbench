@@ -1,20 +1,20 @@
 ---
 name: sr-gdd-fix
-description: "功能 GDD 定稿修改工作流（定稿之后的维护入口）——只接顶部 `status: active` 的已有定稿，按共用撰写纪律改规则、界面、范围、验收、配置对应与多语言文本；需要动配置表时调 `/sr-config` 改表。当用户说\"改定稿、修订定稿、调一下定稿里的…、定稿改动\"时使用。"
+description: "功能 GDD 定稿修改工作流（定稿之后的维护入口；也承接定稿门之前的门内迭代）——接顶部 `status: active`（已生效）或 `pending`（定稿门之前的门内迭代）的已有定稿，按共用撰写纪律改规则、界面、范围、验收、配置对应与多语言文本；需要动配置表时调 `/sr-config` 改表。当用户说\"改定稿、修订定稿、调一下定稿里的…、定稿改动\"时使用。"
 ---
 
 # 功能 GDD 定稿修改工作流（SR-GDD-FIX）
 
 ## 功能说明
 
-**唯一输出：改后的定稿**（改动清单随决策记录留档）。定稿通过后成稿归档、定稿成为唯一活文档，此后所有改动都由本 skill 落在定稿上（归属见 `../sr-askme/references/gdd-pipeline.md`）。
+**唯一输出：改后的定稿**（改动清单随决策记录留档）。定稿通过后成稿归档、定稿成为唯一活文档，此后所有改动都由本 skill 落在定稿上（归属见 `../sr-askme/references/gdd-pipeline.md`）。**`pending`（定稿门之前）的定稿也可由本 skill 承接门内迭代**——此时不设 `approve`，是否过门由 `/sr-gdd-ai` 的定稿门决定。
 
 - **不重跑整合**：只改用户指定的范围 + 影响面扫描（按纪律文件「影响面闭合」条目）扫出的受影响条目，不重新生成整份定稿、不回到 `sr-gdd-ai`。
 - **不降低纪律**：修改与撰写吃同一套「撰写纪律」（`../sr-askme/references/gdd-writing-discipline.md`），大改动逐条自查。
 - **配置侧不自己改表**：需要动配置表时调 `/sr-config`；改表后的定稿同步（§4 对应行、§6 契约）由它按自己的第 5 步完成。
 - **文本不落表**：§7 只维护条目；文本表的增删改由用户自行发起。
 
-形态基准：`../sr-gdd-ai/resources/templates/feature-gdd.md`（定稿骨架，本 skill 不重排结构）。原地修改当前定稿时沿用其头部（`doc_type: final_gdd` + `status: active`）；用户要求留版本时，新文件为 `active`，旧文件为 `archived`。
+形态基准：`../sr-gdd-ai/resources/templates/feature-gdd.md`（定稿骨架，本 skill 不重排结构）。原地修改当前定稿时沿用其头部（`doc_type: final_gdd` + 原 `status`：`active` 保持 `active`，`pending` 保持 `pending`，不代用户过门）；用户要求留版本时，新文件为 `active`，旧文件为 `archived`。
 
 ## 使用方法
 
@@ -30,7 +30,7 @@ description: "功能 GDD 定稿修改工作流（定稿之后的维护入口）�
 
 1. **定稿路径**：要改哪份定稿（`<功能目录>\gdd\<主题>_<日期>_定稿.md`；只给主题时在**本功能目录的 `gdd\`** 下定位，多份候选项列给用户选，不默认取最新）。
 2. **要改什么**：一句话说清改动意图（哪条规则 / 哪个界面 / 哪个字段 / 哪段文本）。
-3. **状态**：目标文件头部必须是 `doc_type: final_gdd` + `status: active`；`provisional` / `blocked` 定稿先回 `/sr-gdd-ai` 补齐，未写头部字段的旧文档先让用户确认其是否为当前有效定稿。
+3. **状态**：目标文件头部必须是 `doc_type: final_gdd`，且 `status` 为 `active`（已生效定稿）或 `pending`（定稿门之前的门内迭代）；`provisional` / `blocked` 定稿先回 `/sr-gdd-ai` 补齐，未写头部字段的旧文档先让用户确认其是否为当前有效定稿。
 
 用户补齐后再从第 0 步开始。
 
@@ -47,8 +47,8 @@ description: "功能 GDD 定稿修改工作流（定稿之后的维护入口）�
 
 ### 第 1 步 · 读定稿、锁定改动
 
-先读定稿头部 `doc_type` + `status`。若 `status` 为 `provisional` 或 `blocked`，停止并转回 `/sr-gdd-ai`；若缺少头部字段，停止并请用户确认它是否是当前有效定稿，确认后本次保存才补 `doc_type: final_gdd` + `status: active`。只有 `active` 文档继续：读全文，把改动意图落到具体条目上（哪几条 R、哪个界面 / UE、哪个字段、哪段文案），并记下改动前的原口径（改动清单要用）。意图含糊时一次问清，不自行扩大范围。
-完成判据：目标文档已确认是 `doc_type: final_gdd` + `status: active`（或用户已确认无头部旧文档为当前定稿并将在本次保存补标），改动点逐条落到"章节 + 条目"级别，并已向用户复述确认。
+先读定稿头部 `doc_type` + `status`。若 `status` 为 `provisional` 或 `blocked`，停止并转回 `/sr-gdd-ai`；若缺少头部字段，停止并请用户确认它是否是当前有效定稿，确认后本次保存才补 `doc_type: final_gdd` + `status: active`。`active` 与 `pending` 都继续（`pending` 时额外提示：本次属门内迭代，改完仍要回定稿门）：读全文，把改动意图落到具体条目上（哪几条 R、哪个界面 / UE、哪个字段、哪段文案），并记下改动前的原口径（改动清单要用）。意图含糊时一次问清，不自行扩大范围。
+完成判据：目标文档已确认是 `doc_type: final_gdd` 且 `status` 为 `active` 或 `pending`（或用户已确认无头部旧文档为当前定稿并将在本次保存补标），改动点逐条落到"章节 + 条目"级别，并已向用户复述确认。
 
 ### 第 2 步 · 影响面扫描
 
@@ -82,7 +82,8 @@ description: "功能 GDD 定稿修改工作流（定稿之后的维护入口）�
 - [ ] 改动清单每条都已落地，无漏改、无超范围改动
 - [ ] 影响面全部闭合（规则 / 界面 / 范围门 / 埋点 / 验收 / §6 / §7）
 - [ ] 定稿结构未变（章节顺序与骨架与 `feature-gdd.md` 一致）
-- [ ] 定稿顶部 `status` 保持 `active`；用户要求留版本时，新文件为 `active`、旧文件为 `archived`
+- [ ] 定稿顶部 `status` 保持原值（`active` 保持 `active`；`pending` 保持 `pending`，不代用户过门）；用户要求留版本时，新文件为 `active`、旧文件为 `archived`
+- [ ] **每节表头列名与 `../sr-gdd-ai/resources/templates/feature-gdd.md` 逐字一致；子节只出现在模板声明的位置**（`### R1 <规则组名>` / `### 5.1 UI-M1 <界面名>` 这类占位模式按实例数实例化，显得比模板"多"不算越界；模板没有声明的列或子节即不通过）
 
 完成判据：清单全部通过；不过关则修订后复查。用户需要独立复核时，可在本步之后调 `/sr-gdd-review` 复审（它按"定稿改过之后"分诊）。
 
@@ -91,7 +92,8 @@ description: "功能 GDD 定稿修改工作流（定稿之后的维护入口）�
 向用户呈现**改动清单（改前 → 改后）+ 改后的受影响章节**，等待选择：
 
 ```
-approve / revise / reject
+active：approve / revise / reject
+pending：revise / done（门内迭代不设 approve——是否过门由 `/sr-gdd-ai` 的定稿门批）
 ```
 完成判据：用户已从上述选项中明确选择其一；**用户没表态之前不许替他写任何决策** —— 但用户每给一次拍板或纠偏，就按 `../sr-askme/references/decision-recording.md` 当场追加一条（门内迭代也各记一条）。
 
