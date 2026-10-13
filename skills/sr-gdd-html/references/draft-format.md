@@ -13,7 +13,7 @@
 template: doc
 theme: auto
 title: <功能名>
-subtitle: <一句话功能> · 定稿人读版
+subtitle: <一句话功能> · 宣讲稿
 source: <源定稿文件名>（doc_type: final_gdd · status: active）
 ---
 
@@ -31,7 +31,7 @@ source: <源定稿文件名>（doc_type: final_gdd · status: active）
 | `template` | **固定 `doc`** | 定稿是长文档、要按顺序读；`doc` 是单列 + 左侧目录，3 个面板以上自动出目录。**不要用 `sheet`**（那是"一屏概览"用的） |
 | `theme` | `auto`（默认） | `auto` 在有图/图时用 blueprint、纯文字用 paper；用户当轮指定主题时以用户为准 |
 | `title` | 定稿功能名 | 不带"GDD / 定稿 / 草案 / v0.x"后缀 |
-| `subtitle` | 一句话功能 + "定稿人读版" | 让人一眼知道这是给人读的那一版 |
+| `subtitle` | 一句话功能 + "宣讲稿" | 让人一眼知道这是开会 / 评审用的那一份 |
 | `source` | 源文件名 + 头部两字段 | 显示在页头 meta 行，便于回查；`provisional` 工作版**必须**在这里写明"工作版，非正式定稿" |
 | `style` | `80`（默认） | STE 文风检查：只警告。用户要求严格时写 `strict`（不通过就不出页面） |
 

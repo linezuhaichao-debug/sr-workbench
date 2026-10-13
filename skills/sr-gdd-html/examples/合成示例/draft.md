@@ -1,8 +1,8 @@
 ---
 template: doc
 theme: auto
-title: 每日签到（人读版合成示例）
-subtitle: 一份功能 GDD 定稿的人读版长什么样 · 结构与文案均属虚构
+title: 每日签到（宣讲稿合成示例）
+subtitle: 一份功能 GDD 定稿的宣讲稿长什么样 · 结构与文案均属虚构
 source: 每日签到_定稿.md（doc_type: final_gdd · status: active）
 ---
 

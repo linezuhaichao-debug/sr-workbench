@@ -102,7 +102,7 @@ export const OUTPUT_GROUPS = [
 	{ key: "draft", label: "成稿", dir: "gdd", note: "gdd\\<主题>_成稿.md —— 只含纯规则与设计（**不带日期**；日期在历史版本后缀里）" },
 	{ key: "final", label: "定稿", dir: "gdd", note: "gdd\\*_定稿.md —— 供程序使用的那一份" },
 	{ key: "ue", label: "UE 界面稿", dir: "gdd", note: "gdd\\<主题>_UE.html —— 给 UE/UI 同事看的界面与交互规则（**不带日期**；日期在历史版本后缀里）" },
-	{ key: "speech", label: "宣讲稿", dir: "gdd", note: "gdd\\<主题>_宣讲.html —— 定稿的人读版网页（**不带日期**；日期在历史版本后缀里）" },
+	{ key: "speech", label: "宣讲稿", dir: "gdd", note: "gdd\\<主题>_宣讲.html —— 定稿整份的宣讲稿网页，开会 / 评审用（**不带日期**；日期在历史版本后缀里）" },
 	{ key: "config", label: "配置表", dir: "gdd", note: "配置这条线的交付物：运行时表本体（.xlsx / .xlsm / .csv）。变更集与读回验收报告属过程留痕，面板只报数、不列出" },
 	{ key: "trace", label: "过程留痕", dir: "gdd", note: "变更集（CS-*.yaml）/ 读回验收报告 / 审查报告 / 修订点清单 —— **不在上面列出**，只在页签底部报数（文件都在 gdd\\，要看就点〔打开路径〕）" },
 	{ key: "other", label: "其它（不属上面几类）", dir: "", note: "定稿 HTML 派生件 / 界面图 / 宣讲源数据 / UE 源数据 / 认不出名字的文件 —— 如实列出，不丢" }

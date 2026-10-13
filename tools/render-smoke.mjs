@@ -497,7 +497,7 @@ const DETAIL = {
 			{ key: "final", label: "定稿", note: "gdd\\*_定稿.md", dynamic: "现有 2 份，按文件名日期标最新的一份", dir: "gdd", count: 1, files: [{ name: "联盟讨伐_20260923_定稿.md", rel: "gdd/联盟讨伐_20260923_定稿.md", dir: "gdd", subdir: "", group: "final", kindLabel: "", note: "最新定稿" }] },
 			// ★ UE 界面稿是 sr-gdd-ue 的产出（只出定稿 §5 的界面与交互规则）
 			{ key: "ue", label: "UE 界面稿", note: "gdd\\<主题>_UE.html —— 给 UE/UI 同事看的界面与交互规则", dynamic: "", dir: "gdd", count: 1, files: [{ name: "联盟讨伐_UE.html", rel: "gdd/联盟讨伐_UE.html", dir: "gdd", subdir: "", group: "ue", kindLabel: "", note: "" }] },
-			{ key: "speech", label: "宣讲稿", note: "gdd\\<主题>_宣讲.html —— 定稿的人读版网页", dynamic: "", dir: "gdd", count: 1, files: [{ name: "联盟讨伐_宣讲.html", rel: "gdd/联盟讨伐_宣讲.html", dir: "gdd", subdir: "", group: "speech", kindLabel: "", note: "" }] },
+			{ key: "speech", label: "宣讲稿", note: "gdd\\<主题>_宣讲.html —— 定稿整份的宣讲稿网页，开会 / 评审用", dynamic: "", dir: "gdd", count: 1, files: [{ name: "联盟讨伐_宣讲.html", rel: "gdd/联盟讨伐_宣讲.html", dir: "gdd", subdir: "", group: "speech", kindLabel: "", note: "" }] },
 			// ★ 配置表这一类**只装表本体**（变更集是留痕，见下面的 trace）
 			{ key: "config", label: "配置表", note: "配置这条线的交付物", dynamic: "", dir: "gdd", count: 1, files: [
 				{ name: "联盟讨伐_配置表_20261009.xlsx", rel: "gdd/联盟讨伐_配置表_20261009.xlsx", dir: "gdd", subdir: "", group: "config", kindLabel: "", note: "" }

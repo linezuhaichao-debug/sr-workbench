@@ -65,7 +65,7 @@
 | 技能数 | **11 个** `sr-*`（9 个模型可见 + 2 个用户专用：`sr-gdd-ue` / `sr-gdd-html`）← `sr-config-heroskill` 已改名 `skill-hero-config`、搬回工作区技能目录（不算 sr 系列）；2026-10-13 `sr-gdd-html` 拆成 `sr-gdd-ue`（**只出定稿 §5** 的界面与 UE 规则）+ `sr-gdd-html`（**定稿全貌**的人读版） |
 | 正文合计 | **139.5 KB**（11 个 `SKILL.md`） |
 | 兄弟资源 | **132 个文件**（references / scripts / tools / resources / examples）—— **都在包里** |
-| 包体积 | tgz **2 MB / 136 个文件**（技能是主体；其中 `sr-gdd-html/resources/am/am.mjs` 单文件 0.5 MB —— 内置的 MIT 渲染器，换来"同事装插件即可出人读版 HTML"） |
+| 包体积 | tgz **2 MB / 136 个文件**（技能是主体；其中 `sr-gdd-html/resources/am/am.mjs` 单文件 0.5 MB —— 内置的 MIT 渲染器，换来"同事装插件即可出宣讲稿 HTML"） |
 | 不打包的 | `*.local.json`（本机私有）、`__pycache__`/`*.pyc`（缓存） |
 
 ### 技能源就在本仓库 `skills/`（唯一那份）

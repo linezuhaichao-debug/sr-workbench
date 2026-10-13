@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 定稿人读版 HTML 的视觉冒烟检查器（sr-gdd-html 可选工具）。
+ * 宣讲稿 HTML 的视觉冒烟检查器（sr-gdd-html 可选工具）。
  *
  * 渲染是 am 干的，这里只回答"这一页真的打开了吗、还是不是单文件"：
  *   1) 无破图            —— 每张 <img> 都真的解码成功（naturalWidth > 0）
@@ -155,7 +155,7 @@ const PAGE_CHECKS = `(() => {
   result.tocWithId = Array.from(document.querySelectorAll('.am-toc a')).filter((a) => /^[A-Z0-9]{1,3} · /.test((a.textContent || '').trim())).length;
 
   /**
-   * 左侧目录能不能**自己滚**：定稿人读版动辄 20+ 个面板，目录本身就比视口高 ——
+   * 左侧目录能不能**自己滚**：宣讲稿动辄 20+ 个面板，目录本身就比视口高 ——
    * 而 sticky **留不住比视口高的元素**，它会跟着正文一起往下走，读者点不到下面的章节。
    * 这里滚到文档中部实测：目录还在视口里才算数（不是"写了 sticky"就算）。
    */
@@ -217,7 +217,7 @@ const PAGE_CHECKS = `(() => {
 async function main() {
   const args = parseArgs(process.argv);
   if (args.help || !args.html) {
-    console.log('用法: node smoke_check.mjs --html <定稿人读版HTML> [--out <截图png>] [--width 1440] [--height 900] [--chrome <浏览器路径>]');
+    console.log('用法: node smoke_check.mjs --html <宣讲稿HTML> [--out <截图png>] [--width 1440] [--height 900] [--chrome <浏览器路径>]');
     return args.help ? 0 : 1;
   }
   const html = resolve(args.html);
@@ -319,7 +319,7 @@ async function main() {
     else console.log(`[OK]   5) 面板 ${r.panels} 个`);
     if (r.tocBroken.length) fails.push(`5) 目录锚点失效：${r.tocBroken.join('、')}`);
     else if (r.tocTotal > 0) console.log(`[OK]   5) 目录 ${r.tocTotal} 个锚点逐个命中`);
-    else warns.push('5) 页面没有目录（面板少于 3 个时 am 不出目录）—— 定稿人读版通常不止 3 个面板，请确认没漏节');
+    else warns.push('5) 页面没有目录（面板少于 3 个时 am 不出目录）—— 宣讲稿通常不止 3 个面板，请确认没漏节');
 
     // 6 草稿源内嵌
     if (r.hasSource) console.log(`[OK]   6) 草稿源已内嵌（#am-source，${r.sourceChars} 字符）—— 可用 am patch 局部改`);
