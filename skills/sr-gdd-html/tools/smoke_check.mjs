@@ -10,7 +10,10 @@
  *   5) 面板与目录可用    —— 面板数 > 0；doc 模板的每个目录锚点都能命中节点
  *   6) 草稿源内嵌        —— #am-source 在（说明这页能 am patch 局部改，不必整页重渲）
  *   7) 界面图吸顶        —— 「图 + 正文」面板的图必须 sticky，并实测滚动后图还在视口里
- *      （规则再长也能对着图读；靠 tools/apply_reading_layout.mjs 打版式补丁）
+ *      （规则再长也能对着图读；靠内置 am 自带的 CSS，不是后处理）
+ *   8) 面板字母 ID 已清   —— am 自动分配的 A/B/C 要去掉：定稿标题自带 § 编号，两套叠着是噪音
+ *   9) 左侧目录能自己滚   —— 目录比视口高时 sticky 留不住它（会跟着正文走、点不到下面的章节），
+ *                           要给它视口高度上限 + 自己的滚动条；这里是滚到文档中部实测
  * 另外输出整页截图，供人目视复核——机器检查不替代眼睛。
  *
  * 依赖：Node.js ≥ 22（用到内置 WebSocket 与 fetch），本机已装 Chrome 或 Edge。无第三方包。
@@ -27,12 +30,16 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 function parseArgs(argv) {
-  const out = { html: null, out: null, width: 1440, chrome: null, port: 9334 };
+  // ★ 视口高默认 900：这是"目录会不会超高"的关键变量 —— 目录 35 个面板时约 1045px 高，
+  //   在 1200px 视口里塞得下（测不出问题），在真实笔记本的 ~900px 视口里就超高、
+  //   sticky 会失效。用大视口测等于**把要测的场景排除掉了**。
+  const out = { html: null, out: null, width: 1440, height: 900, chrome: null, port: 9334 };
   for (let i = 2; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--html') out.html = argv[++i];
     else if (a === '--out') out.out = argv[++i];
     else if (a === '--width') out.width = Number(argv[++i]);
+    else if (a === '--height') out.height = Number(argv[++i]);
     else if (a === '--chrome') out.chrome = argv[++i];
     else if (a === '--port') out.port = Number(argv[++i]);
     else if (a === '--help' || a === '-h') out.help = true;
@@ -139,8 +146,36 @@ const PAGE_CHECKS = `(() => {
     const id = decodeURIComponent(a.getAttribute('href').slice(1));
     if (!document.getElementById(id)) result.tocBroken.push(id);
   }
+  /**
+   * 面板字母 ID（am 自动分配的 A/B/C）——定稿标题里**已经带着自己的 § 编号**，
+   * 两套编号叠着（如「G · §4.4 R4 战斗」）纯粹是噪音，应当已清掉。
+   * ★ 目录那一处只能查文本：am 把它和标题拼成了**一个文本节点**，没有独立元素可查。
+   */
+  result.panelIdSpans = document.querySelectorAll('.am-panel-id').length;
+  result.tocWithId = Array.from(document.querySelectorAll('.am-toc a')).filter((a) => /^[A-Z0-9]{1,3} · /.test((a.textContent || '').trim())).length;
 
-  // ── 界面图吸顶（阅读版版式补丁的判据：规则再长，图也留在视野里）──────────
+  /**
+   * 左侧目录能不能**自己滚**：定稿人读版动辄 20+ 个面板，目录本身就比视口高 ——
+   * 而 sticky **留不住比视口高的元素**，它会跟着正文一起往下走，读者点不到下面的章节。
+   * 这里滚到文档中部实测：目录还在视口里才算数（不是"写了 sticky"就算）。
+   */
+  result.tocBox = null;
+  result.tocProbe = null;
+  const tocEl = document.querySelector('.am-toc');
+  if (tocEl) {
+    const cs = getComputedStyle(tocEl);
+    result.tocBox = {
+      maxHeight: cs.maxHeight, overflowY: cs.overflowY,
+      clientH: tocEl.clientHeight, scrollH: tocEl.scrollHeight,
+    };
+    const y0 = window.scrollY;
+    window.scrollTo(0, Math.round(document.documentElement.scrollHeight * 0.5));
+    const box = tocEl.getBoundingClientRect();
+    result.tocProbe = { top: Math.round(box.top), inView: box.top >= -2 && box.top < window.innerHeight };
+    window.scrollTo(0, y0);
+  }
+
+  // ── 界面图吸顶（内置 am 的版式：规则再长，图也留在视野里）────────────────
   const mdWithFigure = Array.from(document.querySelectorAll('.am-md'))
     .filter((md) => md.querySelector(':scope > .am-figure'));
   result.figurePanels = mdWithFigure.length;
@@ -182,7 +217,7 @@ const PAGE_CHECKS = `(() => {
 async function main() {
   const args = parseArgs(process.argv);
   if (args.help || !args.html) {
-    console.log('用法: node smoke_check.mjs --html <定稿人读版HTML> [--out <截图png>] [--width 1440] [--chrome <浏览器路径>]');
+    console.log('用法: node smoke_check.mjs --html <定稿人读版HTML> [--out <截图png>] [--width 1440] [--height 900] [--chrome <浏览器路径>]');
     return args.help ? 0 : 1;
   }
   const html = resolve(args.html);
@@ -209,7 +244,7 @@ async function main() {
       '--no-default-browser-check',
       `--remote-debugging-port=${args.port}`,
       `--user-data-dir=${userDir}`,
-      `--window-size=${args.width},1200`,
+      `--window-size=${args.width},${args.height}`,
       'about:blank',
     ],
     { stdio: 'ignore', detached: false },
@@ -297,12 +332,12 @@ async function main() {
       console.log('[--]   7) 本页没有「界面图 + 正文」的面板，图吸顶这项不适用');
     } else if (r.stickyFigures === 0) {
       fails.push(`7) ${r.figurePanels} 个「界面图 + 正文」面板的图**没有吸顶** —— 规则一长图就滚走了。` +
-        '渲染后要跑 tools/apply_reading_layout.mjs（漏跑或 am 的 DOM 变了）');
+        '这页不是用**内置的 am** 渲染的（`resources/am/am.mjs` 被换回上游版了？）');
     } else if (rooms7.some((x) => x.figure > r.vh * 0.55)) {
       // 图没受视口高度约束 ⇒ 比右栏还高、吸顶在结构上不可能（补丁里的 max-height 没生效）
       const worst = rooms7.filter((x) => x.figure > r.vh * 0.55).map((x) => `${x.figure}px`).join('、');
       fails.push(`7) 界面图没有视口高度上限（${worst}，视口 ${r.vh}px）—— 图比右栏还高，sticky 没有可移动空间、滚起来照样走。` +
-        '版式补丁里的 max-height 没生效（am 的 DOM 变了？）');
+        '内置 am 的 max-height 没生效（`resources/am/am.mjs` 被换回上游版了？）');
     } else {
       const probe = r.stickyProbe;
       const room = rooms7[0];
@@ -317,6 +352,28 @@ async function main() {
         fails.push(`7) 滚动实测：界面节里的图跑出了视口（top ${probe.top}px）—— sticky 没真正生效`);
         for (const line of r.stickyChain || []) console.log('       祖先链: ' + line);
       }
+    }
+
+    // 8 面板字母 ID 已清（am 的 A/B/C 与定稿标题自带的 § 编号是两套编号，叠着纯噪音）
+    const idLeft = (r.panelIdSpans || 0) + (r.tocWithId || 0);
+    if (idLeft > 0) {
+      fails.push(`8) 面板字母 ID 还在（面板头部 ${r.panelIdSpans} 处 + 左侧目录 ${r.tocWithId} 处）——` +
+        '它与定稿自带的 § 编号叠成两套编号。这页不是用**内置的 am** 渲染的（被换回上游版了？）');
+    } else {
+      console.log('[OK]   8) 面板字母 ID 已清（页面上只有定稿标题自带的 § 编号）');
+    }
+
+    // 9 左侧目录能自己滚（面板一多，目录比视口高时 sticky 留不住它 —— 读者点不到下面的章节）
+    if (!r.tocBox) {
+      console.log('[--]   9) 本页没有左侧目录（面板少于 3 个时 am 不出目录）');
+    } else if (!r.tocProbe || !r.tocProbe.inView) {
+      fails.push(`9) 左侧目录跟着正文滚走了（滚到文档中部时它在视口外，top ${r.tocProbe ? r.tocProbe.top : '?'}px）——` +
+        '目录比视口高时 sticky 留不住它，读者点不到下面的章节。它需要自己的滚动条（内置 am 的 CSS 负责这条；被换回上游版了？）');
+    } else {
+      const b = r.tocBox;
+      const canScroll = b.scrollH > b.clientH + 1;
+      console.log(`[OK]   9) 左侧目录独立滚动：滚到文档中部时仍在视口（top ${r.tocProbe.top}px）` +
+        `（可视高 ${b.clientH}px / 内容 ${b.scrollH}px${canScroll ? ' ⇒ 目录内部有自己的滚动条' : ' ⇒ 目录不长，无需内部滚动'}）`);
     }
 
     console.log('');
