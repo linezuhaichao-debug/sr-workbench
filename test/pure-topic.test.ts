@@ -16,6 +16,19 @@ import test from "node:test";
 import { dateOf, isNoise, topicOf } from "../src/pure/topic.ts";
 import { WORKSPACE, PLANNER_CONFIG_DIR, requireRealData } from "./paths.ts";
 
+/**
+ * **固定名文件** —— 规范里它们的名字**就不带**功能主题，所以不能拿来当"改名铺没铺开"的证据。
+ *   · `decisions\决策记录.md`：**一个功能只有一个决策文件**（`skills/sr-askme/SKILL.md` §三 桶表），
+ *     主题在**文件内容**里（`# 决策记录 · <主题>`）；
+ *   · `human-note_<原话摘要>_<日期>.md` / `legacy-analysis_<原档名>_<日期>.md`：产出文件名的
+ *     **唯一出处**是 `src/pure/analysisdoc.ts`，主题只在 frontmatter（`topic:`）里。
+ * ★ 2026-10-13 更正：这几类原来被当成"产物文件名"，于是**一个功能只要记了一条决策 + 一条人工补充**
+ *   就会误报"改名还没铺到文件名"（实测 `features\测试用例\`，两个名字都是规范名）。
+ * ★ 残留缺口（如实记下，没堵）：`evidence\` 下的**原件**（竞品截图 / 录屏 / 旧文档）名字任意、同样
+ *   不带主题 —— 目前靠同批产出的 `evidence-index_<主题>_<日期>.json` 带主题来兜住。
+ */
+const FIXED_NAME = /^(决策记录\.md|human-note_.+\.md|legacy-analysis_.+\.md)$/i;
+
 function namesIn(dir: string, out: string[], depth: number): void {
 	let rows: fs.Dirent[] = [];
 	try {
@@ -117,17 +130,36 @@ test("真实文件名清单：每个都能派生主题，且没有把配置表�
 		(topics.get(t) as string[]).push(n);
 	}
 	/**
-	 * 真实文件名里能派生出来的主题名都在 —— **以真实文件名清单为准，不以功能目录名为准**。
-	 * ★ 2026-10-13：断言要跟着**真实文件名**走：功能改名后，老文件不一定跟上。
-	 *   · 联盟讨伐（原「联盟悬赏」）：工作簿与文档都已改名（`A079-联盟悬赏.xlsx` → `A079-联盟讨伐.xlsx`）⇒ 能派生；
-	 *   · 神话宝库：它是诸神降临的旧名，老文件名仍在 `analysis\` ⇒ 能派生；新名「诸神降临」也有文件 ⇒ 一并断言；
-	 *   · 圣物系统（原「英雄圣物」）：文件还叫「英雄圣物」，且全在 `evidence\下游交付包_英雄圣物\`
-	 *     这类**子目录**里，而本用例只列**桶的直接子文件**（`bucketFiles` 跳过目录）⇒ 派生不出来。
-	 *     那是"改名还没铺到文件名"，**不是功能坏了**，所以不列进来（要覆盖它得改成递归列举，属另一件事）。
+	 * ★ 2026-10-13 改口径（用户实测「我手动删了功能，这个没有清理吗」）：
+	 *   原来这里钉的是三个**具体主题名**（联盟讨伐 / 神话宝库 / 诸神降临）—— 那是"当时磁盘上
+	 *   正好有这些文件"。用户删掉一个功能之后，这条用例就红了，而**红的原因不是代码坏了**，
+	 *   是断言里还记着一个已经不存在的功能。判据跟着数据漂移 ⇒ 每次删功能都要来改用例。
+	 *
+	 *   改成**跟着 `features\` 目录走**的性质断言（不记任何具体功能名）：
+	 *     · 功能目录里有产物 ⇒ 文件名必须能对上它（派生得出主题，或至少有个文件带着这个名字）；
+	 *     · 功能目录还是空的（刚建、还没产物）⇒ 跳过，那不是"改名没铺开"。
+	 *   这样"改名没铺到文件名"照样红，而删功能 / 加功能不会再让这条用例无缘无故变红。
 	 */
-	for (const t of ["联盟讨伐", "神话宝库", "诸神降临"]) {
-		assert.ok(topics.has(t), "应派生出来自真实文件名的主题：" + t);
-	}
+	const featuresRoot = path.join(WORKSPACE, "features");
+	const featureDirs = (() => {
+		try {
+			return fs.readdirSync(featuresRoot, { withFileTypes: true })
+				.filter((d) => d.isDirectory()).map((d) => d.name);
+		} catch (e) {
+			return [] as string[];
+		}
+	})();
+	const notNamed = featureDirs.filter((d) => {
+		let files: string[] = [];
+		namesIn(path.join(featuresRoot, d), files, 3);
+		// 只留**能承载主题**的文件：全是固定名文件时下面按"还没有产物"跳过（判据见文件头 FIXED_NAME）
+		files = files.filter((n) => !FIXED_NAME.test(n));
+		if (files.length === 0) return false;               // 还没有产物：派生不出来是正常的
+		if (topics.has(d)) return false;                    // 产物文件名里能派生出它自己
+		return !files.some((n) => n.indexOf(d) >= 0);       // 连一个带着它名字的文件都没有
+	});
+	assert.deepEqual(notNamed, [],
+		"这些功能已经有产物、但文件名里找不着它（改名还没铺到文件名）：" + notNamed.join("、"));
 	// 配置表只作属性，不创建功能
 	// ★ 原断言有两处错：① 正则 `/\.xlsm?$/i` = "xls" + 可选 m，**漏掉 .xlsx**（真表里 55 个是 .xlsx）；
 	//   ② 阈值 >50 是猜的。

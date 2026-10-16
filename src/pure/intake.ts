@@ -126,7 +126,8 @@ const INTAKE = (function () {
 	 *
 	 * 与已被工单 31 删掉的老 `buildInstruction` 的三点不同（那是**另一套语义**，不是这里的改写）：
 	 *   ① 产出落到**这个功能自己的** `features\<主题>\analysis\`（不是工作区根的 `inbox\`）；
-	 *   ② 旧文档分析 / 人工补充有**固定格式**（四段章节 / `> 原话：` + 结论 + 边界 + 落点）；
+	 *   ② 旧文档分析 / 人工补充有**固定格式**（四段章节 / `> 原话：` + 结论 —— 人工补充的
+	 *      标题与边界 / 落点已按用户口径 2026-10-13 去掉，只剩原话与"谁说的"）；
 	 *   ③ 前置不满足时**连"下一步怎么做"一起给**（`blocked` + `next`）—— 缺前提不静默。
 	 *
 	 * ★ 文件名的唯一出处是 `./analysisdoc.ts` 的 `legacyDocName` / `humanNoteName`：
@@ -156,6 +157,22 @@ const INTAKE = (function () {
 		const srcDir = root + "\\evidence";
 		const tail = "阶段交给了 skill / 会话里的 AI：" + e.handoff.replace(/（面板不重画流程）$/, "") +
 			" —— 有决策门就停下来等我拍板，不要自己往下走。";
+		/**
+		 * ★ **「你是新开的一条会话」那段**（用户口径 2026-10-13：四入口**每发一次都另起一条新会话**）。
+		 *
+		 * 为什么必须有：新会话**没有上一轮的对话记忆**，而 persona 的决策记录契约只要求"往
+		 * `decisions\决策记录.md` 追加"、**没要求开工先读它**。不写这一句，第二轮分析就会
+		 * 重复问已经答过的问题，或者给出与既有决策相冲突的结论 —— 上下文断层的代价全落在这里。
+		 * 两处都要读：决策记录（定过什么、为什么）＋ `analysis\` 既有产出（别重复造）。读不动要如实说。
+		 * ★ 只写**一处**（四个入口共用 `pack`），免得四处各写一遍、迟早漂移。
+		 */
+		const preRead = [
+			"★ 你是**这次派活新开的一条会话**（没有上一轮的对话记忆）。动手前先读这两处，再开始干活：",
+			"· " + root + "\\decisions\\决策记录.md —— 这个功能定过什么、为什么这么定（**先读再动手**，别与已有决策打架；读不动就如实说，别猜）；",
+			"· " + outDir + "\\ 里已有的产出 —— 别重复造已有的结论；要接着改就在它上面改。"
+		].join("\n");
+		/** 把「先读」那段插在**第一行之后**（第一行是"要干什么"，紧接着才是"动手前先读什么"）。 */
+		const pack = (L) => [L[0], preRead].concat(L.slice(1)).join("\n");
 
 		if (kind === "analysis") {
 			if (!hasPathMaterial(materials)) {
@@ -174,7 +191,7 @@ const INTAKE = (function () {
 			if (topic) L.push("功能主题（用于产出命名与归档）：" + topic);
 			L.push("产出落点：" + outDir + "\\（文件名按 sr-analysis 自己的产出规范：experience-report_*.md / issue-cards_*.json / replication-spec_*.md / sr-gdd-handoff_*.json；证据包落 " + root + "\\evidence\\）");
 			L.push(tail);
-			return { instruction: L.join("\n"), blocked: "", next: "" };
+			return { instruction: pack(L), blocked: "", next: "" };
 		}
 
 		if (kind === "concept") {
@@ -197,7 +214,7 @@ const INTAKE = (function () {
 			L.push("产出落点：" + outDir + "\\（concept-triage_*.md → feature-concept_*.md → sr-gdd-handoff_*.json，文件名按 sr-concept 自己的产出规范）");
 			L.push("定位：本项目（文明之跃）新功能/新玩法。");
 			L.push(tail);
-			return { instruction: L.join("\n"), blocked: "", next: "" };
+			return { instruction: pack(L), blocked: "", next: "" };
 		}
 
 		if (kind === "legacy") {
@@ -234,39 +251,42 @@ const INTAKE = (function () {
 				tail
 			];
 			if (note) L.push("补充说明：" + note);
-			return { instruction: L.join("\n"), blocked: "", next: "" };
+			return { instruction: pack(L), blocked: "", next: "" };
 		}
 
 		if (kind === "humannote") {
-			const title = String(inp.title || "").trim();
+			/**
+			 * ★ 用户口径 2026-10-13：输入只剩**两样** —— 原话（逐字）+ 谁说的。
+			 *   去掉的：① 「标题」（产出文件名与文档一级标题都不再有它）；
+			 *   ② 「边界」「落点」（用户原话：「这些你自己判断」）—— 面板不再问，
+			 *   产出里也不再固定要求这两段。
+			 *   加上的：「谁说的」**必填** —— 产出 frontmatter 的 `author:` 要有真来源，
+			 *   下游引用这条结论时才知道是谁的话。
+			 */
 			const quote = String(inp.quote == null ? "" : inp.quote).trim();
-			if (title === "") {
-				return {
-					instruction: "",
-					blocked: "「人工补充」需要一个标题（它同时是产出文件名与文档一级标题）。",
-					next: "在「标题」里写一句话，比如：BOSS 血量按联盟共享。"
-				};
-			}
+			const author = String(inp.author == null ? "" : inp.author).trim();
 			if (quote === "") {
 				return {
 					instruction: "",
-					blocked: "「人工补充」需要你的原话 —— 原话是这份文档唯一的结论来源。",
+					blocked: "「人工补充」需要你的原话 —— 原话是这份文档唯一的结论来源，也是产出文件名的来源。",
 					next: "把你想说的那句原话写进「原话（逐字保留）」；AI 只整理格式，不改你的结论。"
 				};
 			}
-			const bounds = String(inp.bounds == null ? "" : inp.bounds).trim();
-			const landing = String(inp.landing == null ? "" : inp.landing).trim();
-			const author = String(inp.author == null ? "" : inp.author).trim();
+			if (author === "") {
+				return {
+					instruction: "",
+					blocked: "「人工补充」需要写清这句话是谁说的 —— 产出文档的作者（`author:`）必须有来源。",
+					next: "在「谁说的」里写一句话的出处，比如：主策 祖海潮 / 数值 老王 / 2026-10-13 评审会。"
+				};
+			}
 			const confidence = String(inp.confidence || "high").trim();
-			const produced = humanNoteName(title, date);
+			const produced = humanNoteName(quote, date);
 			const L = [
 				"【头脑风暴 · 人工补充】把我的原话整理成 " + outDir + "\\" + produced + "（**只整理格式，不许改动结论**）。",
-				"标题：" + title,
+				"谁说的（照抄进 frontmatter 的 `author:` —— 它是这条结论的来源）：" + author,
 				"我的原话（**逐字保留**，不许改写、不许摘要、不许润色）：",
 				"「" + quote + "」"
 			];
-			if (bounds) L.push("边界（我给的，照抄进「边界」）：" + bounds.replace(/\s+/g, " "));
-			if (landing) L.push("落点（我给的，照抄进「落点」）：" + landing.replace(/\s+/g, " "));
 			L.push(
 				"产出格式：",
 				"---",
@@ -274,28 +294,21 @@ const INTAKE = (function () {
 				"topic: " + (topic || "<功能主题>"),
 				"confidence: " + confidence + "          # high | pending（pending = 需补证据或验证，下游引用时要带标记）",
 				"date: " + (date || "<YYYYMMDD>"),
-				"author: " + (author || "<谁说的>"),
+				"author: " + author,
 				"---",
-				"",
-				"# " + title,
 				"",
 				"> 原话：「" + quote + "」",
 				"",
 				"## 结论",
 				"<把原话整理成可被下游消费的规则口径 —— 原话本身就是结论，你只能让它更清楚，不能改它的意思>",
-				"",
-				"## 边界",
-				"- <我给了就照抄；没给写「（待定）」并在会话里问我>",
-				"",
-				"## 落点",
-				"- <条目引用，如 §4 R2 BOSS 与难度推进 / §5 UI-M1 UE2 血条区；没给写「（待定）」>",
 				"要求：",
-				"1) `> 原话：…` 那一行**逐字保留**；它与「结论」在面板上是**并排显示**的 —— 我一眼就能看出你有没有改动结论。",
-				"2) 结论里若必须补推断（原话没说到的部分），单独写清补的是哪一步，不要混进原话里。",
-				"3) 边界 / 落点我没给就写「（待定）」并问我，别自己编。",
+				"1) **不要写文档一级标题**（`# …`）—— 这份文档的第一行就是 `> 原话：…`（用户口径：标题去掉、只留原话）。",
+				"2) `> 原话：…` 那一行**逐字保留**；它与「结论」在面板上是**并排显示**的 —— 我一眼就能看出你有没有改动结论。",
+				"3) 结论里若必须补推断（原话没说到的部分），单独写清补的是哪一步，不要混进原话里。",
+				"4) 边界与落点**由你自己判断**：判断得出来就补一段（落点写条目引用，如 §4 R2 / §5 UI-M1 UE2），判断不出来就别写 —— 不许编。",
 				tail
 			);
-			return { instruction: L.join("\n"), blocked: "", next: "" };
+			return { instruction: pack(L), blocked: "", next: "" };
 		}
 
 		return { instruction: "", blocked: "未知的头脑风暴入口：" + String(kind), next: "四个入口是：竞品分析 / 问答式访谈 / 旧文档分析 / 人工补充。" };

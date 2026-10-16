@@ -632,6 +632,26 @@ export function workCacheDrop(raw: unknown, featureRoot: unknown): string {
 	return JSON.stringify(t);
 }
 
+/**
+ * 按"功能目录**已经不在磁盘上**"丢掉若干条（返回新的缓存原文）。
+ *
+ * ★ 为什么要它（2026-10-13 用户实测）：这张表是"功能根 → 工作会话 id"，**只增不减** ——
+ *   功能被手工删掉后条目还留着。它不是致命脏数据（认领会话时还要 cwd 对得上），
+ *   但"删了功能还记着它"正是用户指的那种没清理。
+ *   ★ 入参是**确认已经不在的那些根**（调用方探测出来的磁盘事实），不是"看板上没有的那些" ——
+ *   判据与残留清理同一份（见 `leftovers.ts` 文件头：看板与侧边栏 store 的更新时序不一样）。
+ *   ★ 一律回一个**合法**的 JSON：坏值也在这里归零（`workCacheTable` 对坏值给空表），
+ *   否则坏值会被原样写回去，"清不掉"就成了静默失败。
+ */
+export function workCacheDropMany(raw: unknown, featureRoots: unknown): string {
+	const t = workCacheTable(raw);
+	for (const r of (Array.isArray(featureRoots) ? featureRoots : [])) {
+		const k = normPath(r);
+		if (k !== "") delete t[k];
+	}
+	return JSON.stringify(t);
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // 权限预设（工单 07 第 7 条）—— 建完工作会话要能改到「完全权限」，并且**能读回来**
 // ════════════════════════════════════════════════════════════════════════════

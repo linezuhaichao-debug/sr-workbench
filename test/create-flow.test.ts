@@ -280,9 +280,13 @@ test("新建功能：「策划模式」预设没挂上 ⇒ 退一步建**不带�
 	assert.equal(made.length >= 2, true, "应当先带预设试一次、再不带预设试一次：" + made.length);
 	assert.equal(made[made.length - 1].req.agentPreset, undefined, "最后一次是不带预设的");
 	const noteText = (r.notes || []).join(" ");
-	assert.ok(noteText.includes("策划模式"), "要如实说是哪个预设没挂上：" + noteText);
+	assert.ok(noteText.includes("策划模式"), "如实说是哪个预设没挂上（诊断留痕）：" + noteText);
 	assert.ok(noteText.includes("dsh.profile.bundles"), "要给出可执行的下一步（怎么修）：" + noteText);
 	assert.ok(noteText.includes("决策记录契约"), "要说清后果：这条会话没有决策记录契约");
+	// ★ 这条降级**有后果** ⇒ 必须进 `warns`（界面只显示 warns；notes 是诊断，用户明确说不要看）
+	const warnText = (r.warns || []).join(" ");
+	assert.ok(warnText.includes("决策记录契约"), "有后果的降级要显示出来：" + warnText);
+	assert.equal(String(r.doneText).includes("PowerShell"), false, "实现细节不许出现在成功提示里");
 });
 
 test("新建功能：主题名不合法 ⇒ 拒绝，并给出人话 + 下一步", async () => {
@@ -322,7 +326,13 @@ test("建目录·路②：本机只有 native（没有 createDirectory）⇒ 让
 	assert.ok(text.includes("New-Item -ItemType Directory -Force"), "要给逐字的命令");
 	assert.ok(text.includes(FEATURES + "\\新功能\\decisions"), "5 个目录要逐个列全");
 	assert.ok(text.includes("不要") && text.includes("写"), "要写清不许写文件");
-	assert.ok(String(r.notes.join(" ")).includes("索引会话"), "要如实说目录是谁建的：" + r.notes.join(" "));
+	// ★ 这些是实现细节 ⇒ 只留诊断（notes），**不进界面**（用户口径 2026-10-13：
+	//   「这些不是用户需要看的」）—— 所以成功提示与 warns 里都不该出现它们。
+	assert.ok(String(r.notes.join(" ")).includes("索引会话"), "诊断里要留下目录是谁建的：" + r.notes.join(" "));
+	for (const noise of ["索引会话", "PowerShell", "native"]) {
+		assert.equal(String(r.doneText).includes(noise), false, "成功提示里不该有「" + noise + "」：" + r.doneText);
+		assert.equal(String((r.warns || []).join(" ")).includes(noise), false, "warns 里也不该有「" + noise + "」：" + (r.warns || []).join(" "));
+	}
 
 	// 目录齐了之后，工作区与会话照常建
 	const wsCall = log.filter((x) => x.m === "workspace.create" && x.path === FEATURES + "\\新功能")[0];
@@ -338,7 +348,8 @@ test("建目录·路②：createDirectory 抛 directory-picker/unavailable ⇒ �
 
 	const r = await panelProps.__createFeature("新功能", { wsPaths: [], sid: idx.sid, scaffoldWait: WAIT });
 	assert.equal(r.ok, true, JSON.stringify(r));
-	assert.ok(String(r.notes.join(" ")).includes("native"), "要如实说本机只有 native：" + r.notes.join(" "));
+	assert.ok(String(r.notes.join(" ")).includes("native"), "诊断里要留下本机只有 native：" + r.notes.join(" "));
+	assert.equal(String(r.doneText).includes("native"), false, "成功提示里不该提 native：" + r.doneText);
 	assert.ok(log.some((x) => x.m === "session.prompt"), "要退到会话那条路");
 	assert.deepEqual(uw.made, [], "抛了的那条路不该留下任何目录");
 });
@@ -375,7 +386,8 @@ test("建目录·续做：目录已在且**只有桶、没有文件** ⇒ 不重
 	assert.equal(r.ok, true, JSON.stringify(r));
 	assert.deepEqual(log.filter((x) => x.m === "session.prompt"), [], "目录已经在，不该再让人去建");
 	assert.ok(log.some((x) => x.m === "workspace.create" && x.path === root), "要接着建专属工作区");
-	assert.ok(String(r.notes.join(" ")).includes("只有桶"), "要如实说这是按现成目录接着做的：" + r.notes.join(" "));
+	assert.ok(String(r.notes.join(" ")).includes("只有桶"), "诊断里要留下这是按现成目录接着做的：" + r.notes.join(" "));
+	assert.equal(String(r.doneText).includes("只有桶"), false, "成功提示里不必解释这个：" + r.doneText);
 });
 
 test("建目录·不续做：目录已在但**里面有文件** ⇒ 照旧按重名拒绝（那是真功能）", async () => {
@@ -396,6 +408,7 @@ test("建目录·不续做：目录已在但**里面有文件** ⇒ 照旧按重
 
 test("头脑风暴：四入口的指令发给**本功能的工作会话**（新建一条、带上标题）", async () => {
 	const { remote, log } = makeRemote();
+	uniqueSessionIds(remote);
 	const uw = makeUiWorkspace();
 	const { panelProps } = loadPlugin(remote, { services: { uiWorkspace: uw.service } });
 	// 先解析锚点（`__index` 会顺手建一条**索引会话** —— 下面按调用语义挑，不按顺序挑）
@@ -404,14 +417,138 @@ test("头脑风暴：四入口的指令发给**本功能的工作会话**（新�
 	const root = FEATURES + "\\新功能";
 	const r = await panelProps.__sendBrainstorm(root, "【头脑风暴 · 竞品分析】…");
 	assert.equal(r.ok, true, JSON.stringify(r));
+	// 实现细节（目录是谁建的、本机选择器什么后端、权限预设如何）**不进界面** ——
+	// 界面只显示"有后果的降级"。（测试环境的假 ctx 没有 store 服务，那条降级是真的，所以不断言"必须为空"。）
+	for (const noise of ["PowerShell", "native", "不用再切", "索引会话"]) {
+		assert.equal(String((r.notes || []).join(" ")).includes(noise), false,
+			"实现细节不该进界面：「" + noise + "」→ " + (r.notes || []).join(" "));
+	}
 
 	const made = log.filter((x) => x.m === "session.create")[0];
-	assert.ok(made, "认不着就新建一条工作会话");
+	assert.ok(made, "每次派活都新开一条工作会话");
 	assert.equal(made.req.agentPreset, "sr-workbench");
 	const sent = log.filter((x) => x.m === "session.prompt")[0];
-	assert.ok(sent && sent.req.sessionId === "sid-new", JSON.stringify(sent));
+	assert.ok(sent && sent.req.sessionId === r.sid, JSON.stringify(sent));
 	assert.equal(sent.req.content[0].text, "【头脑风暴 · 竞品分析】…", "发出去的正文逐字就是面板上那段");
 	assert.equal(sent.req.mode, "queue", "忙碌时排队而不是丢");
+});
+
+test("头脑风暴：**连发两次 = 两条会话**（每次派活另起一条，不复用上一条）", async () => {
+	const { remote, log } = makeRemote();
+	uniqueSessionIds(remote);
+	const uw = makeUiWorkspace();
+	const { panelProps } = loadPlugin(remote, { services: { uiWorkspace: uw.service } });
+	await panelProps.__index({ rows: [{ id: "boot", cwd: "D:\\X" }], wsPaths: ["D:\\X"], archived: null });
+	const root = FEATURES + "\\新功能";
+
+	const a = await panelProps.__sendBrainstorm(root, "【头脑风暴 · 竞品分析】…");
+	const b = await panelProps.__sendBrainstorm(root, "【头脑风暴 · 旧文档分析】…");
+	assert.equal(a.ok && b.ok, true, JSON.stringify([a, b]));
+	assert.notEqual(a.sid, b.sid, "第二次派活要**另起一条**（旧行为是复用同一条、串行排队）");
+	// 两条都在功能根上建（cwd 对得上 ⇒ 产出落对桶）
+	const created = log.filter((x) => x.m === "session.create");
+	assert.equal(created.length, 3, "两条工作会话 + 索引会话那条，实际 " + created.length);
+	for (const c of created.slice(-2)) assert.equal(c.req.agentPreset, "sr-workbench");
+	// 指令各进各的那条
+	const prompts = log.filter((x) => x.m === "session.prompt").map((x) => x.req.sessionId);
+	assert.deepEqual(prompts, [a.sid, b.sid], "两条指令各进各的会话：" + JSON.stringify(prompts));
+	// 旧的那条一个动作都没挨（面板只建不删、也不归档）
+	for (const m of ["workspace.archiveSession", "workspace.delete"]) {
+		assert.equal(log.filter((x) => x.m === m).length, 0, "不该出现 " + m);
+	}
+});
+
+test("并行护栏已撤：组合根上不再有「这个功能有没有会话在跑」这个判据", async () => {
+	/**
+	 * ★ 用户口径（2026-10-13，撤护栏那一下）：「护栏1好像没啥用，**我同时跑两个头脑风暴不行吗**」。
+	 *   判据错在触发条件 —— "这个功能还有会话在跑"恰好是并行派活的常态，等于每次正常用法都多点一次。
+	 *   并发写同一个功能目录的风险改由**写入规则**治（`decision-recording.md` §二：只追加、不整篇重写）。
+	 *   这条断言的意义：谁要是哪天又想加回"先提示再发"，先来读这里为什么撤。
+	 */
+	const { remote } = makeRemote();
+	uniqueSessionIds(remote);
+	const root = FEATURES + "\\新功能";
+	// 一条正在跑的工作会话（cwd 恰好是功能根）——撤护栏前，它会让第一下发送只提示不发
+	remote.session.list = async () => ({
+		ok: true,
+		value: { items: [{ sessionId: "s-running", cwd: root, updatedAt: 2000, running: true, title: "策划工作台·工作（新功能）" }] }
+	});
+	const uw = makeUiWorkspace();
+	const { panelProps } = loadPlugin(remote, { services: { uiWorkspace: uw.service } });
+	await panelProps.__index({ rows: [{ id: "boot", cwd: "D:\\X" }], wsPaths: ["D:\\X"], archived: null });
+
+	assert.equal(panelProps.__runningWorkSessions, undefined, "护栏那套查询入口应当已经不在组合根上");
+	// 有会话在跑也照发不误（一次点击 = 一条指令，不需要第二次确认）
+	const r = await panelProps.__sendBrainstorm(root, "【头脑风暴 · 竞品分析】…");
+	assert.equal(r.ok, true, JSON.stringify(r));
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 详情页右上角〔新建会话〕（用户口径 2026-10-13：由工作台创建会话）
+//   为什么这一条必须有：这颗按钮的**全部价值**就在"建出来的那条面板认不认"——
+//   建在本功能的工作区、开策划模式、四入口的指令发给它；少一样就成了"用户在侧边栏自己建"。
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 每次 `session.create` 给一个**不同**的 id（真机也复用吗？不复用）—— 否则"发给新建的那条"等于没测。 */
+function uniqueSessionIds(remote) {
+	let seq = 0;
+	const orig = remote.session.create;
+	remote.session.create = async (req) => {
+		const r = await orig(req);
+		if (r && r.ok) r.value = { sessionId: "sess-" + (++seq) };
+		return r;
+	};
+}
+
+test("新建会话：按功能根建一条**策划模式**会话（这次派活的目标由它接力）", async () => {
+	const { remote, log } = makeRemote();
+	uniqueSessionIds(remote);
+	const uw = makeUiWorkspace();
+	const { panelProps } = loadPlugin(remote, { services: { uiWorkspace: uw.service } });
+	await panelProps.__index({ rows: [{ id: "boot", cwd: "D:\\X" }], wsPaths: ["D:\\X"], archived: null });
+	const root = FEATURES + "\\新功能";
+
+	const r = await panelProps.__newWorkSession(root);
+	assert.equal(r.ok, true, JSON.stringify(r));
+	assert.equal(r.title, "策划工作台·工作（新功能）");
+	assert.equal(r.previous, "", "第一次建：没有「被换下去的那条」");
+
+	// ① 工作区按**功能根**登记（会话落在它里面 ⇒ 会话的 cwd 就是功能目录）
+	assert.ok(log.some((x) => x.m === "workspace.create" && x.path === root), "要按功能根登记工作区");
+	// ② 预设是「策划模式」（`cordis.patch.yml` 里那一行），③ 改名成可认领的标题
+	const made = log.filter((x) => x.m === "session.create").pop();
+	assert.equal(made.req.agentPreset, "sr-workbench", "预设必须是策划模式");
+	assert.equal(made.req.workspaceId, "ws-1", "要建在功能的工作区里");
+	assert.equal("cwd" in made.req, false, "workspaceId 与 cwd 互斥 —— 不许同时给");
+	assert.ok(log.some((x) => x.m === "session.rename" && x.req.title === "策划工作台·工作（新功能）"), "要改名成认领凭据");
+
+	// ④ 四入口**不复用**这一条（口径：一次派活一条会话）—— 它另起一条，各进各的
+	const sent = await panelProps.__sendBrainstorm(root, "【头脑风暴 · 竞品分析】…");
+	assert.equal(sent.ok, true, JSON.stringify(sent));
+	assert.notEqual(sent.sid, r.sid, "发送会另起一条（〔新建会话〕建的那条只是先备着）");
+	const pr = log.filter((x) => x.m === "session.prompt").pop();
+	assert.equal(pr.req.sessionId, sent.sid, "指令要发给这次派活新建的那条");
+});
+
+test("新建会话：再点一次 = 另起一条（旧的不删不动），指针改到新的那条", async () => {
+	const { remote, log } = makeRemote();
+	uniqueSessionIds(remote);
+	const uw = makeUiWorkspace();
+	const { panelProps } = loadPlugin(remote, { services: { uiWorkspace: uw.service } });
+	await panelProps.__index({ rows: [{ id: "boot", cwd: "D:\\X" }], wsPaths: ["D:\\X"], archived: null });
+	const root = FEATURES + "\\新功能";
+
+	const first = await panelProps.__newWorkSession(root);
+	const second = await panelProps.__newWorkSession(root);
+	assert.equal(second.ok, true, JSON.stringify(second));
+	assert.notEqual(second.sid, first.sid, "再点一次是**另起一条**（不是把旧的拿回来）");
+	assert.equal(second.previous, first.sid, "要如实报出被换下去的那条（界面据此说「旧的那条没动」）");
+	assert.equal(panelProps.__workSessionOf(root), second.sid, "指针要改到新的那条");
+
+	// 旧的那条**一个动作都没挨**（面板只建不删：不归档、不删、不改名）
+	for (const m of ["workspace.archiveSession", "workspace.delete"]) {
+		assert.equal(log.filter((x) => x.m === m).length, 0, "不该出现 " + m);
+	}
 });
 
 test("面板不写盘：整个组合根里没有一处写文件内容的调用", () => {

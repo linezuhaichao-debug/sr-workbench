@@ -12,8 +12,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { traceArtifactOf } from "../src/pure/buckets.ts";
-import { loadDashboard } from "../src/load/dashboard.ts";
+import { currentNameOf, traceArtifactOf } from "../src/pure/buckets.ts";
+import { loadDashboard, loadDashboardInner } from "../src/load/dashboard.ts";
 import { loadFeatureDetail } from "../src/load/feature.ts";
 import { featureRoot, featureTopics, requireRealData, SR_CONFIG, testPort } from "./paths.ts";
 
@@ -55,10 +55,50 @@ test("真实工作区里，无后缀的 gdd .md 就是成稿；留痕不混进�
 		}
 		// ② 反方向也要钉：留痕账里**只装留痕**（别把真产物误报成留痕，那是另一种错）
 		for (const f of d.outputs.trace.files) {
-			assert.ok(traceArtifactOf(f.name), "留痕账里只该有留痕：" + f.rel);
+			// ★ 2026-10-13 更正：判据必须与 `outputGroupOf` **同一个** —— 它先 `currentNameOf` 把历史
+			//   版本还原成当前版名再分类，所以「留痕的历史版本」（`x_审查_20261013_2.md`）本来就该进
+			//   这一账。这里原来拿**原始名**再问一次 `traceArtifactOf`，漏了还原那一步 ⇒ 磁盘上一出现
+			//   留痕的历史版本就误报（实测 `圣物系统_20261013_审查_20261013_2.md`）。
+			assert.ok(traceArtifactOf(currentNameOf(f.name)), "留痕账里只该有留痕：" + f.rel);
 		}
 		// ③ 留痕与产物**不许重叠**（同一份文件不能既列出又报数）
 		const listed = new Set(d.outputs.allPaths);
 		for (const p of d.outputs.trace.allPaths) assert.equal(listed.has(p), false, "同一份东西不能既列出又进留痕账：" + p);
 	}
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 「列不出来」与「列出来是空的」必须分得清 —— 残留清理的安全阀吃的就是这个信号
+//   （`note` 非空 = 这一轮的功能列表不可信；空数组 = 可信的空，见 pure/leftovers.ts）
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 只回 `features\` 那一层的假 port（别的路径一律列不出来）。 */
+function featuresOnlyPort(listing: { entries: Array<{ name: string; type: string }>; truncated?: boolean } | "throw") {
+	return {
+		async listDir(p: string) {
+			if (!/[\\/]features$/i.test(String(p))) throw new Error("没有这个目录：" + p);
+			if (listing === "throw") throw new Error("列不出来：" + p);
+			// `port.listDir` 直接回 `ListResult`（`{ok,value}` 那层是 Remote 的形状，端口已经解包过）
+			return { path: p, entries: listing.entries, truncated: listing.truncated === true };
+		}
+	};
+}
+
+test("features\\ 列举被截断 ⇒ 如实刹车（note 非空）；列得出来但是空的 ⇒ 那是**可信的空**", async () => {
+	const SR = "D:\\X\\workspace";
+	const one = { name: "联盟讨伐", type: "directory" };
+
+	const cut = await loadDashboardInner(featuresOnlyPort({ entries: [one], truncated: true }) as any, SR);
+	assert.equal(cut.features.length, 1, "截断时列到的那一个照样给出来");
+	assert.ok(String(cut.note).includes("截断"), "但必须如实说这一轮可能不全：" + cut.note);
+
+	const fine = await loadDashboardInner(featuresOnlyPort({ entries: [one], truncated: false }) as any, SR);
+	assert.equal(String(fine.note), "", "正常列举不许留刹车信号");
+
+	const empty = await loadDashboardInner(featuresOnlyPort({ entries: [] }) as any, SR);
+	assert.equal(String(empty.note), "", "列得出来但是空的 —— 可信的空（用户口径：看板空 ≠ 看板坏了）");
+	assert.equal(empty.features.length, 0);
+
+	const gone = await loadDashboardInner(featuresOnlyPort("throw") as any, SR);
+	assert.ok(String(gone.note).length > 0, "`features\\` 整个列不出来时要有 note（那是另一回事：还没建 / 读不到工作区）");
 });

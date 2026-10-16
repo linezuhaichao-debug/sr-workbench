@@ -279,11 +279,17 @@ export function createPendingNotice(topic: string): string {
 	return "正在建「" + topic + "」：功能目录 → 4 个桶 → 注册专属工作区 → 建工作会话（策划模式）。全程本地完成，不发任何指令。";
 }
 
-/** 建好了那一句（含怎么撤 —— 面板只建不删）。 */
-export function createDoneNotice(topic: string, root: string, sid: string): string {
-	return "建好了：「" + topic + "」· 4 个桶（evidence / analysis / gdd / decisions）都在 · 已登记为它的专属工作区" +
-		(sid ? " · 工作会话已建好（策划模式）" : " · 工作会话没建起来（见下）") +
-		"。要撤掉就删掉这个目录：" + root + "（面板只建不删）。";
+/**
+ * 建好了那一句 —— **只说结果**（用户口径 2026-10-13：「只要说一下 4 个桶」）。
+ *
+ * ★ 这里原来拖着一串尾巴：绝对路径 + "要撤掉就删掉这个目录"（面板不碰文件、会话会被归档、
+ *   可在侧边栏取消归档）—— 用户明确说「这些不是用户需要看的，删掉后面这些」。
+ *   撤销办法与那些内部细节留在 ADR 0013 与操作文档里，不占每次新建后的这一句。
+ *   `sid` 为空（工作会话没建起来）时仍要如实说 —— 那不是噪音，是**当次动作的结果**。
+ */
+export function createDoneNotice(topic: string, sid: string): string {
+	return "建好了：「" + topic + "」· 4 个桶都在 · " +
+		(sid ? "专属工作区与工作会话已就绪。" : "专属工作区已登记（工作会话没建起来，见下）。");
 }
 
 /** 只建到一半那一句（如实说建到哪一步、下一步怎么办）。 */

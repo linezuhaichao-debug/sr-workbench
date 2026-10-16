@@ -100,11 +100,21 @@ test("路径比对：大小写不敏感、分隔符统一、去尾斜杠", () =>
 	assert.equal(nameKey(" ABC "), "abc");
 });
 
-test("桶提示与界面话术（含「怎么撤」）", () => {
+test("界面话术：建好那一句**只说结果**（用户口径「只要说一下 4 个桶」）", () => {
 	assert.ok(bucketHint("decisions").includes("决策记录"));
 	assert.equal(bucketHint("没这个桶"), "");
 	assert.equal(sessionTitleFor("联盟讨伐"), "策划工作台·工作（联盟讨伐）");
-	assert.ok(createDoneNotice("联盟讨伐", "D:\\X\\features\\联盟讨伐", "sid-1").includes("删掉"));
+
+	const done = createDoneNotice("联盟讨伐", "sid-1");
+	assert.ok(done.includes("联盟讨伐") && done.includes("4 个桶"), "要点名功能与桶：" + done);
+	assert.ok(done.includes("工作会话"), "要如实说工作区 / 工作会话就绪了：" + done);
+	// ★ 2026-10-13 用户口径：「这些不是用户需要看的，删掉后面这些」——
+	//   撤销办法（删目录）、绝对路径、归档可取消那一套都不该占着每次新建后的提示。
+	for (const noise of ["要撤掉", "删掉这个目录", "已归档", "D:\\"]) {
+		assert.equal(done.includes(noise), false, "这句里不该出现「" + noise + "」：" + done);
+	}
+	assert.ok(createDoneNotice("X", "").includes("没建起来"), "工作会话没建起来时要如实说（那不是噪音）");
+
 	assert.ok(createPartialNotice("X", "D:\\X", ["features\\"], "gdd\\", "已存在").includes("gdd\\"));
 });
 

@@ -13,7 +13,7 @@ import { outputGroupOf } from "../pure/buckets.ts";
 import type { WorkspacePort } from "../port/types.ts";
 import { decisionPathOf, lastDecisionAt, scanFeature } from "./feature.ts";
 import { loadSrPaths } from "./paths.ts";
-import { listDirs, readAllText } from "./read.ts";
+import { dirNamesOf, readAllText } from "./read.ts";
 import { parseDecisionLog } from "../pure/decisions.ts";
 import { dateOf } from "../pure/topic.ts";
 
@@ -107,7 +107,21 @@ export async function loadDashboardInner(port: WorkspacePort, srWs: string, sign
 	let topics: string[] = [];
 	let note = "";
 	try {
-		topics = (await listDirs(port, featuresDir, signal, false)).slice().sort();
+		/**
+		 * ★ 这里**直接吃 `port.listDir`**（不走 `listDirs`）就是为了看 `truncated`。
+		 *
+		 *   列举被截断 ⇒ 这一轮的功能列表**可能不全** ⇒ 面板那侧的"残留判据"必须停手：
+		 *   它会把"没列出来"当成"已被手工删掉"，然后去归档那些**其实还活着**的功能的工作会话、
+		 *   移除它们的工作区登记。`note` 非空就是给它的刹车信号（见 `pure/leftovers.ts` 的安全阀）。
+		 *
+		 *   ★ 注意：`features\` **列得出来但一个功能都没有**是**正常状态**（用户把功能都删了、
+		 *   或刚建的新工作区）—— 那不是刹车信号，一个空数组照样是可信的"全集"。
+		 */
+		const listing = await port.listDir(featuresDir, signal);
+		topics = dirNamesOf(listing).slice().sort();
+		if (listing && listing.truncated === true) {
+			note = "`features\\` 的列举被截断了（目录项太多）—— 这一轮的功能列表可能不全，别据此判断哪个功能被删了。";
+		}
 	} catch (e) {
 		// 全新工作区（还没有 features\）与"列不出来"要分清：根列得出来 ⇒ 只是还没有功能目录
 		let rootOk = false;

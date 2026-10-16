@@ -131,10 +131,13 @@ test("构建产物仍是单个 bundle，且外壳/内容可核对", () => {
  * 用户口径（2026-10-10）：① 卡片墙那个按钮〔技能用法〕改名〔使用说明〕；
  * ② 详情页的〔刷新〕也加刷新小图标、〔打开工作会话〕改名〔打开会话〕；
  * ③ 两处都要"正好两个按钮、字数一样（2 + 4）、高度一样"。
+ * ★ 用户口径（2026-10-13）：详情页那个动作**换语义**了 ——〔打开会话〕→〔新建会话〕
+ *   （通过工作台创建会话：建在功能工作区、开策划模式、受面板控制）。名字与旧名一起在这里钉住。
  *
  * 为什么这条断言盯**产物文本**而不是渲染冒烟：详情页那两个按钮只在 `sessionId` 非空时渲染，
  * 而渲染冒烟里那条会话是空的（`useSessions` 返回空表）⇒ 屏幕上看不到〔打开会话〕，
  * 那正是"改了却没人拦"的空档。这里的判据是"两处四个按钮都被同一个常量钉住高度"。
+ * （2026-10-13 起那颗按钮**总是渲染**了，但这条"盯产物文本"的判据照旧有效、成本更低。）
  */
 test("头部按钮：卡片墙与详情是同一套（名字 + 等高）", () => {
 	const bundle = fs.readFileSync(path.join(ROOT, "lib", "client.js"), "utf8");
@@ -151,9 +154,20 @@ test("头部按钮：卡片墙与详情是同一套（名字 + 等高）", () =>
 
 	// ① 文案：新名要在、旧名不许再当按钮文案（注释里提旧名是允许的 ⇒ 只认 `label:` 这个键）
 	assert.ok(around("使用说明").length >= 1, "卡片墙头部该是〔使用说明〕");
-	assert.ok(around("打开会话").length >= 1, "详情页头部该是〔打开会话〕");
 	assert.equal(bundle.split('label: "技能用法"').length - 1, 0, "旧名〔技能用法〕不该再作按钮文案");
 	assert.equal(bundle.split('label: "打开工作会话"').length - 1, 0, "旧名〔打开工作会话〕不该再作按钮文案");
+	assert.equal(bundle.split('label: "打开会话"').length - 1, 0, "旧名〔打开会话〕不该再作按钮文案（动作已换成「新建会话」）");
+
+	/**
+	 * ★ 详情页那颗新按钮的文案是**条件式**（`creatingSession ? "新建中…" : "新建会话"`）——
+	 *   `label: "…"` 这个键认不出它，所以单独取它前后各 300 字来钉：
+	 *   两个文案都得在（一个是常态、一个是新建中的禁用态），几何仍是同一个常量。
+	 */
+	const newBtnAt = bundle.indexOf('"新建会话"');
+	assert.ok(newBtnAt >= 0, "产物里找不到按钮文案：新建会话");
+	const newBtn = bundle.slice(Math.max(0, newBtnAt - 300), newBtnAt + 300);
+	assert.ok(newBtn.includes('"新建中…"'), "新建中的禁用文案该与〔新建会话〕在同一个按钮上");
+	assert.ok(newBtn.includes("h: HEAD_BTN_H"), "〔新建会话〕没按 HEAD_BTN_H 钉几何");
 
 	// ② 位置：〔刷新〕**恰好两处**（卡片墙 + 详情页），两处都带刷新小图标
 	const refresh = around("刷新");
@@ -164,7 +178,7 @@ test("头部按钮：卡片墙与详情是同一套（名字 + 等高）", () =>
 	//    银弹是 `alignSelf: "center"`：官方 `.sm` 本来就是 28px，那 3px 差是**基线对齐**造成的
 	//    （带 icon 的按钮基线取图标底边，比文字基线低）⇒ 不按行居中就是用户看到的那条"高度不一样"。
 	assert.ok(bundle.includes('alignSelf: "center"'), "头部按钮没按行居中 —— 基线对齐会让带图标的与纯文字的那个差 3px");
-	for (const label of ["刷新", "使用说明", "打开会话"]) {
+	for (const label of ["刷新", "使用说明"]) {
 		for (const w of around(label)) assert.ok(w.includes("h: HEAD_BTN_H"), "〔" + label + "〕没按 HEAD_BTN_H 钉几何");
 	}
 });

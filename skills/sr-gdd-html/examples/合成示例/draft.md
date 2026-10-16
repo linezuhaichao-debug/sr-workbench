@@ -154,13 +154,13 @@ source: 每日签到_定稿.md（doc_type: final_gdd · status: active）
 
 ## §7 多语言文本
 
-| 键 | 中文文案 | 状态 |
-| --- | --- | --- |
-| sign_in_title | 每日签到 | warn 新增 |
-| sign_in_sub | 累计签到 {0} 天 · 本月还剩 {1} 天 | warn 新增 |
-| sign_in_btn_claim | 领取第 {0} 天奖励 | warn 新增 |
-| sign_in_btn_done | 今日已领取 | ok 已有 |
-| sign_in_makeup_tip | 断签不重置累计天数 | warn 新增 |
+| 键 | 中文文案 | 占位符 | 状态 | UI位置 | UI状态 | 触发 | 用途 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| sign_in_title | 每日签到 | — | warn 新增 | 面板标题 | available | 打开签到面板 | 面板标题 |
+| sign_in_sub | 累计签到 $0 天 · 本月还剩 $1 天 | $0＝已签到天数（来源：服务端签到记录）；$1＝本月剩余可签天数（来源：服务端签到周期） | warn 新增 | 副标题 | available | 常驻 | 当前签到进度说明 |
+| sign_in_btn_claim | 领取第 $0 天奖励 | $0＝本次可领的天序号（来源：服务端签到记录） | warn 新增 | 主按钮 | available | 今日未领取 | 发起领取 |
+| sign_in_btn_done | 今日已领取 | — | ok 已有 | 主按钮 | unavailable | 今日已领取 | 已领状态置灰 |
+| sign_in_makeup_tip | 断签不重置累计天数 | — | warn 新增 | 底部提示 | available | 常驻 | 补签口径说明 |
 
 ## §8 范围门
 

@@ -30,7 +30,10 @@
  *   · 功能工作会话 cwd = `features\<主题>\`  标题 `策划工作台·工作（<主题>）` **接指令**（头脑风暴四入口）
  *
  * ── 面板不做什么 ───────────────────────────────────────────────────────────
- *   · 不写任何**文件内容**（决策记录由会话里的 agent 按契约追加）；不删任何东西。
+ *   · 不写任何**文件内容**（决策记录由会话里的 agent 按契约追加）；不删任何**文件或目录**。
+ *     ★ 唯一的"删"是收拾**自己留下的痕迹**（2026-10-13 用户实测「我手动删了功能，这个没有清理吗」）：
+ *       手工删掉 `features\<主题>\` 之后，面板会把那个功能的**工作会话归档、工作区登记移除**、
+ *       本地那条映射清掉 —— 三条动作都不碰文件，判据与安全阀在 `pure/leftovers.ts`。
  *   · 不替定稿门背书（"最新定稿"只按文件名日期标，措辞里写清楚）。
  *   · 不假装知道：读不到就说读不到，缺桶就说缺桶。
  */
@@ -63,11 +66,13 @@ import { mdView } from "./ui/mdview.js";
 import {
 	ARCHIVED_CACHED_NOTE, FOREIGN_CACHE_NOTE, NO_ARCHIVE_INFO_NOTE,
 	archivedFromSnapshot, configPathCandidates, indexCacheKey, indexCacheOwned, indexCacheParse,
-	indexCacheSerialize, indexTitleFor, isArchivedId, mergeRows, needsFullAccess,
+	indexCacheSerialize, indexTitleFor, isArchivedId, mergeRows,
 	normPath, permissionCommandLine, permissionPlanOf, permissionResultNote,
-	pickIndexSession, pickWorkSession, rowsFromList, rowsFromStore, titleOf,
-	workCacheDrop, workCacheGet, workCacheKey, workCachePut, workTitleFor
+	pickIndexSession, rowsFromList, rowsFromStore, titleOf,
+	workCacheDrop, workCacheDropMany, workCacheGet, workCacheKey, workCachePut, workTitleFor
 } from "./pure/sessionpick.ts";
+// ★ 手工删掉的功能留下的痕迹（工作区登记 / 工作会话 / 面板自己的映射）—— 判据见 pure/leftovers.ts
+import { leftoverCandidates, leftoversOf } from "./pure/leftovers.ts";
 import { planSidebarSync, sidebarSyncNeeded } from "./pure/storemerge.ts";
 // ★ 面板视图记忆（上次停在哪个功能 / 哪个模块）—— 切回工作台不用重头点，见 pure/panelview.ts
 import { panelModOf, panelViewKey, panelViewParse, panelViewSerialize } from "./pure/panelview.ts";
@@ -124,7 +129,7 @@ const PRE = {
 /**
  * **头部动作按钮的统一高度**（px）。
  *
- * 卡片墙头部（〔刷新〕〔使用说明〕）与功能详情头部（〔刷新〕〔打开会话〕）是同一套位置：
+ * 卡片墙头部（〔刷新〕〔使用说明〕）与功能详情头部（〔刷新〕〔新建会话〕）是同一套位置：
  * 都是右侧两个按钮、刷新在前、字数也一样（2 + 4）。几何也走**同一个值** ——
  * 见 `Btn` 的 `h` 说明（官方 `Button` 带 icon 时基线取图标底边，会与纯文字按钮差 3px）。
  */
@@ -906,11 +911,15 @@ const FIELDS = {
 		{ k: "materials", label: "旧文档（目录或文件路径，一行一个）", lines: 3, mono: true },
 		{ k: "note", label: "补充说明（可空）", lines: 2 }
 	],
+	/**
+	 * ★ 人工补充只剩两个字段（用户口径 2026-10-13）：
+	 *   · 「标题」删掉 —— 产出文件名改由**原话**派生，文档正文也不再有一级标题；
+	 *   · 「边界」「落点」删掉 —— 用户原话「这些你自己判断」（指令里告诉 AI 自己判断，不许编）；
+	 *   · 「谁说的」补上，就放在原「标题」那一格 —— frontmatter 的 `author:` 得有真来源。
+	 */
 	humannote: [
-		{ k: "title", label: "标题", lines: 1 },
-		{ k: "quote", label: "原话（逐字保留）", lines: 3, mono: true },
-		{ k: "bounds", label: "边界（可空）", lines: 2 },
-		{ k: "landing", label: "落点（可空，条目引用，如 §4 R2 / §5 UI-M1 UE2）", lines: 1 }
+		{ k: "author", label: "谁说的（谁的话 / 什么会上说的）", lines: 1 },
+		{ k: "quote", label: "原话（逐字保留）", lines: 3, mono: true }
 	]
 };
 
@@ -919,7 +928,7 @@ function inputOf(kind, form) {
 	const f = form || {};
 	const mats = INTAKE.parseMaterials(f.materials || "");
 	if (kind === "concept") return { materials: mats, note: f.seed || "" };
-	if (kind === "humannote") return { title: f.title || "", quote: f.quote || "", bounds: f.bounds || "", landing: f.landing || "" };
+	if (kind === "humannote") return { quote: f.quote || "", author: f.author || "" };
 	return { materials: mats, note: f.note || "" };
 }
 
@@ -1017,7 +1026,9 @@ function BrainstormModule(props) {
 					(x.extra || []).length ? h("div", { key: "e", style: { fontSize: FONT.meta, color: V.muted } }, "多出来的章节：" + x.extra.map((s) => s.title).join("、")) : null
 				])),
 				(b.humannote || []).map((x) => h("div", { key: "H" + x.rel, style: { marginBottom: "6px" } }, [
-					h("div", { key: "t", style: { fontSize: FONT.body, fontWeight: 600 } }, "人工补充：" + x.name),
+					// ★ 「谁说的」写在文件名旁边（用户口径 2026-10-13 加的输入）—— 它取自产出 frontmatter 的 `author:`，
+					//   面板读不到就如实说读不到，不拿别的东西顶上
+					h("div", { key: "t", style: { fontSize: FONT.body, fontWeight: 600 } }, "人工补充：" + x.name + "　谁说的：" + (x.author || "（产出里没写 `author:`）")),
 					h("div", { key: "q", style: { fontSize: FONT.meta, color: V.muted, whiteSpace: "pre-wrap" } },
 						x.quote && x.quote.found ? x.quote.raw : "（没有 `> 原话：…` 那一行）"),
 					(x.missing || []).length ? h("div", { key: "m", style: { fontSize: FONT.meta, color: V.warn } }, "缺固定章节：" + x.missing.join("、")) : null
@@ -1361,10 +1372,23 @@ function FeatureView(props) {
 			 * ★ 详情页头部这两个按钮，**与卡片墙头部那两个是同一套位置**（用户口径 2026-10-10）：
 			 *   都是"刷新 + 4 字动作"、刷新在前、右侧排开、同一套行内几何（`HEAD_BTN_H` ⇒ 等高 + 对齐）。
 			 *   ① 〔刷新〕**也带刷新小图标**（原来只有卡片墙那个有 ⇒ 两处看着不像一套）；
-			 *   ② 〔打开工作会话〕改名〔打开会话〕（与〔使用说明〕同为 4 字）。
+			 *   ② 右边那个**动作与名字一起换过**：〔打开工作会话〕→〔打开会话〕（2026-10-10 改短，4 字）
+			 *      → **〔新建会话〕**（用户口径 2026-10-13）。
+			 *
+			 * ★ 为什么从"打开"改成"新建"（用户原话）：**通过工作台创建会话** —— 这样会话才
+			 *   ① 建在本功能的工作区里、② 预设是「策划模式」、③ **会收到工作台的控制**（四入口指令发给它）。
+			 *   用户自己在侧边栏建的会话这三样都没有。
+			 *   ⇒ 于是它**不再依赖 `sessionId`**：旧写法没有工作会话时整颗按钮不渲染，
+			 *     而那恰恰是最该点它的时候（面板上再没有别的入口能建出"面板认的"那条）。
 			 */
 			Btn({ key: "r", label: "刷新", h: HEAD_BTN_H, icon: PRIMITIVES && PRIMITIVES.IconRefreshOutlineRegular, onPick: props.onRefresh, off: props.phase === "loading" }),
-			props.sessionId ? Btn({ key: "o", label: "打开会话", h: HEAD_BTN_H, onPick: () => props.onOpenSession(props.sessionId) }) : null
+			Btn({
+				key: "o",
+				label: props.creatingSession ? "新建中…" : "新建会话",
+				h: HEAD_BTN_H, off: !!props.creatingSession,
+				title: "在这个功能的工作区里新建一条会话（预设「策划模式」）—— 它就是面板以后发指令的那条",
+				onPick: props.onNewSession
+			})
 		]),
 		h("div", { key: "p", style: { marginBottom: "10px" } }, PathLine({ text: d.root, onOpen: props.onOpen })),
 		/**
@@ -1499,6 +1523,26 @@ function Panel(props) {
 	const [newTopic, setNewTopic] = React.useState("");
 	const [newBusy, setNewBusy] = React.useState(false);
 	const [plan, setPlan] = React.useState(null);
+	/**
+	 * ★ 正在〔新建会话〕（详情页头部那颗）：它在跑的时候按钮置灰、文案变「新建中…」。
+	 *   位置排在最后 —— 渲染冒烟的脚本按**位置**喂 `useState`（多一个只会拿初值），
+	 *   插在中间会把后面那些状态的喂法整体错位。
+	 */
+	const [creatingSession, setCreatingSession] = React.useState(false);
+	/**
+	 * ★ **刚建出来的那个功能**：看板还没刷新到它时，不能拿"这份旧看板里没有"当作"它没找到"。
+	 *
+	 *   真踩过（2026-10-13 用户实测）：新建功能**每次都**弹「上次打开的功能「X」没找到」。
+	 *   根因是 `submitNew` 建成功那一刻同时做了两件事 —— 切视图（`goFeature`）与重读看板
+	 *   （`refresh`）；两者在同一次提交里生效，而 effect 是**提交后同步跑完**的，
+	 *   `__dashboard` 的 Promise 必然还没回来 ⇒ ⑤ 拿**建之前那份** `dash` 一判就落空，
+	 *   刚建好的功能被踢回卡片墙（成功提示被那句 warn 盖掉、视图记忆一并被擦成空）。
+	 *
+	 *   判据：记下"建之前的那份看板对象"，等新一轮看板到了（对象换了）才恢复判定 ——
+	 *   真没建出来时下一轮照旧如实报错，不假装。用 `useRef` 而不是 `useState`：
+	 *   它不该引起重渲染，也**不占 `useState` 的位置**（渲染冒烟的状态脚本按位置喂值）。
+	 */
+	const freshRef = React.useRef(null);
 
 	const refresh = React.useCallback(() => setRev((n) => n + 1), []);
 	const rowsKey = sessionRows.length + "|" + wsPaths.length + "|" + (archived === null ? "?" : archived.length);
@@ -1615,7 +1659,13 @@ function Panel(props) {
 	 */
 	React.useEffect(() => {
 		if (!idx || !idx.ok || !dash || view.kind !== "feature") return;
-		if (rootOf(view.topic) !== "") return;
+		if (rootOf(view.topic) !== "") { freshRef.current = null; return; }
+		/**
+		 * ★ 这一份 `dash` 还是**建它之前**的那一份 ⇒ 不作数（理由见 `freshRef`）。
+		 *   下一轮看板一到（`dash` 换了对象）这条自动失效，回到"找不着就回卡片墙"。
+		 */
+		const f = freshRef.current;
+		if (f && f.topic === view.topic && f.dash === dash) return;
 		goCards();
 		setNotice({ kind: "warn", text: "上次打开的功能「" + view.topic + "」没找到（可能改名或删了）—— 已回到卡片墙。" });
 	}, [sid, dash, topic]);
@@ -1658,7 +1708,12 @@ function Panel(props) {
 				setNewOpen(false);
 				setNewTopic("");
 				setPlan(null);
-				setNotice({ kind: "ok", text: r.doneText, next: (r.notes || []).join("　") });
+				setNotice({ kind: "ok", text: r.doneText, next: (r.warns || []).join("　") });
+				/**
+				 * ★ 记下"建它之前的那份看板"：下面 `refresh()` 回来的新看板才作数 ——
+				 *   否则这一次切进详情会被 ⑤ 当场误判成"没找到"（理由见 `freshRef`）。
+				 */
+				freshRef.current = { topic: r.topic, dash: dash };
 				refresh();
 				// ★ 新建完就进它的详情：顺带把"上次打开的状态"写成这个新功能（切回来还在它上面）
 				goFeature(r.topic, "");
@@ -1667,20 +1722,92 @@ function Panel(props) {
 		);
 	};
 
+	/**
+	 * ⑥ **派活**：把四入口那条指令发出去 —— **每发一次都另起一条新会话**（用户口径 2026-10-13）。
+	 *
+	 * ★ 这里曾经有过一条"并行护栏"（有会话在跑就先提示、再点一次才发），**当天就撤了** ——
+	 *   用户原话：「护栏1好像没啥用，我同时跑两个头脑风暴不行吗」。
+	 *   判据错在**触发条件**：它拦的时机是"这个功能还有会话在跑"，而那恰好就是并行派活的**常态** ——
+	 *   等于每次正常用法都要多点一次。
+	 *   并发写同一个功能目录的风险是真的（两条会话都往 `decisions\决策记录.md` 追加、
+	 *   `analysis\` 的同名产出会互相覆盖），但**治它的地方在写入规则**（追加只追加、不整篇重写，
+	 *   见 `skills/sr-askme/references/decision-recording.md` §二），不在"让用户多点一下"。
+	 *   口径：**面板不替用户判断该不该并行** —— 他点几次就发几次。
+	 */
 	const sendBrainstorm = (instruction) => {
 		if (!detail || sending) return;
 		setSending(true);
 		props.__sendBrainstorm(detail.root, instruction).then(
 			(r) => {
 				setSending(false);
-				if (!r.ok) setNotice({ kind: "warn", text: r.error || "没发出去。", next: r.next || "" });
-				else setNotice({
-					kind: "ok",
-					text: "已发给这个功能的工作会话" + (r.source === "created" ? "（新建的）" : "") + "。进度与提问都在那条会话里 —— 面板不重画流程。",
-					next: (r.notes || []).join("　")
+				if (!r.ok) { setNotice({ kind: "warn", text: r.error || "没发出去。", next: r.next || "" }); return; }
+				const warn = (r.notes || []).filter(Boolean);
+				setNotice({
+					kind: warn.length ? "warn" : "ok",
+					text: "已为这次派活新开一条会话，指令发给了它。进度与提问都在那条会话里 —— 面板不重画流程。",
+					next: warn.join("　")
 				});
+				refresh();
+				/**
+				 * ★ 发完**切到那条新会话**（用户口径 2026-10-13）—— 他点这一下就是要看活怎么干。
+				 *   有降级时**留在面板**把话说清（切走 = 面板重挂载、`notice` 是组件 state，
+				 *   那句"预设没挂上 / 权限没切上"会跟着没）—— 与〔新建会话〕同一条分寸。
+				 */
+				if (warn.length === 0 && r.sid) props.__openSession(r.sid);
 			},
 			(e) => { setSending(false); setNotice({ kind: "err", text: "发送失败：" + String((e && e.message) || e) }); }
+		);
+	};
+
+	/**
+	 * ⑦ **新建工作会话**（用户口径 2026-10-13：详情页右上角〔打开会话〕改成〔新建会话〕）。
+	 *
+	 * 为什么必须由**面板**来建（用户原话："目的是通过工作台创建会话"）：只有面板建的那条才同时拿到
+	 *   ① **工作区 = 这个功能目录**（`features\<主题>\`，会话 cwd 就是它，agent 的产出自然落进 4 个桶）；
+	 *   ② 预设 **「策划模式」**（决策记录契约每轮都在上下文里）；
+	 *   ③ **面板的控制** —— 建完就记成这个功能的工作会话（组合根里的映射 + 本地缓存），
+	 *      于是头脑风暴四入口的指令以后发给**它**（见 `sendToWorkSession` → `ensureWorkSession`）。
+	 *   用户自己在侧边栏建的会话这三样都没有，面板也**绝不认领**用户的对话（`pure/sessionpick.ts` 的纪律）。
+	 *
+	 * ★ 什么时候才把用户切过去：**建成功且没有任何降级**。
+	 *   有降级（工作区没登记上 / 预设没挂上 / 权限没切上 / 侧边栏没同步上）就**留在面板**把话说清 ——
+	 *   切走 = 面板重挂载，`notice` 是组件 state，那句提示会跟着一起没（用户在会话里就永远看不到它）。
+	 *   没降级时切过去才顺：他点这个按钮就是要进去干活（旧按钮〔打开会话〕本来也是这个动作）。
+	 */
+	const newWorkSession = () => {
+		if (!detail || creatingSession) return;
+		const root = detail.root;
+		if (!root) { setNotice({ kind: "warn", text: "算不出这个功能的工作目录 —— 先点〔刷新〕。" }); return; }
+		setCreatingSession(true);
+		setNotice({ kind: "info", text: "正在这个功能的工作区里新建一条会话（策划模式）…" });
+		props.__newWorkSession(root).then(
+			(r) => {
+				setCreatingSession(false);
+				if (!r || r.ok !== true) {
+					setNotice({
+						kind: "warn",
+						text: "没能新建工作会话：" + String((r && r.error) || "未知原因"),
+						next: "可以再点一次〔新建会话〕。"
+					});
+					return;
+				}
+				const warn = (r.warn || []).filter(Boolean);
+				const lines = warn.slice();
+				/**
+				 * ★ 这一行**不用 markdown 记号**（`Notice` 是纯文本 + `pre-wrap`，`**x**` 会原样露出星号）——
+				 *   强调靠措辞：「没动」两个字本身就够。
+				 */
+				if (r.previous) lines.push("原来那条工作会话没动（还在侧边栏），面板以后只往新的这条发指令。");
+				setNotice({
+					kind: warn.length ? "warn" : "ok",
+					text: "新建了一条工作会话：〈" + String(r.title || "") + "〉 —— 它建在本功能的工作区里、预设是「策划模式」，" +
+						"四入口的指令以后发给它。",
+					next: lines.join("　")
+				});
+				refresh();
+				if (warn.length === 0 && r.sid) props.__openSession(r.sid);
+			},
+			(e) => { setCreatingSession(false); setNotice({ kind: "err", text: "新建会话失败：" + String((e && e.message) || e) }); }
 		);
 	};
 
@@ -1688,6 +1815,91 @@ function Panel(props) {
 		if (!detail) return "";
 		return props.__workSessionOf(detail.root);
 	}, [detail, rev]);
+
+	/**
+	 * ⑥ **手工删掉的功能**留下的痕迹 —— 用户实测 2026-10-13：「我手动删了功能，这个没有清理吗」。
+	 *
+	 *   「新建功能」建的不只是目录：面板还会给功能注册**专属工作区**、建一条**工作会话**、
+	 *   往 `localStorage` 记一条"这个功能用哪条会话"。用户直接在资源管理器里把
+	 *   `features\<主题>\` 删掉之后，**这三样都不会跟着走**。
+	 *
+	 *   收拾的**只有面板自己造的那些**（判据与安全阀都在 `pure/leftovers.ts`，一处不抄两份），
+	 *   而且三条动作**都不碰文件**：归档工作会话（侧边栏可取消归档）、移除工作区**登记**
+	 *   （宿主口径："without deleting its directory or Sessions"）、清掉本地那条映射。
+	 *
+	 *   ★ 真清到东西才说一句；没残留就一个字节都不出现 —— 用户口径：界面不放整理建议
+	 *     （"侧边栏里有 N 条索引会话"那种常驻提示已经被要求删过一次了）。
+	 */
+	const cleanRef = React.useRef({ running: false, reported: "" });
+	/** 逐个走 Remote 收拾，并**如实报"做成了什么、什么没做成"**（不假装清干净了）。 */
+	const runCleanup = async (L) => {
+		const doneSessions = [];
+		const doneWorkspaces = [];
+		const bad = [];
+		for (const s of L.sessions) {
+			const r = await props.__archiveSession(s.id);
+			if (r && r.ok === true) doneSessions.push(s.topic); else bad.push("会话「" + s.topic + "」");
+		}
+		for (const w of L.workspaces) {
+			const r = await props.__removeWorkspace(w.id);
+			if (r && r.ok === true) doneWorkspaces.push(w.topic); else bad.push("工作区「" + w.topic + "」");
+		}
+		const did = [];
+		/**
+		 * ★ 名字**去重显示**：历史残留里常有同名会话（功能改名前建过好几条，
+		 *   实测「联盟悬赏」一次就占了 6 条里的 3 条）—— 条数照实报，名单只列一次。
+		 */
+		if (doneSessions.length) did.push("归档工作会话 " + doneSessions.length + " 条（" + Array.from(new Set(doneSessions)).join("、") + "）");
+		if (doneWorkspaces.length) did.push("移除工作区登记 " + doneWorkspaces.length + " 个（" + Array.from(new Set(doneWorkspaces)).join("、") + "）");
+		if (did.length) {
+			setNotice({
+				kind: bad.length ? "warn" : "ok",
+				text: "已清理「手工删掉的功能」留下的痕迹：" + did.join("、") + "。",
+				next: (bad.length ? "这几样没做成：" + bad.join("、") + "。" : "") +
+					"目录与文件一个都没动；会话可在侧边栏「已归档」里取消归档。"
+			});
+		} else if (bad.length) {
+			setNotice({
+				kind: "warn",
+				text: "有 " + bad.length + " 项残留没能清掉：" + bad.join("、") + "。",
+				next: "多半是 Remote 报错。面板只清自己建的东西，你也可以在侧边栏手工归档 / 移除。"
+			});
+		}
+	};
+	React.useEffect(() => {
+		if (!idx || !idx.ok || !dash || cleanRef.current.running) return;
+		/**
+		 * ★ 判据是**磁盘事实**（"那个功能目录还在不在"），**不是看板的这一份快照**。
+		 *   看板与侧边栏 store 是两个数据源、更新时序不一样：新建功能时 store 会**当场**多一行
+		 *   而看板还是旧的 —— 拿看板当判据，面板就会把自己刚建出来的工作区登记删掉
+		 *   （用户实测:「又新建了一个 测试用例，这次只创建出文件夹，工作区没创建」）。
+		 *   所以这里分两步：① 按形状挑候选（同步、纯）；② 去磁盘确认目录确实没了，才动手。
+		 */
+		const wsItems = (wsSnap && wsSnap.items) || [];
+		const shape = { srWs: dash.srWs, archived: archived, sessions: sessionRows, workspaces: wsItems };
+		if (!leftoverCandidates(shape).cleanable) return;
+		cleanRef.current.running = true;
+		props.__allSessions().then((rows) => {
+			// store 的会话行可能不全（标题要等 host 投影）⇒ 用列表行**打头**，同 id 时它以先到者为准
+			const all = Object.assign({}, shape, { sessions: (rows || []).concat(sessionRows) });
+			const cand = leftoverCandidates(all);
+			if (!cand.cleanable || cand.topics.length === 0) return;
+			// ★ 去磁盘上确认"这几个功能目录确实不在了"，才敢动手
+			return props.__missingTopics(sid, dash.srWs, cand.topics).then((missing) => {
+				if (!Array.isArray(missing)) return;          // 探测不可用（连 features\ 都列不出来）⇒ 一个都不判
+				const goneSet = new Set(missing.map((t) => String(t).toLowerCase()));
+				const L = leftoversOf(Object.assign({}, all, { gone: (t) => goneSet.has(String(t).toLowerCase()) }));
+				props.__cleanLocalGone(dash.srWs, missing);
+				const sign = L.sessions.map((s) => s.topic).concat(L.workspaces.map((w) => w.topic)).join("|");
+				if (sign === "" || sign === cleanRef.current.reported) return;
+				cleanRef.current.reported = sign;
+				return runCleanup(L);
+			});
+		}).then(
+			() => { cleanRef.current.running = false; },
+			() => { cleanRef.current.running = false; }
+		);
+	}, [sid, dash, rowsKey]);
 
 	// ── 渲染 ──────────────────────────────────────────────────────────
 	return h("div", { style: PAGE }, [
@@ -1749,9 +1961,18 @@ function Panel(props) {
 					onBack: () => { setNotice(null); goCards(); },
 					onRefresh: refresh, onOpen: openAbs, onOpenAbs: openAbs,
 					onSendBrainstorm: sendBrainstorm, sending: sending,
+					/**
+					 * ★ 只用来给〔交给工作会话〕旁边那行小字报"这个功能派过活没有"；
+					 *   头部那颗按钮与发送路径都**不依赖**它（它们都只"建新的"）。
+					 *   2026-10-13 起口径是"**一次派活一条会话**"—— 这行小字必须把这件事说清，
+					 *   否则用户会以为指令还是发进同一条。
+					 */
 					sessionId: sessionId,
-					sessionNote: sessionId ? "工作会话已就绪（可在右上角打开）" : "还没建工作会话 —— 发送时会自动建一条（策划模式）",
-					onOpenSession: (id) => props.__openSession(id)
+					sessionNote: sessionId
+						? "每次发送都会另开一条新会话（策划模式）；同功能的旧会话仍在左侧，不会被删"
+						: "还没派过活 —— 发送时会为这次新开一条会话（策划模式）",
+					creatingSession: creatingSession,
+					onNewSession: newWorkSession
 				})
 				: h("div", { key: "fl", style: { color: V.muted } }, "正在读「" + topic + "」…"))
 			: null
@@ -1896,6 +2117,58 @@ export function apply(ctx, config) {
 		} catch (e) { /* 无缓存也能用 */ }
 	};
 	/**
+	 * 把"功能目录**已经不在磁盘上**"的本地痕迹清掉（`localStorage` 那张表 + 内存里的映射）。
+	 *
+	 * ★ 为什么要有它（2026-10-13 用户实测「我手动删了功能，这个没有清理吗」）：
+	 *   这张映射是"功能根 → 工作会话 id"，**只增不减**；功能被手工删掉后它还记着。
+	 *   `goneTopics` 是**探测出来的磁盘事实**（见 `missingFeatureTopics`），不是"看板上没有的那些"——
+	 *   判据与残留清理同一份（理由见 `pure/leftovers.ts` 文件头）。
+	 *   清不掉也不抛：这只是本地记忆，坏了顶多下次多认一次会话。
+	 */
+	const cleanLocalGone = (srWs, goneTopics) => {
+		const base = String(srWs === null || srWs === undefined ? "" : srWs).replace(/[\\/]+$/, "");
+		const topics = Array.isArray(goneTopics) ? goneTopics : [];
+		if (base === "" || topics.length === 0) return { ok: true, cleared: 0 };
+		const roots = topics.map((t) => base + "\\features\\" + String(t));
+		try {
+			const raw = workCacheRaw();
+			const next = workCacheDropMany(raw, roots);
+			if (typeof localStorage !== "undefined" && localStorage && next !== raw) localStorage.setItem(workCacheKey(), next);
+		} catch (e) { /* 清不掉不影响这次界面 */ }
+		try {
+			for (const r of roots) { const k = normPath(r); if (k !== "") WORK_SESSION.delete(k); }
+		} catch (e) { /* 同上 */ }
+		return { ok: true, cleared: roots.length };
+	};
+	/**
+	 * ★ 残留判据要的**磁盘事实**：这几种主题的功能目录还在不在。
+	 *
+	 *   返回 `null` = **探测不可用** —— `features\` 根自己都列不出来时，"列不出来"和"确实没有了"
+	 *   分不清，调用方必须当"一个都不判"处理（宁可不干活，也不要删错）。
+	 *   这是这一整块唯一碰文件系统的地方，而且**只读**（`listDir`）。
+	 */
+	const missingFeatureTopics = async (sid, srWs, topics) => {
+		const base = String(srWs === null || srWs === undefined ? "" : srWs).replace(/[\\/]+$/, "");
+		const list = Array.isArray(topics) ? topics : [];
+		if (base === "" || list.length === 0) return null;
+		const port = portOf(sid || "");
+		const featuresDir = base + "\\features";
+		try {
+			await port.listDir(featuresDir);                 // 通道自检：连它都列不出来就别判
+		} catch (e) {
+			return null;
+		}
+		const missing = [];
+		for (const t of list) {
+			try {
+				await port.listDir(featuresDir + "\\" + String(t));
+			} catch (e) {
+				missing.push(String(t));                     // 列不出来 ⇒ 那个功能目录确实不在了
+			}
+		}
+		return missing;
+	};
+	/**
 	 * ★ **面板视图记忆**：上次停在哪个功能 / 哪个模块（用户口径 2026-10-10）。
 	 *   与上面两条缓存同一路（`localStorage` + 只在组合根里读写；解析/序列化在 pure 层）。
 	 *   读不到 / 坏值 ⇒ 面板照旧从卡片墙开始，什么都不影响。
@@ -1961,11 +2234,22 @@ export function apply(ctx, config) {
 	 */
 	const createSessionAt = async (root, title, preset, opts) => {
 		const o = opts || {};
+		/**
+		 * ★ `note` 是**诊断**（留在返回值里，界面不显示）；`warn` 是**要用户知道的降级**（界面会显示）。
+		 *
+		 *   口径（用户 2026-10-13：「这些不是用户需要看的」）：**常态一律不报** ——
+		 *   "目录是索引会话建的""本机默认已是完全权限，不用再切"这类实现细节只进 `note`；
+		 *   只有**有后果的降级**（工作区没登记上、预设没挂上、权限没切上、侧边栏没同步上）才进 `warn`。
+		 */
 		const note = [];
+		const warn = [];
 		const port = portOf("");
 		const ws = await port.ensureWorkspace(root);
 		const wsId = ws.ok ? idText(ws.value && ws.value.workspace ? ws.value.workspace.workspaceId : (ws.value && ws.value.workspaceId)) : "";
-		if (!ws.ok) note.push("按路径登记工作区失败（改用 cwd 建会话）：" + humanError(ws));
+		if (!ws.ok) {
+			const t = "按路径登记工作区失败（改用 cwd 建会话）：" + humanError(ws);
+			note.push(t); warn.push(t);
+		}
 		/**
 		 * 建会话时带「策划模式」预设（`agentPreset`）。
 		 *
@@ -1982,18 +2266,22 @@ export function apply(ctx, config) {
 		if (!cr.ok && withPreset) {
 			const retry = await port.createSession(reqOf(""));
 			if (retry.ok) {
-				note.push("「策划模式」预设没挂上（`agentPreset: " + withPreset + "` 被拒：" + humanError(cr) + "）—— " +
+				const t = "「策划模式」预设没挂上（`agentPreset: " + withPreset + "` 被拒：" + humanError(cr) + "）—— " +
 					"这条会话用的是 **profile 的默认预设**，**决策记录契约不在它的上下文里**（其余照常）。" +
-					"原因多半是包没进 profile 的 `dsh.profile.bundles`（预设只能随 bundle 的 patch 分发）：补上后重建这条会话即可。");
+					"原因多半是包没进 profile 的 `dsh.profile.bundles`（预设只能随 bundle 的 patch 分发）：补上后重建这条会话即可。";
+				note.push(t); warn.push(t);
 				cr = retry;
 			}
 		}
-		if (!cr.ok) return { sid: "", error: humanError(cr), note: note, wsId: wsId };
+		if (!cr.ok) return { sid: "", error: humanError(cr), note: note, warn: warn, wsId: wsId };
 		const sid = idText(cr.value && (cr.value.sessionId || cr.value));
-		if (!sid) return { sid: "", error: "会话已创建，但拿不到 sessionId。", note: note, wsId: wsId };
+		if (!sid) return { sid: "", error: "会话已创建，但拿不到 sessionId。", note: note, warn: warn, wsId: wsId };
 		if (title) {
 			const rn = await port.renameSession(sid, title);
-			if (!rn.ok) note.push("会话建好了但改名失败（下次按缓存认回来）：" + humanError(rn));
+			if (!rn.ok) {
+				const t = "会话建好了但改名失败（下次按缓存认回来）：" + humanError(rn);
+				note.push(t); warn.push(t);
+			}
 		}
 		if (o.fullAccess) {
 			const plan = permissionPlanOf(await permissionCatalog());
@@ -2001,18 +2289,21 @@ export function apply(ctx, config) {
 				const ex = await port.execCommand(sid, permissionCommandLine(plan.preset));
 				const back = await listSessions(o.signal);
 				const row = back.ok ? rowsFromList(back.value).filter((r) => r.id === sid)[0] : null;
-				note.push(permissionResultNote(
-					!!(ex && ex.ok),
+				const okCut = !!(ex && ex.ok);
+				const t = permissionResultNote(
+					okCut,
 					ex && ex.ok ? ((ex.value && (ex.value.text || ex.value.kind)) || "") : humanError(ex),
 					row ? row.preset : ""
-				));
+				);
+				note.push(t);
+				if (!okCut) warn.push(t);        // 没切上 ⇒ 有后果（配置支线可能被沙箱拦），要说
 			} else if (plan.note) {
-				note.push(plan.note);
+				note.push(plan.note);            // 常态（默认已是完全权限）⇒ 只进诊断
 			}
 		}
 		const sync = await syncSidebarStores(root);
-		for (const n of sync.notes) note.push(n);
-		return { sid: sid, error: "", note: note, title: title || "", wsId: wsId };
+		for (const n of sync.notes) { note.push(n); warn.push(n); }   // "没能即时并进侧边栏" ⇒ 有后果，要说
+		return { sid: sid, error: "", note: note, warn: warn, title: title || "", wsId: wsId };
 	};
 
 	/**
@@ -2363,6 +2654,7 @@ export function apply(ctx, config) {
 		if (!plan.ok) return { ok: false, message: plan.message, next: plan.next, plan: plan };
 
 		const notes = [];
+		const warns = [];      // ★ 只有"有后果的降级"进这里 —— 它会被显示；notes 是诊断（见 createSessionAt）
 		const done = [];
 		if (resumeOnScaffold) {
 			notes.push("这个功能目录已经在（里面**只有桶、没有任何文件**）—— 按现成的接着建工作区与会话，不重复建目录。");
@@ -2382,9 +2674,10 @@ export function apply(ctx, config) {
 		// ④ 专属工作区 + ⑤ 工作会话（策划模式）
 		const made = await createSessionAt(plan.root, sessionTitleFor(plan.topic), PLAN_PRESET, { fullAccess: true, signal: opts.signal });
 		for (const n of made.note) notes.push(n);
+		for (const n of (made.warn || [])) warns.push(n);
 		if (made.error) {
 			return {
-				ok: false, plan: plan, root: plan.root, topic: plan.topic, notes: notes,
+				ok: false, plan: plan, root: plan.root, topic: plan.topic, notes: notes, warns: warns,
 				message: "目录建好了（" + done.join("、") + "），但工作区 / 工作会话没建起来：" + made.error,
 				next: "目录已经能用（刷新看板就能看到卡片）；工作会话会在你点「交给工作会话」时自动重试。"
 			};
@@ -2394,63 +2687,96 @@ export function apply(ctx, config) {
 			WORK_SESSION.set(normPath(plan.root), made.sid);
 		}
 		return {
-			ok: true, topic: plan.topic, root: plan.root, sid: made.sid, notes: notes,
-			doneText: createDoneNotice(plan.topic, plan.root, made.sid)
+			ok: true, topic: plan.topic, root: plan.root, sid: made.sid, notes: notes, warns: warns,
+			doneText: createDoneNotice(plan.topic, made.sid)
 		};
 	};
 
-	// ── 工作会话（每个功能一条；认领凭据 = 标题前缀 + 自己写的缓存）────
+	/**
+	 * 面板自己的**工作会话指针**（功能根 → 最近建的那一条）。
+	 *
+	 * ★ 2026-10-13 起它**不再是"指令的收件人"**（四入口每派一次活都另起一条，见 `sendToWorkSession`），
+	 *   只剩两件事：① 界面如实说"这个功能派过活 / 最近一条是哪条"；② 功能被手工删掉时
+	 *   连同它一起清掉（`cleanLocalGone`）。**认领（复用旧会话）那条路已经删了** ——
+	 *   它当年存在的理由是"别把指令发进用户的对话"，现在连"发进旧会话"都不会发生了。
+	 */
 	const WORK_SESSION = new Map();
 
-	const ensureWorkSession = async (root, o) => {
+	/**
+	 * ═══ 新建工作会话（用户口径 2026-10-13：详情页右上角〔打开会话〕→〔新建会话〕）═══
+	 *
+	 * "打开已有那条"与"当场建一条"是两件事：这里是**建**。造出来的这条一定满足三件事 ——
+	 *   ① 会话落在**这个功能的专属工作区**上（`createSessionAt` 先 `workspace.create` 登记路径，
+	 *      再用 `workspaceId` 建会话 ⇒ **功能的工作区就是它的工作区**，cwd 即功能目录）；
+	 *   ② 预设 = **「策划模式」**（`PLAN_PRESET`，决策记录契约在上下文里）；
+	 *   ③ 面板把**指针**改到它（映射 + 本地缓存）—— 界面据此说"最近一条是哪条"。
+	 *      ★ 注意：从 2026-10-13 起**四入口每派一次活也走这里**（`sendToWorkSession`），
+	 *      所以"指针"不等于"以后只发给它" —— 下一次派活会再建一条。
+	 *
+	 * ★ 旧的会话**不删、不归档、不动**（面板只建不删的纪律）：它还在侧边栏，
+	 *   用户想回去看随时能点。返回值里的 `previous` 就是"被换下去的那条"，
+	 *   界面据此如实说一句（换指向是有后果的，不能默默发生）。
+	 * ★ 单航班锁用**独立的键**（`new-work:`）—— 与索引会话那把锁分开；
+	 *   连点两下只会建一条（第二下拿到同一次创建的结果），界面另有按钮置灰兜住。
+	 */
+	const newWorkSession = async (root, o) => {
 		const opts = o || {};
 		const key = normPath(root);
 		if (key === "") return { ok: false, error: "算不出这个功能的工作目录。" };
-		return singleFlight("work:" + key, async () => {
-			const note = [];
-			const memory = WORK_SESSION.get(key) || "";
-			if (memory) return { ok: true, sid: memory, source: "memory", note: note, title: workTitleFor(root) };
-			const cached = workCacheGet(workCacheRaw(), root);
-			const L = await listSessions(opts.signal);
-			const rows = L.ok ? rowsFromList(L.value) : [];
-			if (!L.ok) note.push("会话列表读取失败：" + humanError(L));
-			const hit = pickWorkSession(rows, root, { cachedId: cached, archived: opts.archived });
-			if (hit) {
-				WORK_SESSION.set(key, hit.id);
-				workCacheSet(root, hit.id);
-				if (needsFullAccess(hit.row.preset)) {
-					const plan = permissionPlanOf(await permissionCatalog());
-					if (plan.needed) {
-						const ex = await portOf("").execCommand(hit.id, permissionCommandLine(plan.preset));
-						if (!ex.ok) note.push("这条工作会话的权限没能切成完全权限：" + humanError(ex) + "（功能目录之外的产出可能被拦）。");
-					}
-				}
-				return { ok: true, sid: hit.id, source: hit.source, note: note, title: workTitleFor(root) };
-			}
+		return singleFlight("new-work:" + key, async () => {
+			const previous = WORK_SESSION.get(key) || workCacheGet(workCacheRaw(), root) || "";
 			const title = workTitleFor(root);
 			const made = await createSessionAt(root, title, PLAN_PRESET, { fullAccess: true, signal: opts.signal });
-			for (const n of made.note) note.push(n);
-			if (made.error) return { ok: false, error: made.error, note: note };
+			const note = made.note || [];
+			const warn = made.warn || [];
+			if (made.error || !made.sid) {
+				return { ok: false, error: made.error || "会话已创建，但拿不到 sessionId。", note: note, warn: warn, previous: previous };
+			}
 			WORK_SESSION.set(key, made.sid);
 			workCacheSet(root, made.sid);
-			return { ok: true, sid: made.sid, source: "created", note: note, title: title };
+			return {
+				ok: true, sid: made.sid, title: title, note: note, warn: warn,
+				previous: previous && previous !== made.sid ? previous : ""
+			};
 		});
 	};
 
-	/** 头脑风暴四入口**唯一**的出口：认领工作会话 → 把指令发进去。 */
+	/**
+	 * 头脑风暴四入口**唯一**的出口：**每次派活都另起一条会话**，再把指令发进去。
+	 *
+	 * ── 为什么从"认领复用"改成"每次都新建"（用户口径 2026-10-13）──────────────────
+	 *   用户原话：「**每点一次四入口就另起一条全新会话**……虽然不能共享会话上下文，但是会减少压缩」。
+	 *   旧行为是"有就复用"（`ensureWorkSession`：内存 → 缓存 → 标题认领，都没有才建），
+	 *   于是同一功能的四入口全进同一条会话：上下文连续，但会越跑越长、频繁压缩、注意力被前几轮稀释。
+	 *   新行为：一条会话 = 一次派活；做完就封存，想看就回侧边栏点它。
+	 *
+	 * ★ 代价与对策（用户拍板时明确要的）：
+	 *   ① **并行写同一个功能目录** —— 旧行为里第二条指令是 `mode: "queue"` 排队；现在两条会话会
+	 *      **同时**跑，两边都往 `decisions\决策记录.md` 追加。**对策在写入规则**（`decision-recording.md` §二
+	 *      ＋ 预设 persona：一律追加写、不许整篇重写、报占用就重试）—— **面板不做并发闸门**：
+	 *      曾经做过"有会话在跑就先提示、再点一次才发"，当天就被用户撤了（他原话：「护栏1好像没啥用，
+	 *      我同时跑两个头脑风暴不行吗」—— 那条判据拦的恰好是并行派活的常态），见 ADR 0015 决定 2。
+	 *      残留风险如实记：同一入口同一天连发两次，`analysis\` 的产出文件名相同 ⇒ 后者覆盖前者。
+	 *   ② **新会话没有上一轮的对话记忆** —— 对策落在指令正文里（`pure/intake.ts` 的「你是这次派活
+	 *      新开的一条会话」那段：先读 `decisions\决策记录.md` 与 `analysis\` 既有产出）。
+	 *
+	 * ★ 认领仍然做（`newWorkSession` 会把面板的指向改到新这条），但它的作用不再是"复用"，
+	 *   而是"面板知道最近一条是哪条"（工作会话的指针 + 清理判据都靠标题与 cwd，见 `pure/leftovers.ts`）。
+	 */
 	const sendToWorkSession = async (root, text, signal) => {
-		const got = await ensureWorkSession(root, { signal: signal });
-		if (!got.ok) {
+		const made = await newWorkSession(root, { signal: signal });
+		if (!made.ok || !made.sid) {
 			return {
-				ok: false, error: got.error || "拿不到工作会话。",
-				next: "看左侧有没有一条标题以「策划工作台·工作」开头的会话；没有就再点一次。"
+				ok: false, error: made.error || "拿不到工作会话。",
+				next: "再点一次〔交给工作会话〕；一直失败就点右上角〔新建会话〕看它报什么。"
 			};
 		}
-		const r = await portOf("").prompt(got.sid, text);
+		const r = await portOf("").prompt(made.sid, text);
 		if (!r.ok) {
 			return { ok: false, error: humanError(r), next: "打开那条工作会话看看它是不是在跑；在跑的话指令会排队，不会丢。" };
 		}
-		return { ok: true, sid: got.sid, source: got.source, notes: got.note || [] };
+		// ★ 只把**有后果的降级**交出去显示；`made.note` 是实现细节，留给诊断
+		return { ok: true, sid: made.sid, source: "created", notes: made.warn || [] };
 	};
 
 	/** 打开一个文件（默认应用 → 文件管理器 reveal）。 */
@@ -2509,12 +2835,25 @@ export function apply(ctx, config) {
 				__createFacts: createFactsRunner,
 				__createFeature: createFeature,
 				__sendBrainstorm: (root, text) => sendToWorkSession(root, text),
+				/** 详情页头部〔新建会话〕：当场建一条（策划模式 + 功能工作区），并接管面板的控制。 */
+				__newWorkSession: (root) => newWorkSession(root),
 				__workSessionOf: (root) => WORK_SESSION.get(normPath(root)) || workCacheGet(workCacheRaw(), root) || "",
 				/** 上次打开的状态：面板第一帧读它、动视图时写它（见 `pure/panelview.ts`）。 */
 				__viewCacheRaw: viewCacheRaw,
 				__viewCacheSet: viewCacheSet,
 				__open: openAbs,
-				__openSession: openSession
+				__openSession: openSession,
+				/**
+				 * ★ **残留清理**（手工删掉功能之后的收尾）—— 见 `pure/leftovers.ts` 的文件头。
+				 *   三条动作都**不碰文件**：归档会话（侧边栏可取消）、移除工作区**登记**
+				 *   （宿主口径："without deleting its directory or Sessions"）、清本地那条映射。
+				 */
+				__allSessions: (signal) => listSessions(signal).then((L) => (L && L.ok ? rowsFromList(L.value) : [])),
+				/** 这些主题的功能目录还在不在（`null` = 探测不可用，调用方一律不判）。 */
+				__missingTopics: (sid, srWs, topics) => missingFeatureTopics(sid, srWs, topics),
+				__archiveSession: (sid) => safeCall("workspace.archiveSession", () => ctx.remote.workspace.archiveSession({ sessionId: sid })),
+				__removeWorkspace: (id) => safeCall("workspace.delete", () => ctx.remote.workspace.delete({ workspaceId: id })),
+				__cleanLocalGone: (srWs, goneTopics) => cleanLocalGone(srWs, goneTopics)
 			})));
 	}
 

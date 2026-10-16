@@ -14,12 +14,17 @@
  *   8) 面板字母 ID 已清   —— am 自动分配的 A/B/C 要去掉：定稿标题自带 § 编号，两套叠着是噪音
  *   9) 左侧目录能自己滚   —— 目录比视口高时 sticky 留不住它（会跟着正文走、点不到下面的章节），
  *                           要给它视口高度上限 + 自己的滚动条；这里是滚到文档中部实测
+ *  10) 页面铺满视口宽度   —— .am-doc 的 1120px 居中上限要去掉：宣讲稿是"对着图 + 表"读的，
+ *                           宽屏上两侧各空几百像素纯属浪费（需要视口宽 > 1120px 才测得出来）
+ *  11) 界面图已 ×1.5      —— 「图 + 正文」面板的图列宽 ≥300px、图限高 ≥60vh
+ *                           （旧值 200/300px + 46vh：竖屏截图实际尺寸由限高决定，两处要一起放大）
+ *  12) 点图放大能开能关   —— 点正文大图弹出 lightbox、显示的就是那张原图，Esc 能关掉
  * 另外输出整页截图，供人目视复核——机器检查不替代眼睛。
  *
  * 依赖：Node.js ≥ 22（用到内置 WebSocket 与 fetch），本机已装 Chrome 或 Edge。无第三方包。
  *
  * 用法：
- *   node smoke_check.mjs --html 联盟讨伐_宣讲.html [--out smoke.png] [--width 1440] [--chrome <路径>]
+ *   node smoke_check.mjs --html 联盟讨伐_宣讲.html [--out smoke.png] [--width 1440] [--height 900] [--shot-h 14000] [--chrome <路径>]
  *
  * 退出码：0 = 全过；1 = 有失败项或环境不可用。
  */
@@ -33,13 +38,14 @@ function parseArgs(argv) {
   // ★ 视口高默认 900：这是"目录会不会超高"的关键变量 —— 目录 35 个面板时约 1045px 高，
   //   在 1200px 视口里塞得下（测不出问题），在真实笔记本的 ~900px 视口里就超高、
   //   sticky 会失效。用大视口测等于**把要测的场景排除掉了**。
-  const out = { html: null, out: null, width: 1440, height: 900, chrome: null, port: 9334 };
+  const out = { html: null, out: null, width: 1440, height: 900, chrome: null, port: 9334, shotH: 14000 };
   for (let i = 2; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--html') out.html = argv[++i];
     else if (a === '--out') out.out = argv[++i];
     else if (a === '--width') out.width = Number(argv[++i]);
     else if (a === '--height') out.height = Number(argv[++i]);
+    else if (a === '--shot-h') out.shotH = Number(argv[++i]);
     else if (a === '--chrome') out.chrome = argv[++i];
     else if (a === '--port') out.port = Number(argv[++i]);
     else if (a === '--help' || a === '-h') out.help = true;
@@ -191,8 +197,7 @@ const PAGE_CHECKS = `(() => {
   // 行程够长（>60px）就滚得动、测得准；滚进面板内部，图应当还在视口里
   const tall = mdWithFigure
     .filter((md, i) => result.stickyRoom[i].room > 60)
-    .filter((md) => getComputedStyle(md.querySelector(':scope > .am-figure')).position === 'sticky')[0];
-  if (tall) {
+    .filter((md) => getComputedStyle(md.querySelector(':scope > .am-figure')).position === 'sticky')[0];  if (tall) {
     const fig = tall.querySelector(':scope > .am-figure');
     const rect = tall.getBoundingClientRect();
     const vh = window.innerHeight;
@@ -211,13 +216,57 @@ const PAGE_CHECKS = `(() => {
     }
     window.scrollTo(0, y0);
   }
+
+  // ── 10) 页面铺满视口宽度（.am-doc 的 1120px 居中上限要去掉）────────────────
+  const docEl = document.querySelector('.am-doc');
+  result.docBox = docEl
+    ? (() => { const b = docEl.getBoundingClientRect(); return { width: Math.round(b.width), left: Math.round(b.left) }; })()
+    : null;
+
+  // ── 11) 界面图已 ×1.5：列宽 ≥300px（旧 200–300）、图限高 ≥60vh（旧 46vh）────
+  result.figureSize = mdWithFigure.map((md) => {
+    const fig = md.querySelector(':scope > .am-figure');
+    const im = fig.querySelector('img');
+    const fb = fig.getBoundingClientRect();
+    const ib = im ? im.getBoundingClientRect() : { width: 0, height: 0 };
+    return {
+      col: Math.round(fb.width),
+      w: Math.round(ib.width),
+      h: Math.round(ib.height),
+      maxH: im ? getComputedStyle(im).maxHeight : 'none',
+    };
+  });
+
+  // ── 12) 点图放大：点正文大图弹出 lightbox 看原图，Esc 关掉──────────────────
+  result.zoom = null;
+  const zoomable = Array.from(document.querySelectorAll('.am-md img')).filter((im) => (im.naturalWidth || 0) >= 200);
+  if (zoomable.length) {
+    const target = zoomable[0];
+    target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const lb = document.querySelector('.am-imgzoom');
+    const lbImg = lb ? lb.querySelector('.am-imgzoom-img') : null;
+    const want = target.currentSrc || target.src;
+    result.zoom = {
+      candidates: zoomable.length,
+      hasBox: !!lb,
+      opened: !!(lb && lb.classList.contains('am-imgzoom--on')),
+      showsSameSource: !!(lbImg && lbImg.getAttribute('src') === want),
+      cursor: getComputedStyle(target).cursor || '',
+      closedByEsc: null,
+    };
+    if (result.zoom.opened) {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      result.zoom.closedByEsc = !document.querySelector('.am-imgzoom--on');
+      result.zoom.boxRemoved = !document.querySelector('.am-imgzoom');
+    }
+  }
   return result;
 })()`;
 
 async function main() {
   const args = parseArgs(process.argv);
   if (args.help || !args.html) {
-    console.log('用法: node smoke_check.mjs --html <宣讲稿HTML> [--out <截图png>] [--width 1440] [--height 900] [--chrome <浏览器路径>]');
+    console.log('用法: node smoke_check.mjs --html <宣讲稿HTML> [--out <截图png>] [--width 1440] [--height 900] [--shot-h 14000] [--chrome <浏览器路径>]');
     return args.help ? 0 : 1;
   }
   const html = resolve(args.html);
@@ -265,6 +314,14 @@ async function main() {
     const { send, once } = cdp(ws);
     await send('Page.enable');
     await send('Runtime.enable');
+    // ★ 视口宽高是判据的一部分（目录会不会超高、图会不会顶到视口），必须真的等于 --width/--height。
+    //   只给 chrome 传 --window-size 不够：它受系统 DPI 缩放影响（实测 1920 变成了 1424）。
+    await send('Emulation.setDeviceMetricsOverride', {
+      width: args.width,
+      height: args.height,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
 
     const loaded = once('Page.loadEventFired');
     await send('Page.navigate', { url: pathToFileURL(html).href });
@@ -275,10 +332,13 @@ async function main() {
     const r = evalRes.result.value;
 
     // 整页截图（供人目视复核；机器检查不替代眼睛）
+    // ★ 默认只截前 14000px：宣讲稿动辄 30+ 面板、20000px 以上，整页位图要几百 MB、跑几分钟，
+    //   而"人目视复核"本来也是分屏看的。要整页用 --shot-h 0。
+    const shotH = args.shotH > 0 ? Math.min(r.scrollHeight, args.shotH) : r.scrollHeight;
     const shot = await send('Page.captureScreenshot', {
       format: 'png',
       captureBeyondViewport: true,
-      clip: { x: 0, y: 0, width: args.width, height: Math.min(r.scrollHeight, 30000), scale: 1 },
+      clip: { x: 0, y: 0, width: args.width, height: shotH, scale: 1 },
     });
     const outPath = resolve(args.out || html.replace(/\.html?$/i, '') + '_smoke.png');
     mkdirSync(dirname(outPath), { recursive: true });
@@ -333,9 +393,10 @@ async function main() {
     } else if (r.stickyFigures === 0) {
       fails.push(`7) ${r.figurePanels} 个「界面图 + 正文」面板的图**没有吸顶** —— 规则一长图就滚走了。` +
         '这页不是用**内置的 am** 渲染的（`resources/am/am.mjs` 被换回上游版了？）');
-    } else if (rooms7.some((x) => x.figure > r.vh * 0.55)) {
+    } else if (rooms7.some((x) => x.figure > r.vh * 0.8)) {
       // 图没受视口高度约束 ⇒ 比右栏还高、吸顶在结构上不可能（补丁里的 max-height 没生效）
-      const worst = rooms7.filter((x) => x.figure > r.vh * 0.55).map((x) => `${x.figure}px`).join('、');
+      // 阈值 = 图限高（69vh）＋ sticky top（20px）＋ 余量；限高以后若再调，这里要一起调
+      const worst = rooms7.filter((x) => x.figure > r.vh * 0.8).map((x) => `${x.figure}px`).join('、');
       fails.push(`7) 界面图没有视口高度上限（${worst}，视口 ${r.vh}px）—— 图比右栏还高，sticky 没有可移动空间、滚起来照样走。` +
         '内置 am 的 max-height 没生效（`resources/am/am.mjs` 被换回上游版了？）');
     } else {
@@ -376,9 +437,52 @@ async function main() {
         `（可视高 ${b.clientH}px / 内容 ${b.scrollH}px${canScroll ? ' ⇒ 目录内部有自己的滚动条' : ' ⇒ 目录不长，无需内部滚动'}）`);
     }
 
-    console.log('');
-    console.log(`整页截图: ${outPath}`);
+    // 10 页面铺满视口宽度（宽屏上两侧的空白是纯浪费：宣讲稿要对着图 + 表读）
+    const docBox = r.docBox;
+    if (!docBox) {
+      console.log('[--]  10) 页面里没有 .am-doc（不是 doc 模板？）—— 铺满视口这项不适用');
+    } else if (r.clientWidth <= 1140) {
+      console.log(`[--]  10) 视口宽 ${r.clientWidth}px ≤ 1140px，本来就铺满、测不出 1120px 上限是否已去掉 —— 用 --width 1600 复核`);
+    } else if (docBox.width < r.clientWidth - 2) {
+      fails.push(`10) 页面没有铺满视口：内容宽 ${docBox.width}px / 视口宽 ${r.clientWidth}px（左侧空 ${docBox.left}px）—— ` +
+        '.am-doc 的 1120px 居中上限还在，宽屏两侧的空白白白浪费。内置 am 的 ⑤ 没生效（被换回上游版了？）');
+    } else {
+      console.log(`[OK]  10) 页面铺满视口宽（内容 ${docBox.width}px / 视口 ${r.clientWidth}px，左侧留白 ${docBox.left}px）`);
+    }
 
+    // 11 界面图已 ×1.5（列宽 200–300 → 300–450px、限高 46vh → 69vh）
+    const figs = r.figureSize || [];
+    if (!figs.length) {
+      console.log('[--]  11) 本页没有「界面图 + 正文」的面板，图尺寸这项不适用');
+    } else {
+      const minCol = Math.min(...figs.map((f) => f.col));
+      const minMaxH = Math.min(...figs.map((f) => parseFloat(f.maxH) || 0));
+      const biggest = figs.reduce((a, b2) => (b2.h > a.h ? b2 : a), figs[0]);
+      const detail = `列宽 ${minCol}px（门槛 300）/ 限高 ${Math.round(minMaxH)}px = ${((minMaxH / r.vh) * 100).toFixed(0)}vh（门槛 60vh）/ 最大一张 ${biggest.w}×${biggest.h}px`;
+      if (minCol < 300 || minMaxH < r.vh * 0.6) {
+        fails.push(`11) 界面图没放大到 1.5 倍：${detail} —— 列宽要 ≥300px、限高要 ≥60vh` +
+          '（竖屏截图的实际尺寸由限高决定，两处必须一起放大）。内置 am 的 ⑥ 没生效（被换回上游版了？）');
+      } else {
+        console.log(`[OK]  11) 界面图已放大：${detail}`);
+      }
+    }
+
+    // 12 点图放大（版式里的图受列宽与限高约束，图上的小字要靠原图看）
+    const z = r.zoom;
+    if (!z) {
+      console.log('[--]  12) 页面里没有 ≥200px 的正文大图，点图放大这项不适用');
+    } else if (!z.hasBox || !z.opened || !z.showsSameSource || z.closedByEsc !== true) {
+      fails.push(`12) 点图放大不可用（查看器 ${z.hasBox ? '在' : '缺失'} / 点击后${z.opened ? '打开' : '没打开'} / ` +
+        `显示${z.showsSameSource ? '同一张原图' : '不是那张图'} / Esc ${z.closedByEsc === true ? '能关' : '关不掉'}）—— ` +
+        '内置 am 的 ⑦ 没生效（被换回上游版了？）');
+    } else if (z.boxRemoved === false) {
+      fails.push('12) 点图放大关掉后查看器仍留在 DOM 里（里面那个没有 src 的 img 就是一张破图）—— 关闭时要整个移除');
+    } else {
+      console.log(`[OK]  12) 点图放大可用：正文 ${z.candidates} 张大图可点，点击弹出原图、Esc 关闭并清理 DOM（光标 ${z.cursor || '未设'}）`);
+    }
+
+    console.log('');
+    console.log(`截图: ${outPath}${shotH < r.scrollHeight ? `（只截前 ${shotH}px / 页面共 ${r.scrollHeight}px；要整页用 --shot-h 0）` : ''}`);
     for (const w of warns) console.log(`[WARN] ${w}`);
     if (fails.length) {
       console.log('');

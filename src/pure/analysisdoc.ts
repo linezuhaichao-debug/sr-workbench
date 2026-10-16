@@ -5,8 +5,9 @@
  *   · 设计 §4.1 —— 四种入口**没有先后**、四张并列的动作卡、产出全部落 `features\<主题>\analysis\`
  *   · 设计 §4.2.1 —— 旧文档分析 → `analysis\legacy-analysis_<名称>_<日期>.md`，
  *     **四段固定章节**（仍然有效 / 已废弃 / 可复用 / 原文（转换后）），frontmatter 的 `source:` 指向 `evidence\` 里的原件
- *   · 设计 §4.2.2 —— 人工补充 → `analysis\human-note_<标题>_<日期>.md`，
+ *   · 设计 §4.2.2 —— 人工补充 → `analysis\human-note_<原话摘要>_<日期>.md`，
  *     正文固定保留 `> 原话：…` 一行，**面板上原话与结论并排显示**（一眼看出 AI 有没有改动结论）
+ *     （★ 用户口径 2026-10-13：输入只剩「原话 + 谁说的」，标题与边界 / 落点都不再问、产出里也不再有标题）
  *   · 四种输入方式产出规范 v1 §七.3 —— 每个按钮的前置条件
  *
  * ★ 纯函数、零 IO：目录列举与读文件都在 `src/load/brainstorm.ts`，这里只做归类与解析。
@@ -53,9 +54,9 @@ const ENTRANCES = [
 		id: "humannote",
 		label: "人工补充",
 		hint: "AI 只整理格式",
-		needs: "标题 + 原话（想到什么写什么）",
-		prereq: "title+quote",
-		output: "analysis\\human-note_<标题>_<日期>.md（原话与结论并排）",
+		needs: "原话 + 谁说的（想到什么写什么）",
+		prereq: "quote+author",
+		output: "analysis\\human-note_<原话摘要>_<日期>.md（原话与结论并排）",
 		handoff: "阶段交给了会话里的 AI 整理，进度与提问都在那个会话里（面板不重画流程）"
 	}
 ];
@@ -68,11 +69,18 @@ const LEGACY_SECTIONS = [
 	{ key: "raw", label: "原文（转换后）", re: /^原文/ }
 ];
 
-/** 人工补充的固定正文（设计 §4.2.2）；`quote` 不在正文里 —— 它是独立的 `> 原话：…` 行 */
+/**
+ * 人工补充的固定正文（设计 §4.2.2；后经用户口径改过，见下）。
+ *
+ * ★ **边界 / 落点已从这里删除**（用户口径 2026-10-13）：「这些你自己判断」——
+ *   面板不再问这两项，产出文档也**不再固定要求这两段**（AI 判断得出就写、判断不出就不写，
+ *   写了也不会因为缺它而被面板记成"缺固定章节"）。
+ * ★ 用户的旧产物里若还留着这两段，它们会作为**未知章节**进 `extra` —— 与
+ *   「认不出来的东西不丢」同一条纪律，不会被静默丢掉。
+ * ★ 正文里**没有一级标题**（用户口径：标题去掉、只保留原话）。
+ */
 const NOTE_SECTIONS = [
-	{ key: "conclusion", label: "结论", re: /^结论/ },
-	{ key: "bounds", label: "边界", re: /^边界/ },
-	{ key: "landing", label: "落点", re: /^落点/ }
+	{ key: "conclusion", label: "结论", re: /^结论/ }
 ];
 
 const LEGACY_PREFIX = /^legacy-analysis_/i;
@@ -103,9 +111,20 @@ function legacyDocName(name, date) {
 	return "legacy-analysis_" + (bare || "旧文档") + "_" + String(date || "") + ".md";
 }
 
-/** 人工补充的产出文件名（**唯一出处**，同上） */
-function humanNoteName(title, date) {
-	return "human-note_" + (nameSafe(title, 60) || "补充") + "_" + String(date || "") + ".md";
+/**
+ * 人工补充的文件名摘要 —— 从**原话**派生（用户口径 2026-10-13：面板去掉了「标题」输入，
+ * 于是"标题"就只剩原话本身；它与"谁说的""日期"是同一条口径的三个碎片）。
+ *
+ * 取原话前 24 个字符（先折空白），够看清这条说的是什么，又不至于把文件名撑爆。
+ */
+function fileSummaryOf(quote) {
+	const one = nameSafe(String(quote == null ? "" : quote).replace(/\s+/g, " "), 24);
+	return one.replace(/^[「『"'\s]+/, "").replace(/[」』"'\s]+$/, "");
+}
+
+/** 人工补充的产出文件名（**唯一出处**，同上）—— `human-note_<原话摘要>_<日期>.md` */
+function humanNoteName(quote, date) {
+	return "human-note_" + (fileSummaryOf(quote) || "补充") + "_" + String(date || "") + ".md";
 }
 
 /** 章节体（按 `re` 认标题）→ 固定段 + 认不出来的「其他章节」 */
@@ -188,10 +207,13 @@ function parseLegacyAnalysis(text, name) {
 }
 
 /**
- * 人工补充（设计 §4.2.2）→ 视图模型。
+ * 人工补充（设计 §4.2.2，后经用户口径改过）→ 视图模型。
  *
- * @returns `{ name, kind, front, title, quote, conclusion, bounds, landing, sections, extra, missing }`
+ * @returns `{ name, kind, front, title, quote, conclusion, sections, extra, missing }`
  *   · `quote` = `> 原话：…` 那一行（逐字）；`conclusion` = 「结论」段正文 —— 面板把这两个**并排**显示
+ *   · `author` = frontmatter 的 `author:` —— "谁说的"（面板输入里必填，产出必须有来源）
+ *   · `title` = 正文里的一级标题；**新产物没有这一行**（用户口径：标题去掉、只保留原话），
+ *     所以它对新文档恒为空串；旧产物带着标题也照读，不因此报错
  */
 function parseHumanNote(text, name) {
 	const body = String(text || "");
@@ -213,8 +235,6 @@ function parseHumanNote(text, name) {
 		title: docTitle(body),
 		quote: parseQuote(body),
 		conclusion: body1("conclusion"),
-		bounds: body1("bounds"),
-		landing: body1("landing"),
 		sections: split.sections,
 		extra: split.extra,
 		missing: split.missing
@@ -285,7 +305,7 @@ function entranceOf(id) {
 
 export {
 	ENTRANCES, LEGACY_SECTIONS, NOTE_SECTIONS,
-	analysisDocKind, nameSafe, legacyDocName, humanNoteName,
+	analysisDocKind, nameSafe, fileSummaryOf, legacyDocName, humanNoteName,
 	splitSections, mdTableRows, docTitle, parseQuote,
 	parseLegacyAnalysis, parseHumanNote, sourceSkillOf,
 	entryOfAnalysis, groupAnalyses, entranceOf
