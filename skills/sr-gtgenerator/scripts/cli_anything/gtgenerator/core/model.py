@@ -50,7 +50,7 @@ MAIN_CATEGORIES: list[tuple[str, int]] = [
     ("Building", 1), ("Soldier", 2), ("Effect", 3), ("Property", 4),
     ("Tech", 5), ("Skill", 6), ("Task", 7), ("Leader", 8),
     ("MapBuilding", 9), ("Payment", 10), ("Kingdom", 11), ("Equip", 12),
-    ("Misc", 13),
+    ("Misc", 13), ("Relic", 14),
 ]
 
 MAIN_BY_NAME = {n: v for n, v in MAIN_CATEGORIES}
