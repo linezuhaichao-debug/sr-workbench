@@ -1,508 +1,282 @@
-# dsh-client-ui-sr-workbench —— 策划工作台（DSH 客户端插件）
+# 策划工作台（`dsh-client-ui-sr-workbench`）
 
-按"功能"组织策划工作的**面板**，作为 DSH Web 会话界面里与对话并列的一级面板。
-**面板只有两屏**：① 功能卡片墙（+〔＋ 新建功能〕）② 功能详情（只有三个模块：头脑风暴 / 决策记录 / 最终产物）。
-它不发指令（除头脑风暴四入口那一条）、不写文件内容；**新建功能是面板自己建**（目录 + 4 个桶 + 专属工作区 + 策划模式会话），
-**工作会话也由面板建** —— 详情页右上角〔新建会话〕，以及四入口**每次派活各新开一条**（见下文那一节与 ADR 0014 / 0015）。
-术语与设计口径见 [`CONTEXT.md`](./CONTEXT.md) 与 [`outputs\策划工作台-操作文档.md`](../outputs/策划工作台-操作文档.md)；
-为什么独立成仓库、为什么产物入库，见
-[`docs/adr/0003-workbench-ships-as-its-own-repo.md`](./docs/adr/0003-workbench-ships-as-its-own-repo.md)。
+按「**功能**」组织策划工作的面板，挂在 DSH Web / 桌面版会话界面里，与对话并列。
+一个功能一个目录，从头脑风暴一路走到给程序用的正式版策划案；面板负责**看**和**派活**，
+真正写文件的永远是会话里的 agent。
 
-这是一个 **DSH 客户端插件包**：宿主半侧（Node）从包内 `skills/` 目录里把 11 个 sr 技能
-`ctx.skills.register(...)` 进全局层（工单 05「技能随包注册」，见下文），浏览器半侧是一个
-`window.__ModuleLoader__.load({ id, factory })` 形态的 bundle。
-
-```
-仓库根/
-├─ src/
-│  ├─ index.js      # host 半侧（Node ESM 入口）—— 构建成 lib/index.js：把随包 sr 技能注册进 global 层
-│  ├─ generated/
-│  │  └─ skills.ts  # ★ 构建期生成、**入库**：11 个 sr 技能的正文 + 来源 sha256 清单（不要手改）
-│  ├─ client.js     # 浏览器半侧**组合根**（唯一知道 ctx / remote / store 的地方）→ lib/client.js
-│  ├─ pure/         # 零依赖纯函数（20 个）—— 决策记录解析 / 4 桶契约 / 产物分组 / 主题派生 /
-│  │                #   头脑风暴四入口 / 会话认领缓存 / 面板视图记忆 / 主题名校验 / 路径归一 / frontmatter
-│  ├─ port/         # WorkspacePort：接口 + 测试替身（node:fs 直读真实工作区）
-│  └─ load/         # 加载器 —— 只吃 port，产出视图模型（看板 / 功能详情 / 决策记录 / 建功能事实）
-├─ test/            # node --test 直跑（.ts 由 Node 的类型剥离加载）：170 个用例 + paths.ts 真实数据坐标
-├─ lib/             # ★ 构建产物，**入库**（clone 即安装；不要手改）
-│  ├─ index.js      #   宿主半侧（运行时从 <包根>/skills/ 读 11 条技能正文 + 挂 resourceBase）
-│  └─ client.js     #   浏览器半侧
-├─ tools/           # 本仓库自己的检查脚本（构建管线的护栏）
-│  ├─ check-bundled-skills.mjs  # ★ 包内技能齐全判据（正文 + 兄弟资源同源同包）
-│  ├─ check-host-skills.mjs# ★ 构建后判据：产物里真的注册了 11 条技能（7 步判据，见下文）
-│  ├─ smoke-client.mjs    # 假 window/require/ctx 冒烟：加载 + apply + slot 注册形状
-│  ├─ render-smoke.mjs    # ★ v5 新增：迷你 React 里真跑组件树（补 smoke 补不上的"渲染期崩"那一格）
-│  ├─ check-package.mjs   # ★ v5 新增：对 `npm pack` 出来的 tgz 跑五关（清单 / **自挂载行** / 加载 / 渲染 / 宿主自足）
-│  ├─ check-no-react.mjs  # 判据：产物里没打包 React，只有 require("react")
-│  └─ build-safe.mjs      # ★ 安全构建门：漂移门 → 备份 → build → 三道判据；不过就**还原** lib/
-├─ legacy/          # 历史自查/回归脚本（**仅历史用途**，见下）
-├─ docs/adr/        # 架构决策记录（随包，来源见下）
-├─ CONTEXT.md       # 术语表（随包，来源见下）
-├─ cordis.patch.yml # 随包分发的 **「策划模式」预设**（显示名=策划模式，id 仍是 sr-workbench）
-├─ eslint.config.js # 分层与依赖方向的机器化（见「分层纪律」一节）
-├─ package.json
-└─ tsdown.config.ts # 构建配置（复刻 DSH 官方客户端插件的 clientBundle preset）
-```
+- 版本：`8.1.7` · 包名：`dsh-client-ui-sr-workbench`（`private`，交付走 tgz 或目录，不发公共 npm）
+- 组成：宿主半侧 `lib/index.js`（把随包的 11 个 `sr-*` 技能注册进全局层）+ 浏览器半侧 `lib/client.js`（面板本体）
+- 随包技能：**11 个**（9 个模型可见 + 2 个用户手动触发：`sr-gdd-html` / `sr-gdd-ue`），正文 164 KB，兄弟资源 151 个文件
 
 ---
 
-## 技能随包注册（工单 05）—— 本仓库装的插件**自带 sr 技能**
+## 一、功能介绍
 
-**要解决的问题（实测，不是推断）**：`dsh-skill-filesystem` 的技能根是按 cwd 解析的
-（`D:\TimeMachine` 无 `.git` ⇒ projectRoot 回退成 cwd ⇒ 命中 `.agents\skills`）。
-同一台机器、同一个 profile，**cwd 一换到 `features\<主题>\`，10 个 sr 技能全部消失**
-（三臂实测见 `outputs\.scratch\策划工作台\05-skill-catalog-premise.md`）。
-所以"让技能随包走"是工作会话能用 sr 技能的**硬前提**，不是锦上添花。
+### 1. 只有两屏，加一个弹窗
 
-**做法（6.0.0 起）**：技能**整套**（`SKILL.md` + 兄弟资源）就在仓库 `skills/`，随包分发。
-宿主半侧在 `apply()` 时**运行时读** `<包根>/skills/<名>/SKILL.md`，逐条
-`ctx.skills.register({ name, description, content, source: 'bundled', invocation, resourceBase })`，
-`resourceBase` 指向**同一个目录** ⇒ 正文与 references **同源同包**，谁都读得到。
-插件是宿主行 ⇒ 注册落进 **global 层** ⇒ 所有会话可见（与今天一致，ADR 0006 已接受）。
-`config.local.json` **不打包**（本机私有；`sr-askme` 第 0 步会检查它、缺失就问）。
-
-| 项 | 值（`npm run check:bundled-skills` 实跑） |
+| 界面 | 里面有什么 |
 |---|---|
-| 技能数 | **11 个** `sr-*`（9 个模型可见 + 2 个用户专用：`sr-gdd-ue` / `sr-gdd-html`）← `sr-config-heroskill` 已改名 `skill-hero-config`、搬回工作区技能目录（不算 sr 系列）；2026-10-13 `sr-gdd-html` 拆成 `sr-gdd-ue`（**只出定稿 §5** 的界面与 UE 规则）+ `sr-gdd-html`（**定稿全貌**的人读版） |
-| 正文合计 | **139.5 KB**（11 个 `SKILL.md`） |
-| 兄弟资源 | **132 个文件**（references / scripts / tools / resources / examples）—— **都在包里** |
-| 包体积 | tgz **2 MB / 136 个文件**（技能是主体；其中 `sr-gdd-html/resources/am/am.mjs` 单文件 0.5 MB —— 内置的 MIT 渲染器，换来"同事装插件即可出宣讲稿 HTML"） |
-| 不打包的 | `*.local.json`（本机私有）、`__pycache__`/`*.pyc`（缓存） |
+| **功能卡片墙** | `features\` 下每个功能目录一张卡：阶段步进器（头脑 / 成稿 / 定稿 / 宣讲各几件）、决策 / 证据 / 其它件数、最近决策时间、缺桶或已定稿的角标；最后一张是〔＋ 新建功能〕。头部〔刷新〕〔使用说明〕 |
+| **功能详情** | 只有三个模块：**头脑风暴** / **决策记录** / **最终产物**。头部：圆形〔←〕返回卡片墙 · 〔刷新〕· 〔新建会话〕 |
+| **使用说明弹窗** | 卡片墙头部点开，内容是包内 `skills/sr-askme/references/使用说明.md` 的**整份原文**（表格真渲染），重开即变 |
 
-### 技能源就在本仓库 `skills/`（唯一那份）
+面板会记住你上次停在哪个功能、看的是哪个模块，从工作会话切回来直接落回去（不是每次回到卡片墙）。
 
-6.0.0 起**不再有"生成物"**：`skills/` 就是源码，也是运行时读的那份 —— 没有第二份可漂移，
-于是 `gen:skills` 与漂移门一起撤掉了（`src/generated/` 删除）。
+### 2. 新建功能：面板自己建，一次建全
 
-**改技能**（用户口径：用和改都用插件里的）：
+输一个名字，面板当场建好：
 
-| 改什么 | 怎么生效 |
-|---|---|
-| `references/` `scripts/` `tools/`（兄弟资源） | 改完**即生效**（模型按需读文件，读的就是这个目录） |
-| `SKILL.md`（正文） | **重启 DSH** 生效（`apply()` 启动时读一次；不用 build、不用打包） |
+- 功能目录 `features\<功能名>\` 与四个桶：`evidence\` · `analysis\` · `gdd\` · `decisions\`；
+- 一条**功能工作区**（cwd = 这个功能目录）；
+- 一条**工作会话**（标题 `策划工作台·工作（<功能名>）`，预设「策划模式」）。
 
-**判据换成"发出去的那份齐不齐"**：`npm run check:bundled-skills` 查
-① 恰好 11 个 `sr-*` 且每个 `SKILL.md` 能解析出 name、正文非空；② 每个技能的兄弟资源都在；
-③ 没有本机私有文件混进来；④ 用**真实 `apply()`** 注册一遍，`resourceBase` 指包内、正文与文件逐字一致；
-⑤ 技能根为空时**一条都不注册**并打 WARN（宁缺勿假 —— 半个技能比没有更坏）。
+Windows 上目录选择器只有 native 后端、没有可用原语时，面板会退一步：让索引会话跑一条
+`New-Item -Force` 建目录再回读核对；再不行就把命令逐字给你手工建。**面板不写任何文件内容。**
 
-### 同名技能谁赢（不改今天的行为）
+### 3. 头脑风暴：四个入口，面板唯一发指令的地方
 
-rank 越小越赢：`project-dsh 100 < project-agents 200 < **runtime 250** < custom 300 < user-* 400/500 < bundled 600`。
-⇒ cwd 命中 `.agents\skills` 的会话里（今天的工作会话）**磁盘那一份仍然赢**，本插件只是"够不到磁盘时顶上"。
-实测：在带 `MARKER-DISK` 同名技能的 cwd 里跑，catalog 里 `sr-concept` 的 description 是磁盘那份。
-
-### 脚本
-
-```powershell
-npm run check:bundled-skills  # ★ 包内技能齐全（11 个 SKILL.md + 兄弟资源 + resourceBase 指包内）
-npm run check:host-skills # 产物判据：lib/index.js 真的注册了 11 条（build:safe 第③步）
-```
-
-### ⚠️ 改完宿主半侧要重启一次 dsh（它不像 client.js 那样被轮询）
-
-`lib/client.js` 有 `dsh-client-hmr` 每 500ms 轮询；**宿主半侧的 `lib/index.js` 没有这条**。
-所以已经跑着的 3080 实例**不会自动**拾起新的技能注册 —— 重启一次 dsh（或让 profile 重新组合）
-之后 `/sr-*` 才会从随包这份出现。**工单 05 全程没有重启你的实例**（那是你的现场）。
-
----
-
-## ⚠️ `lib/client.js` 会被**真机直接服务** —— 构建后必须 smoke
-
-用户的 DSH 实例（本机 `http://127.0.0.1:3080`）通过 profile 里的 junction 直接服务**这个仓库里的**
-`lib/client.js`，`dsh-client-hmr` 每 500ms 轮询它的 `mtime/size`，一变就热加载。
-所以**一份坏产物躺进 `lib/` = 面板当场坏掉，而且关了终端也还坏着**（它已经写进仓库了）。
-
-这道门**顺序不可变**，任何一步失败就回滚：
-
-```powershell
-npm test                  # 124 个用例必须全绿
-npm run lint              # 分层纪律 + 未声明标识符
-npm run check:bundled-skills  # ★ 包内技能齐全（正文 + 兄弟资源同源同包）
-npm run build             # 产出 lib/index.js + lib/client.js
-npm run smoke             # ★ 必须通过；不过就立刻还原 lib/
-npm run smoke:render      # ★ v5 新增：在迷你 React 里把组件树真跑一遍（smoke 的 React 是桩，不渲染）
-npm run check:host-skills # ★ 产物里真的注册了 11 条 sr 技能
-```
-
-两条更省事的等价入口（**推荐日常用**）：
-
-```powershell
-npm run build:safe  # 漂移门 → 备份 → build → smoke + smoke:render + check:react + check:host-skills；
-                    # 任何一道不过就自动还原 lib/ 并非 0 退出
-npm run verify      # lint → build:safe → test（**build 在前**：几条单测读的是 lib/ 产物）
-```
-
-> 本机有两条路径进同一个仓库：真目录 `D:\TimeMachine\sr-workbench`，
-> 以及 3080 那条过渡 junction `outputs\_dsh-panel-test\dsh-client-ui-sr-workbench`。
-> 构建已做成**路径无关**（`tsdown.config.ts` 归一了 rolldown 的 `//#region` 路径注释），
-> 两条走法产出的 `lib/client.js` 逐字节相同。
-
----
-
-## 改了 `src/` 必须 build 并提交（`lib/` 入库的口径）
-
-`lib/` 是**构建产物但入库**——本机没有私有 registry，分发走 git，"clone 即安装"成立的前提就是
-仓库里带着构建好的 `lib/client.js` 与 `lib/index.js`。所以：
-
-```powershell
-npm run verify    # 一次过（lint → build:safe → test；build 在前，因为几条单测读的是 lib/ 产物）
-git add src lib && git commit -m "…"
-```
-
-改了技能：`references/` 即改即生效；`SKILL.md` 正文重启 DSH 生效（运行时读，不用 build，也没有漂移门了 —— 只有一份）。
-
-**只改 `src/` 不 build 就提交 = 把仓库改坏**：别人 clone 下来装的还是旧 bundle，而源码看起来是新的。
-反过来，**不要手改 `lib/`**——下次 build 就冲掉。
-
----
-
-## 构建
-
-```powershell
-npm install          # 只装 devDependencies（tsdown / eslint / typescript-eslint）
-npm run build        # tsdown → lib/index.js + lib/client.js
-npm run build:safe   # ★ 带保险的构建：漂移门 → 备份 → build → 三道判据，不过就还原 lib/
-npm run watch        # 开发时后台跑；写完存盘，约 1 秒后浏览器自动热加载（只对 client.js 有效）
-npm run smoke        # 构建产物冒烟自检（tools/smoke-client.mjs）
-npm run smoke:render # ★ 渲染冒烟：迷你 React 里真跑组件树（tools/render-smoke.mjs）
-npm run pack:check   # ★ 安装包验收：对 npm pack 出来的 tgz 跑五关（tools/check-package.mjs）
-npm run check:react  # 判据：产物里没有 React 实现体，且只有 require("react")
-npm run check:host-skills # 判据：lib/index.js 真的注册了 11 条 sr 技能
-npm run check:bundled-skills # 判据：包内技能齐全（正文 + 兄弟资源同源同包）
-npm test             # 124 个用例（node --test，直接 import 真模块 + 真实工作区数据）
-npm run lint         # 分层纪律（见「分层纪律」一节）
-npm run verify       # lint → build:safe → test（build 在前：几条单测读 lib/ 产物）
-```
-
-产物形态（与官方客户端插件 `@deepseek-ai/dsh-client-ui-plan` / `-goal` 逐字同形）：
-
-```js
-window.__ModuleLoader__.load({
-	id: "dsh-client-ui-sr-workbench",
-	factory: (require) => {
-		var module = { exports: {} };
-		var exports = module.exports;
-		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
-		…（CJS 形态的插件代码）…
-		exports.apply = apply;
-		exports.inject = inject;
-		return module.exports;
-	}
-});
-```
-
-`platform: "web"` + `dsh.client.inject` 决定它进浏览器名册；运行期**只服务 `exports["./client"]`
-这一个 bundle**，跨文件 `import` 一律 404（历史踩坑见 `legacy/` 与开发笔记坑 11）。
-
-### React 走平台基座模块表（external）
-
-`react` / `react-dom` / `@deepseek-ai/dsh-client-ui-primitives` 在 `tsdown.config.ts`
-的 `PLATFORM_EXTERNAL` 里声明为 external，产物里只有 `require("react")`，不含实现体。
-判据脚本：`node tools/check-no-react.mjs`。
-
-### 构建期差异（已知，刻意接受）
-
-rolldown 会对入口模块做**声明级 DCE 与内联**，`treeshake: false`（raw rolldown 与 tsdown 都试过）
-也拦不住。实测差异只有两类，都不改变行为：
-
-1. 删掉**零调用点**的死函数 `errText()`（源码里只声明、从不引用）；
-2. 把从未重新赋值的只读 `const` 内联掉（`isDir` / `hay` / `d0` / `contractErr`）。
-
-核对方法（`legacy/check-sandbox.js` 已按 ADR 0001 删除，原来靠它打印函数名清单比对）：
-现在用 `npm run build` 复现产物 + `git diff --stat -- lib/`（同一份源码应产出**同一串字节**），
-再用 `npm run smoke` 证明它能加载、`apply` 与 slot 注册形状没变。
-
----
-
-## 分层纪律（`eslint.config.js` + `test/seam.test.ts`）
-
-设计 §6.1 的四条纪律不再靠自律，由**目录结构 + 静态检查**维持：
-
-```
-src/
-  pure/    零依赖纯函数 —— 不许 import React、ctx、window、document、node 内置
-  port/    WorkspacePort 接口 + 两个实现（生产 / 测试替身）—— 不许依赖任何上层
-  load/    加载器 —— 只许 import pure/ 与 port/（同层允许）；不写
-  ui/      React 组件（**仍在组合根 src/client.js 里**，尚未单独拆出来）—— 只吃 props
-```
-
-`npm run lint` 里跑两张网：
-
-| 网 | 谁 | 抓什么 |
+| 入口 | 谁干活 | 产出 |
 |---|---|---|
-| `no-restricted-imports` | 各层 | 点名禁令：React 家族 / `@deepseek-ai/*` / `node:*` / 反向跨层边 |
-| `no-restricted-syntax` 的 `ImportDeclaration:not([source.value=/…/])` | 各层 | **白名单方向**（"只能 import 这几个"）；`patterns.group` 的 `!` 取反在 ESLint 9.39 实测无效，所以用这条 |
-| `no-undef`（`pure` / `load` / `port` / 组合根） | 同上 | **未声明的标识符 = 自由变量** |
+| 竞品分析 | `/sr-analysis` | 证据链分析报告 / 复刻规格 |
+| 问答式访谈 | `/sr-concept` | 设计核三角报告 / 功能设计稿 |
+| 旧文档分析 | 会话按固定格式转换 + 分析（四段章节） | 旧文档分析结论 |
+| 人工补充 | 会话把**原话**逐字留下 + 结论 | 人工补充记录 |
 
-> `no-undef` 这一条是删掉 `legacy/check-sandbox.js` 的**直接替代**。实锤：`src/pure/finalgdd.ts` 的
-> `checkFinals` 排序引用了 `dateOf` 却没 import —— 在 client.js 里它是同层自由变量，搬成模块后调用即
-> `ReferenceError: dateOf is not defined`（4 个用例同时红）。正则式检查与依赖方向规则都抓不到它，
-> 只有 `no-undef` / `tsc --noEmit` 能抓。**本票修的就是它。**
+填好素材（路径 / 链接 / 一句话创意 / 原话），〔交给工作会话〕发出去 —— 发的是那一条固定格式的指令，
+**每发一次都另起一条新会话**（一个功能的活是几次独立派活，不做成一条越跑越长的会话）。
+指令正文要求它先读盘：`decisions\决策记录.md` 与 `analysis\` 既有产出（新会话没有对话记忆，连续性靠盘上的记录）。
 
-**测不到什么**（如实声明，别当全覆盖）：
+面板**不做并发闸门**：已有会话在跑也照发。并发写同一个功能目录靠写入纪律兜底 ——
+决策记录**只追加、不整篇重写**。
 
-- **不渲染 React 组件**（没有渲染测试框架）⇒ 渲染期的 `ReferenceError`、hooks 违规**抓不到**；
-  真正的"白屏"防线是 `npm run build` + `npm run smoke`（在假 ModuleLoader 里真跑 `apply` 与 slot 生成器）。
-- **不做类型检查**（本仓库没装 typescript）。`tsc --noEmit` 是更彻底的替代，留给后续票。
-- `legacy/**` 是历史归档，**不 lint**。
+### 4. 会话由面板造
+
+详情页右上角〔新建会话〕**总是**在（旧写法在没有工作会话时整颗不渲染，而那正是最该点它的时候）：
+建在本功能的工作区里、预设「策划模式」，不发任何指令。四入口派活走的是同一条创建路。
+只有在**没有任何降级**时才把你切过去；有降级就留在面板把话说清。
+
+### 5. 面板的边界（重要）
+
+- **不写文件内容**、**不删任何文件或目录**；只建目录、工作区、会话。
+- 唯一的「删」是收拾自己留下的痕迹：手工把 `features\<主题>\` 删掉之后，下次读到看板时把那个功能的
+  工作会话归档、工作区登记移除（都不碰文件，会话可在侧边栏「已归档」取消归档）。
+- **绝不认领**你自己在侧边栏建的会话。
+
+### 6. 随包的 11 个 sr 技能
+
+宿主半侧在 `apply()` 时从 `<包根>/skills/<名>/SKILL.md` 运行时读正文，`resourceBase` 指向同一个目录
+⇒ 正文与 `references/` **同源同包**，装一个包就完整可用，不再有「插件供正文 + 资源包供 references」那种要配对的两个包。
+
+| 技能 | 干什么 |
+|---|---|
+| `sr-askme` | 首次配置本机路径（工作区根 / Unity 工程 / 配置目录）；也答「sr 系列怎么用」 |
+| `sr-analysis` | 素材（截图 / 录屏 / PV / 商店页）→ 证据链分析报告 → 复刻规格 |
+| `sr-concept` | 一句话创意 → 设计核三角 → 完整功能设计 |
+| `sr-gdd-human` | 出**成稿**：只有纯规则与设计，决策留痕在附录 A |
+| `sr-config` | 从成稿规则派生配置字段与记录，最小事务写入 + 读回验收（改表经 Excel COM） |
+| `sr-gdd-ai` | 成稿 + 配置表 → **正式版**（程序可实现粒度，含配置契约与多语言文本） |
+| `sr-gdd-fix` | 正式版的唯一改动入口：影响面扫描 + 最小编辑 + 决策记录 |
+| `sr-gdd-review` | 只读审查：这稿能不能交程序 |
+| `sr-gtgenerator` | GID 类型与多语言文本的增删改、翻译合并、导出 |
+| `sr-gdd-html` | 把正式版整份出成**宣讲稿**（单文件 HTML，投屏 / 外发）· 用户手动触发 |
+| `sr-gdd-ue` | 只把正式版 §5 的界面与交互规则出成 HTML，给 UE/UI 同事照着做 · 用户手动触发 |
+
+同名技能谁赢（宿主规则，本插件不改）：磁盘技能（`project-agents` 200）**高于**随包（`bundled` 600）
+⇒ 会话 cwd 命中 `.agents\skills` 时用磁盘那份，够不到磁盘时才由随包顶上。
 
 ---
 
-## 安装到 DSH
+## 二、安装说明
 
-本机没有私有 registry，安装 = **clone + junction + profile patch 加一行**。
+### 前置
 
-> **`private: true` 是刻意的**：不发公共 npm，交付走**目录**或 **`npm pack` 出来的 tgz**。
+- 一个能跑插件的 DSH（Web 或桌面版），profile 目录通常是 `%USERPROFILE%\.dsh\profiles\<profile>\`；
+- 装现成的包**不需要** Node 工具链、不需要 build —— `lib/` 里是构建好并入库的产物；
+- 只有要从源码改它，才需要 Node 20+ 与 `npm install`。
 
-### 交付物：一个 124 KB 的 tgz（推荐）
+### 方式 A：装 tgz（推荐给同事）
 
 ```powershell
+# 在有源码的机器上打一次包
 cd D:\TimeMachine\sr-workbench
-npm run verify                                   # 先过门（lint → build:safe → test）
+npm run verify                                   # 交付前过门：lint → build:safe → test
 npm pack --pack-destination D:\TimeMachine\outputs
-# → D:\TimeMachine\outputs\dsh-client-ui-sr-workbench-<版本>.tgz（~125 KB，5 个文件）
-npm run pack:check                                # ★ 对**这个包**跑四关验收（自己 pack 到临时目录，跑完删掉）
+# → dsh-client-ui-sr-workbench-8.1.7.tgz（约 2.2 MB / 141 个文件）
 ```
 
-tgz 里**只有运行期要的东西**：`package.json` · `cordis.patch.yml`（含挂载行与「策划模式」预设）·
-`lib/index.js`（宿主半侧，**11 个 sr 技能的正文内联在里面**）· `lib/client.js`（面板）· `README.md`。
-**没有任何私有文件**（`config.local.json` 从不进包，`src/` 与 `test/` 也不进）。
+把这个 tgz 给同事，解到任意目录（解压出来的目录就是包根，里面有 `package.json` / `lib/` / `skills/` / `cordis.patch.yml`），
+然后按下面的「三步接线」挂进 profile。
 
-### 交付物只有一个：tgz（技能在包里）
+包里只有运行期要的东西：`package.json` · `cordis.patch.yml` · `lib/index.js` · `lib/client.js` · `skills/` · `README.md`。
+`config.local.json`（本机私有）、`src/`、`test/`、`__pycache__` 都不进包。
 
-6.0.0 起**技能资源包退役** —— 技能（正文 + references）已经全在插件包里，同事**只装这一个包**就完整可用。
-旧的那套"插件供正文 + 资源包供 references"是坏设计：资源包里没有正文、插件里没有 references，
-**两个包必须配对**，少装一个就是 11 个空壳（实测每个技能都有兄弟资源）。
+### 方式 B：git clone + link（本机 / 开发）
 
 ```powershell
-npm run pack:check -- D:\TimeMachine\outputs\dsh-client-ui-sr-workbench-<版本>.tgz
-# 验收（五关）：顶层 5 个文件 + 包内技能齐全（11 个 SKILL.md + 132 个资源 · 无私有文件）
-#              + bundle patch 自带挂载行 + 客户端加载/渲染冒烟 + 宿主半侧注册 11 条
+git clone <repo-url> D:\TimeMachine\sr-workbench
+cd D:\TimeMachine\sr-workbench
+npm install        # 只为能重新 build；只装 devDependencies
 ```
 
-### 手动接线（3 步 —— **挂载行随包走，不用你写**）
+### 三步接线
 
-1. clone（或解开 tgz）到任意位置（本机开发时是 `D:\TimeMachine\sr-workbench`）：
+1. **把包放进 profile 的 `node_modules`** —— 二选一：
 
    ```powershell
-   git clone <repo-url> <目标目录>
-   cd <目标目录>
-   npm install      # 只为能重新 build；装现成的面板**不需要**它
+   # ① 目录直挂（junction，不留第二份副本）
+   cmd /c mklink /J "%USERPROFILE%\.dsh\profiles\node_modules\dsh-client-ui-sr-workbench" "<包根绝对路径>"
    ```
 
-2. 把它挂进 profile 的 `node_modules`（本机开发用 junction，**不留第二份手写副本**）：
-
-   ```powershell
-   # 目标：C:\Users\<你>\.dsh\profiles\node_modules\dsh-client-ui-sr-workbench
-   cmd /c mklink /J "C:\Users\<你>\.dsh\profiles\node_modules\dsh-client-ui-sr-workbench" "<目标目录>"
+   ```jsonc
+   // ② 或在 profile 的 package.json 里加一条 link 依赖（本机开发用的就是这条；
+   //    改完在 profile 目录跑一次 pnpm install —— profile 是 pnpm workspace）
+   "dependencies": {
+     "dsh-client-ui-sr-workbench": "link:D:/TimeMachine/sr-workbench"
+   }
    ```
 
-3. **把包名加进 profile 的 `dsh.profile.bundles`**（`<profile>\package.json`）—— 这一条就够了：
-   bundle 自己的 `cordis.patch.yml` 里**已经带了挂载行**（`- id: sr-workbench`），装上就会挂。
+2. **把包名加进 profile 的 `dsh.profile.bundles`**（`%USERPROFILE%\.dsh\profiles\<profile>\package.json`）：
 
-   要配本机路径（可选）就在 profile 的 patch 里**按 id 覆盖**（它在 bundle 层之后应用）：
-
-   ```yaml
-   # <profile>\cordis.patch.yml —— 只覆盖 config，不再 insert 一次
-   - id: sr-workbench
-     config:
-       configPath: '<sr-askme>/config.local.json 的绝对路径'
-       projectRoot: '<工作区根绝对路径>'
+   ```jsonc
+   "dsh": { "profile": { "bundles": [
+     "@deepseek-ai/dsh-base",
+     "@deepseek-ai/dsh-web-app",
+     "dsh-client-ui-sr-workbench"      // ← 这一行
+   ] } }
    ```
 
-   profile 是 `patchReload: live`：**改这些文件即时重组，不用重启**。
-   停用 = 从 `bundles` 里去掉包名（或在 patch 里 `- id: sr-workbench` + `disabled: true`）。
+   挂载行**随包走**：包自己的 `cordis.patch.yml` 里已经带了 `- id: sr-workbench` 与「策划模式」预设
+   （`preset-sr-workbench`），不用你在 profile 里再写一遍。
 
-4. 客户端 bundle 由 `dsh-client-hmr` 每 500ms 轮询，`lib/client.js` 的 `mtime/size` 一变就热加载；
-   新装的插件同一页面不会自动捡起，**F5 一次**。
+3. **重启 DSH**（宿主半侧只在启动时读一次技能）；客户端 bundle 若已热加载则不用，否则 **F5 一次**。
 
-### 装完必须知道的四个坑
+### 本机路径配置（可选，不配也能用）
 
-0. **bundle 进名册 ≠ 挂上**：`dsh.profile.bundles` 只是把包放进名册，**真正挂载插件的是
-   bundle 自己的 patch 里那一行**。本包从 **5.0.1** 起自带那一行；**5.0.0 没有** ——
-   装 5.0.0 会出现「依赖装好了、bundle 进名册了、重启了，侧边栏却什么都不出」。
-   手里是 5.0.0 就换 5.0.1，或在 profile 的 patch 里手写那一行：
+面板按「工作区列表 → 各会话 cwd → 兜底根」自己找 SR 工作区。要指定就在 profile 的 patch 里按 id 覆盖
+（这一层在该 bundle 层**之后**应用，所以是覆盖不是插入）：
 
-   ```yaml
-   - insert:
-       - id: sr-workbench
-         name: 'dsh-client-ui-sr-workbench'
-   ```
-
-1. **宿主半侧要重启才生效**：`lib/client.js` 有 HMR 轮询，`lib/index.js`（注册 11 个 sr 技能的
-   那一半）**没有** —— 新装的实例第一次必须重启 DSH（或让 profile 重新组合），`/sr-*` 才会从随包这份出现。
-2. **兄弟资源不进包**（要进包得多带 1.51 MB）：技能正文全在包里，但 `references/` `tools/` `resources/`
-   靠**磁盘上的技能目录**。⇒ 想让「决策记录写入规范」「撰写纪律」这类**兄弟文件**也被读到，
-   把 `.agents\skills\` 一起拷到目标机器；不拷也不会崩 —— 会如实降级成"资源不可用"，
-   而最关键的**决策记录契约已经写进 persona**（每轮在上下文里），不吃兄弟文件。
-3. **本机兜底路径**：`src/client.js` 里的 `DEFAULT_ROOT = "D:\TimeMachine"` 只在
-   "profile 没配 `projectRoot`、且一条工作区都没登记"时兜底。对方工作区在别处就把这一行改掉，
-   或干脆不管（工作区列表 / 会话 cwd 这两条候选通常已经命中）。
-
-> ⚠️ 客户端 bundle 若有**加载期**错误，整个 GUI 会白屏（"Failed to load plugins"）。
-> 所以改完 `src/` 先跑 `npm run smoke`，再 build。
-
-### 本机（2026-09-29 迁移现场）的一条过渡 junction
-
-`@deepseek-ai/dsh-client-modules` 在**启动时**解析并缓存插件的真实路径（"until restart"）。
-迁移当时正在运行的 3080 实例缓存的是**旧路径** `outputs\_dsh-panel-test\dsh-client-ui-sr-workbench\lib\client.js`，
-所以那条旧路径被留成**指向本仓库的 junction**（不是副本）——当前实例因此立刻服务新产物。
-**下次重启 dsh 之后**可以删掉它，只留 profile 里那一条 junction：
-
-```powershell
-cmd /c rmdir "D:\TimeMachine\outputs\_dsh-panel-test\dsh-client-ui-sr-workbench"
+```yaml
+# %USERPROFILE%\.dsh\profiles\<profile>\cordis.patch.yml
+- id: sr-workbench
+  config:
+    configPath: '<sr-askme>/config.local.json 的绝对路径'   # 可选
+    projectRoot: '<工作区根绝对路径>'                        # 可选
 ```
 
-细节与判据写在 `D:\TimeMachine\outputs\_dsh-panel-test\插件已搬到-sr-workbench.md`。
+- `configPath` / `projectRoot`：给客户端半侧；
+- `skillsRoot`：给宿主半侧，覆盖「从哪儿读随包技能」（只在排障时用）。
 
----
+配置也可以由面板自己写进 `%USERPROFILE%\.dsh\sr-workbench\config.local.json`（**本机私有，别放进技能目录**，
+插件升一次级就没了）：本机没有配置时卡片墙会出现「先配一下本机路径」向导，或点〔在会话里问答配置〕让 `/sr-askme` 带你走
+（细节见下面「使用方法」第 1 条）。
 
-## `legacy/` —— 历史脚本（仅历史用途）
+### 生效与更新
 
-这些脚本是"手写单文件 `client.js`"那条路线的产物，**已构建管线取代**。
-工单 02 把它们整体搬进仓库，只做了一件事：把写死的旧路径改成指向本仓库的 `lib/client.js`。
-`legacy/package.json` 强制 CommonJS（仓库根是 `"type": "module"`）。
+| 改了什么 | 怎么生效 |
+|---|---|
+| `lib/client.js`（面板） | 有 HMR，每 500ms 轮询 `mtime/size`，存盘约 1 秒后浏览器热加载 |
+| `lib/index.js` / 技能注册（宿主半侧） | **没有 HMR**，重启 DSH 才生效 |
+| `skills/<名>/SKILL.md`（正文） | 重启 DSH（`apply()` 启动时读一次） |
+| `skills/<名>/references/` 等兄弟资源 | **即改即生效**（模型按需读文件） |
+| profile 的 `package.json` / `cordis.patch.yml` | profile 是 `patchReload: live`，改完即时重组 |
 
-### 本票（工单 03）删掉的两个（按 ADR 0001）
+更新版本：换 tgz（或 `git pull`）→ 重启 DSH。新装或换了包之后，当前页面不会自动捡起新的客户端 bundle，**F5 一次**。
 
-| 已删除 | 它当年管什么 | 现在谁管 | **测不到什么** |
-|---|---|---|---|
-| `check-sandbox.js` | 把 factory 体整段放进沙箱执行、挨个调用组件函数，让运行时自己报**未声明标识符**（`notice is not defined` 那类白屏） | ① `eslint.config.js` 在 `pure` / `load` / `port` / 组合根上开 `no-undef`（**静态**抓自由变量）② `npm test` 里 `test/seam.test.ts` 做文本层面的越界检查 ③ `npm run smoke` 抓**加载期**的 `ReferenceError` | **渲染期**的自由变量：`smoke` 用 React 桩、组件根本不渲染，所以 `src/client.js` 里组件体内的未声明标识符现在**没有网**（这正是"把 client.js 接回 pure/ 层"要解决的） |
-| `syntax-check.js` | ① `node --check` 全文件语法 ② factory 体语法 ③ **16 条正则式产品自查**（hooks 违规、`ctx.config`、缺 signal、`[object Object]` 拼接、`session.create` 同给 workspaceId+cwd…） | ① ESLint 解析全部源码（语法过不了就红）② `npm run smoke` 真跑 bundle + `apply` + slot 注册形状 ③ `tsdown.config.ts` / `port/dsh.ts` 里那些坑已写进注释与用例 | 那 16 条正则式产品自查**没有替代品**：它们是对**成品行为**的模式断言，随脚本一起消失。要留只能把它们改写成对 `src/client.js` 的正则用例（本票没做，见报告「留给后续票」） |
+### 卸载
 
-其余保留的历史脚本状态：
+从 `dsh.profile.bundles` 里去掉包名（或在 profile 的 patch 里 `- id: sr-workbench` + `disabled: true`）→ 重启。
+彻底清掉再把依赖行与 `node_modules` 里的那份 link / 目录删掉。卸载**不动**你的工作区与功能目录。
 
-| 脚本 | 作用 | 现在的状态 |
-|---|---|---|
-| `check-ids.js` | 上一个版本的"未声明标识符"扫描（正则式） | **已废弃**：对手写版也报 80 项假阳性，正是 `check-sandbox.js` 要取代它的原因 |
-| `test-buckets.js` `test-finalgdd.js` `test-refgraph.js` `test-ledger.js` `test-topic.js` `test-dashboard-v1.js` `test-finalcheck.js` `test-mdcheck.js` `test-toabs.js` `test-parse5.js` `test-mdspec.js` `test-validate.js` `test-inline-intake.js` | 按**哨兵字符串切片** + `new Function` 从 `client.js` 里抽代码（或读真实文件） | **已被 `test/` 取代**（工单 03）：同一批断言迁到直接 `import` 真模块，`npm test` 124 个用例全绿。切片版随 ADR 0001 删除手法，本目录只留档 |
-| `sync-intake.js` | 比对 `client.js` 内联 INTAKE 与 `intake-parse.js` 两份副本的函数体指纹 | **已失效**：拆分后不再有两份副本（`src/pure/intake.ts` 是唯一一份） |
-| `migrate-to-features.js` | 旧扁平层 → `features\<主题>\<桶>\` 的迁移 | 历史一次性脚本 |
-| `intake-parse.js` | 当年的"跨文件复用"尝试 | **已废弃**：DSH 运行期只服务 `client.js` 一个入口（坑 11） |
-| `test-intake.mjs` | `intake-parse.js` 的离线回归（28 项） | 随 `intake-parse.js` 一起废弃；对应断言现在是 `test/pure-intake.test.ts` |
-| `package.pre-migration.json` | 迁移前那份 `package.json` 原件（`dsh.client.inject` / `platform` / `exports` 的原始形态） | 只作留档，证明"历史没丢"；生效的是仓库根的 `package.json` |
+### 四个坑（都实测过）
 
-**迁移前那份手写版 `lib/client.js`（244,814 字节）不留工作副本**（避免"第二份源码"），
-逐字节留档在 git 里：
+1. **bundle 进名册 ≠ 挂上**：`dsh.profile.bundles` 只是把包放进名册，真正挂载的是 patch 里那一行。
+   本包从 5.0.1 起自带那一行；装 5.0.0 会出现「依赖装好、bundle 进名册、重启了、侧边栏什么都不出」。
+2. **宿主半侧要重启**：新装的实例第一次必须重启 DSH，`/sr-*` 才会从随包这份出现（`lib/index.js` 没有 HMR）。
+3. **兜底根写死了本机路径**：`D:\TimeMachine` 只在「profile 没配 `projectRoot`、且一条工作区都没登记」时兜底；
+   对方工作区在别处就配 `projectRoot`，别指望它猜对。
+4. **客户端 bundle 有加载期错误会白屏**（整个 GUI 报 `Failed to load plugins`）—— 所以改 `src/` 之后不要手写 `lib/`，
+   跑 `npm run build:safe`（构建不过会自动还原）。
+
+### 从源码改它（开发者）
 
 ```powershell
-git show pre-migration-baseline:legacy/pre-migration/lib/client.js      # 手写版原件
-git show pre-migration-baseline:legacy/pre-migration/package.json
+npm run verify      # lint → build:safe → test（201 个用例；build 在前，几条用例读 lib/ 产物）
+npm run watch       # 开发时后台构建，存盘约 1 秒后浏览器热加载（只对 client.js 有效）
+npm run build:safe  # 漂移门 → 备份 → build → smoke / smoke:render / check:react / check:host-skills，不过就还原 lib/
 ```
 
-核对口径（本票的"逐字不变"判据）：`src/client.js` 的正文与该原件**逐行相同**，
-唯一差异是那一行 `const React = require("react")` → `import * as React from "react"`，
-外加头尾的外壳↔ESM 入口互换。
+`lib/` 是**构建产物但入库**（分发走 git 与 tgz，「clone 即安装」）。所以：**改了 `src/` 必须 build 并一起提交**，
+**不要手改 `lib/`**（下次 build 就冲掉）。只改 `skills/` 不需要 build。
 
 ---
 
-## `CONTEXT.md` 与 `docs/adr/` 的来源
+## 三、使用方法
 
-按 ADR 0003「`CONTEXT.md` 与 `docs/adr/` 随包进仓库」，这两处是从
-`D:\TimeMachine\outputs\`（工作区的设计文档区）**复制**进来的快照：
+### 1. 第一次打开
 
-| 仓库内 | 来源 | 改哪一份 |
+面板在侧边栏与主区都占一个槽位。第一次点开时若这台机器还没有配置，会出现「先配一下本机路径」向导，
+四个字段：**策划工作区**（放 `features\<主题>\` 的那一层，必填）· **Unity 工程**（必填）·
+**策划配置目录**（只有 `/sr-config` 用得到）· **GTGenerator 工作目录**（可选）。
+
+面板自己不写盘：点〔保存并验证〕是把这份值**交给一条会话去写**，写完面板回读核对（读到且必填齐才算成功）。
+也可以点〔在会话里问答配置〕走 `/sr-askme` 一问一答。配一次就记住。
+
+### 2. 建一个功能
+
+卡片墙最后一张卡〔＋ 新建功能〕→ 输功能名 →〔建立〕。建完直接进详情页，四个桶与工作区、工作会话都就位。
+名字就是目录名，也是产物名的主题（`<功能名>_成稿.md` 之类），起名时就把「这个功能叫什么」定下来。
+
+### 3. 走一轮头脑风暴
+
+在「头脑风暴」模块挑一个入口 → 填素材 →〔交给工作会话〕。点开〔看将要发出去的指令〕可以逐字看要发什么。
+发完面板会另起一条工作会话并切过去（有降级则不切，留在面板说明原因）。
+产出的分析落 `analysis\`，决策落 `decisions\决策记录.md` —— 回来点〔刷新〕就能在面板上看到。
+
+### 4. 看决策记录与最终产物
+
+- **决策记录**：面板只读 `decisions\决策记录.md`，**最新的在最上面**、按天分组（今天 / 昨天 / 本周 / 更早）；
+  每条显示时间、第几条、标题与「决策 / 依据 / 影响」三段。右上可切〔看原文〕〔看时间线〕〔打开文件〕。
+  写入一律由会话里的 agent 追加（面板不写），所以别在面板上找「编辑」。
+- **最终产物**：把桶里的东西**按类型分组**列出 —— 头脑风暴的产物（`analysis\`）/ 成稿 / 定稿 / UE 界面稿 /
+  宣讲稿 / 配置表；每类第一份标〔当前〕，`_<日期>_<序号>` 结尾的标〔历史版本〕。
+  过程留痕（变更集 / 读回验收报告 / 审查报告 / 修订点清单）**不列条目、只在底部报数**；
+  认不出来的收进「其它」折叠区，**如实列出、不丢也不猜**。
+
+### 5. 主线 skill 流程
+
+推荐顺序（每个 skill 也都能单独调用）：
+
+1. **头脑风暴** → `/sr-analysis`（竞品）/ `/sr-concept`（一句话创意）/ 旧文档分析 / 人工补充；
+2. **成稿** → `/sr-gdd-human`：只有纯规则与界面（零配置指代），可以反复改；
+3. **配置表与线框图**（可选）→ `/sr-config` 从成稿规则派生字段与记录；
+4. **正式版** → `/sr-gdd-ai`：成稿 + 配置表整合成程序可实现的粒度，并列出多语言文本条目；
+5. **改正式版** → `/sr-gdd-fix`（唯一入口）；
+6. **外发材料** → `/sr-gdd-ue`（只出 §5 界面与交互）/ `/sr-gdd-html`（整份宣讲稿）；
+   **多语言文本** → `/sr-gtgenerator`。
+
+### 6. 产出落在哪
+
+每个功能的活全部落 `<工作区>\features\<主题>\`：
+
+| 桶 | 装什么 | 典型产出 |
 |---|---|---|
-| `CONTEXT.md` | （原本从 `D:\TimeMachine\outputs\CONTEXT.md` 复制；**那份已不在**，现在仓库这份是唯一一份） | 直接改仓库这份 |
-| `docs/adr/*.md` | 原本从 `D:\TimeMachine\outputs\docs\adr\*.md` 复制；**那份已不在**（2026-10-13 核查），仓库这份现在就是唯一一份 | 直接改仓库这份 |
+| `evidence\` | 进来的原件 + 过程证据 | 竞品截图 / 录屏 / PV · 旧文档原件 · 外部交付包 · 抽帧与证据包 |
+| `analysis\` | 想出来的内容 | 设计核三角报告 · 功能设计稿 · 体验报告 · 复刻规格 · 旧文档分析 · 人工补充 |
+| `gdd\` | 写出来的正文与交付物 | 成稿 · 正式版 · 审查报告 · UE 界面稿 · 宣讲稿 · 配置表；正文内联图片在 `assets\images\` |
+| `decisions\` | 定下来的事 | `决策记录.md` —— **一个功能只有一个决策文件**，只追加 |
 
-仓库里这两份是**副本**，不是权威源——避免出现"两个都对"的漂移。
+命名口径（2026-10-28 起）：
 
----
+- 成稿 `gdd\<功能名>_成稿.md` · 正式版 `gdd\AI读版策划案_<功能名>_正式版.md` · UE `gdd\<功能名>_UE.html` · 宣讲 `gdd\<功能名>_宣讲.html`；
+- **当前版名里不带日期**；每次改写已存在的产物**之前**先存一版 `<当前版名>_<YYYYMMDD>_<序号>`（成稿 / 正式版 / UE / 宣讲 / 配置表五类要存）；
+- 正式版正文内联的图片统一放 `gdd\assets\images\`，正文按相对路径 `assets/images/<文件名>` 引用；**对图核对的真源仍是 `evidence\`**。
 
-## 已知限制
+### 7. 两条日常纪律
 
-- **随包技能只嵌了正文**（工单 05）：兄弟资源（`references/` `tools/` `resources/`，合计 1.51 MB）没进包
-  ⇒ **只嵌正文 ≠ 技能完整可用**。详见上文「技能随包注册」一节与 `resourceBase` 表。
-- **随包技能的生成源是 `.agents\skills`**（今天会话真正加载的那一份），不是 ADR 0006 里写的
-  `sr-team-skills`（两份已漂移）。04 对齐两份之后要改 `--from` 一个参数并同步 ADR。
-- **建目录在 Windows 上走的是"会话跑 PowerShell"那条路**：`uiWorkspace.createDirectory` 只在目录选择器的
-  **browse** 后端存在，而 `dsh-host-directory-picker-auto` 的规则是 **win32 ⇒ native** ⇒ 本机（桌面版与
-  `dsh web` 都算）没有这个能力。面板按三条路退：① browse 原语 → ② **索引会话跑 `New-Item -Force` + 面板回读核对**
-  → ③ 把逐字命令给你手工建（建完再点一次〔建立〕，面板认出"只有桶没有文件"的空脚手架会接着往下做）。
-  判据与理由在 `src/pure/createfeature.ts` 的「建目录：三条路」一节，行为在 `test/create-flow.test.ts` 钉住。
-- **宿主半侧改动要重启 dsh 才生效**（`lib/index.js` 没有 HMR 轮询；`lib/client.js` 有）。
-- 浏览器半侧是**手写的单文件 `src/client.js`**（v5 重写后约 1400 行，含全部 React 组件）——
-  纯函数与加载器都在 `src/pure|port|load` 里（有测试、有 lint 网），**组件层没有单独拆目录**。
-  多模块 TypeScript 拆分的来龙去脉见 [ADR 0001](./docs/adr/0001-multi-module-typescript-source.md)。
-- 组件层没有渲染测试；`tools/smoke-client.mjs` 用的是**假环境**（假 `window`、假 `React`、假 `ctx`），
-  只证明"能加载、形状对、注册调用对"，**不渲染组件**（hooks 违规、渲染期 `ReferenceError` 测不到）。
-  这一类的旧防线 `legacy/check-sandbox.js` 已按 ADR 0001 删除，替代是 `no-undef`（静态，覆盖
-  `pure/port/load` 与组合根源码，**覆盖不到组件渲染**）+ `npm run smoke`（覆盖加载期）。
-- `syntax-check.js` 那 16 条**产品行为正则自查**没有替代品（见上面 `legacy/` 一节）。
-- 组件层**已经有渲染网了**（v5 新增）：`npm run smoke:render` 用一个迷你 React 逐遍真跑组件树
-  （初始帧 / 卡片墙 / 真数据详情 / 三个模块 / 使用说明弹窗 / 配置向导 / 新建表单），断言屏幕上真出现了该出现的字。
-  它**仍未覆盖**：状态更新后的重渲染、副作用（`useEffect` 不跑）、真实 DOM 与样式 ——
-  所以面板在浏览器里"逐屏无差异"还是只能人看。
-  加载期那条网仍是 `npm run smoke`；静态那条是 `no-undef`（`pure/port/load` 与组合根源码）。
-- **决策记录的三道保证里有一道不在面板这边**：面板只读那个文件；真正写它的是会话里的 agent。
-  详见 [`outputs\策划工作台-操作文档.md`](../outputs/策划工作台-操作文档.md) 第三节与「已知限制」。
+- **决策要留痕**：每一次拍板都追加进本功能同一个 `决策记录.md`（只追加、不整篇重写 —— 一个功能并行两条会话是常态）。
+  判据一句话：这件事以后有人问「当时为什么这么定」，这条记录要能回答。
+- **改产物先存版**：改之前先跑一次 `skills/sr-askme/tools/history_snapshot.py`（它自己算序号并打印新路径），
+  改配置表这条线由写入引擎在验收通过后自动留。
 
-## 使用说明弹窗（面板上怎么看 sr 技能怎么用）
-
-卡片墙头部有〔使用说明〕按钮（2026-10-10 由〔技能用法〕改名），点开是一个弹窗，里面**就是那份使用说明的 md 原样渲染**
-（主线 / 旁支 / skill 一览 / 术语 / 产出落在哪 —— 表格就是表格；粗体只留给标题，正文不再加粗）。
-
-**内容只有一个来源**：包内 `skills/sr-askme/references/使用说明.md`（**整份字节**）。
-面板**不复制**、也**不解析**任何一句教学文字 —— 技能改了，重开弹窗即变。
-
-- 数据是**构建期快照**：`npm run gen:teaching` 把那份 md 写进 `src/generated/teaching.js`
-  （`{ markdown, source }`），面板 `import` 直接用 —— 零网络、零基址、零失败面
-  （7.0.0 之前那条 `GET /sr-workbench/teaching.json` 与多基址探测都已删掉）；
-- 渲染**两支**：宿主给了官方 `MarkdownText` 就交给它；拿不到走自绘的
-  `src/ui/mdview.js`（分块与行内拆分在 `src/pure/mdview.ts`，有单测）。
-  表格 `table-layout: auto` + `white-space: normal`（长单元格换行，不撑破弹窗）；
-- 判据：`npm run check:teaching`（进 `build:safe`）—— **快照 == 该 md 的字节** /
-  md 里 ≥2 个表格 / **SKILL.md 里不再有教学正文**（正文只许有一份）/ 产物里不许再有那条路由；
-  渲染那一层由 `npm run smoke:render` 盯：自绘臂断言真出 `<table>`、标题、`<strong>`，
-  官方臂断言**整份 md 原文真的交给了 `MarkdownText`**；
-- 设计稿：`outputs\技能用法弹窗-设计方案.md`；界面预览：`outputs\技能用法弹窗-界面预览.html`。
-
-## 会话怎么造：〔新建会话〕与四入口派活（都走面板）
-
-用户口径（2026-10-13）：**会话要由面板来造** —— 只有面板造的那条才同时拿到三样：
-① 建在本功能的工作区里（cwd = `features\<主题>\`）、② 预设是「策划模式」、③ 面板认得它。
-用户自己在侧边栏建的会话这三样都没有，而面板**绝不认领**用户的对话。
-
-**两条入口、同一条创建路**（`workspace.create(功能根)` → `session.create({ workspaceId, agentPreset: "sr-workbench" })`
-→ 改名 `策划工作台·工作（<主题>）` → 切完全权限 → 并入侧边栏 store）：
-
-- **详情页右上角〔新建会话〕**：**总是**渲染（旧写法在没有工作会话时整颗不渲染 —— 而那正是最该点它的时候），
-  **不发任何指令**；旧的那条不删、不归档（界面如实说一句）。
-- **四入口派活**（〔交给工作会话〕）：**每发一次都另起一条新会话**（ADR 0015）——
-  一个功能的活是几次独立的派活，不做成一条越跑越长的会话；代价是同一功能下会有很多同名会话。
-
-两条入口的收尾分寸一样：**没有任何降级**才把用户切过去（`uiWorkspace.openSession`）；
-有降级就留在面板把话说清 —— 切走 = 面板重挂载，`notice` 是组件 state，那句话会跟着没。
-
-**一条纪律**（在派活这条路上）：
-
-- **先读盘**：指令正文里写明"你是这次派活新开的一条会话"——先读 `decisions\决策记录.md` 与 `analysis\` 既有产出
-  （新会话没有对话记忆，连续性靠盘上的决策记录）。四入口共用一处组装，见 `src/pure/intake.ts`。
-- **面板不做并发闸门**：同时跑两条是常态，点几次就发几次（曾经做过"有会话在跑就先提示、再点一次才发"，
-  当天按用户口径撤了 —— 见 ADR 0015）。并发写同一个功能目录靠**写入规则**兜底：
-  决策记录**只追加、不整篇重写**（`skills/sr-askme/references/decision-recording.md` §二 + 预设 persona）。
-
-取舍与判据：[ADR 0014](./docs/adr/0014-new-session-button-creates-and-takes-over.md)（改名与"有降级不切走"）、
-[ADR 0015](./docs/adr/0015-one-session-per-dispatch.md)（一次派活一条 + 两条护栏）。
-代价如实记：面板上**不再有**"跳到当前工作会话"的入口（回某条会话走侧边栏），且会话不会自动收敛。
-
-## 面板视图记忆（从工作会话切回来，接着上次看）
-
-面板是主区里的一个槽组件：从工作会话切回工作台会**重挂载** —— `view` 若只放在组件 state 里，
-每次都会回到卡片墙，想接着看某个功能就得"卡片 → 模块页签"重头点一遍（用户口径 2026-10-10）。
-
-所以记住**两件事**：上次停在哪个功能（`topic`）＋ 那个功能里看的哪个模块（`mod`；`topic` 为空 = 卡片墙）。
-
-- **存哪**：`localStorage` 的 `sr-wb.view.v1`（与索引会话 / 工作会话两条缓存同一路，
-  键名、解析、序列化、容错都在 `src/pure/panelview.ts`；读写留在组合根 —— pure 层不许碰 `localStorage`）；
-- **什么时候读**：`view` 的 **惰性初值**（不是 effect）⇒ 第一帧就落在那个功能上，不会先闪一下卡片墙；
-- **什么时候写**：进功能 / 切模块 / 点〔‹ 卡片墙〕/ 新建完功能 —— 就这四处（渲染里不写状态）；
-- **模块名由 Panel 持有**（`view.mod`，受控）：`FeatureView` 里**没有**自己的 `useState` ——
-  两份状态必然漂移（功能恢复了、页签却回到头脑风暴）；
-- **容错**：坏 JSON / 未知模块名 / 那次记住的功能已经不在了 ⇒ **一律回卡片墙**（后者还会说一句为什么），
-  绝不抛、不假装记得、也不卡在「正在读…」；
-- **判据**：`test/pure-panelview.test.ts`（解析 / 序列化 / 容错）＋ `tools/render-smoke.mjs` 里
-  「视图记忆」两遍 —— 一遍是**只喂前 5 个 state**、让 `view` 走惰性初值（真机那条路：假 `localStorage`
-  里预置记忆 ⇒ 必须落在那个功能上），一遍是坏记忆 ⇒ 必须回卡片墙。
+术语与设计口径见 [`CONTEXT.md`](./CONTEXT.md)；为什么这么定见 [`docs/adr/`](./docs/adr/)；
+面板上那个弹窗的正文就是 [`skills/sr-askme/references/使用说明.md`](./skills/sr-askme/references/使用说明.md)。
