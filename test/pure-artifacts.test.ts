@@ -230,3 +230,25 @@ test("UE 界面稿自成一类（sr-gdd-ue 的产出），它的源数据与宣�
 	assert.equal(a.total, 5, "五份文件全在列表里");
 	assert.equal(a.total + a.trace.count, 5, "列出的 + 留痕 == 清单里的全部文件");
 });
+
+test("定稿正式名（AI读版策划案_<功能名>_正式版）+ 图片位：定稿归「定稿」，gdd\\assets\\ 不出产物条目", () => {
+	// 2026-10-28 口径：定稿 = `gdd\AI读版策划案_<功能名>_正式版.md`；
+	// 正文内联图片统一在 `gdd\assets\images\`（`load/feature.ts` 只展开一层 nested，
+	// 所以 `assets\` 下那层 `images\` 列不到文件 —— 图片**不进产物列表**，也不进「其它」）。
+	const a = featureArtifacts({
+		gdd: {
+			files: ["AI读版策划案_联盟讨伐_正式版.md", "AI读版策划案_联盟讨伐_正式版_20261028_1.md"],
+			nested: { assets: [] }
+		}
+	});
+	const fin = a.groups.filter((g) => g.key === "final")[0];
+	assert.deepEqual(
+		fin.files.map((f) => f.name),
+		["AI读版策划案_联盟讨伐_正式版.md", "AI读版策划案_联盟讨伐_正式版_20261028_1.md"],
+		"当前版第一，历史版本跟上"
+	);
+	annotateCurrent(a.groups);
+	assert.deepEqual(fin.files.map((f) => f.note), ["〔当前〕", "〔历史版本〕"]);
+	assert.equal(a.counts.other, 0, "图片位不产生「其它」条目");
+	assert.equal(a.counts.draft, 0, "定稿不是成稿");
+});

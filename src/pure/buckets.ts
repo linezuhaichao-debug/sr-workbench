@@ -5,6 +5,7 @@
  *     ├─ evidence\    【原始件 + 过程证据】外部送进来的一切 · 抽帧 · 校准流水
  *     ├─ analysis\    【头脑风暴的内容】AI 分析产物 ← 面板「头脑风暴」模块读它
  *     ├─ gdd\         【设计正文与交付物】成稿 · 定稿 · 宣讲 HTML
+ *     │   └─ assets\images\   【定稿正文内联的图片】gdd 下**唯一**图片位（不列进产物列表）
  *     └─ decisions\   【人要读的记录】决策记录.md（一个功能**只有一个**决策文件）
  *
  * 判据（谁产生 / 给谁看）：
@@ -57,6 +58,9 @@ export function gddKindOf(name: unknown): string {
 	const n = String(name == null ? "" : name);
 	if (!n) return "others";
 	if (/_定稿_审查\.md$/i.test(n) || /_审查\.md$/i.test(n)) return "review";
+	// ★ 2026-10-28：定稿正式名 = `AI读版策划案_<功能名>_正式版.md`。
+	//   `_定稿.md` 是改名前的旧名，只作历史遗留继续认（同归 final，不另立一类）。
+	if (/_正式版\.md$/i.test(n)) return "final";
 	if (/_定稿\.md$/i.test(n)) return "final";
 	if (/_定稿\.html?$/i.test(n)) return "finalHtml";
 	if (/_修订点\.md$/i.test(n)) return "fixpoints";
@@ -100,7 +104,7 @@ export const GDD_KIND_LABEL: Record<string, string> = {
 export const OUTPUT_GROUPS = [
 	{ key: "brainstorm", label: "头脑风暴的产物", dir: "analysis", note: "analysis\\ 里的全部内容（体验报告 / 问题卡 / 复刻规格 / 概念稿 / 旧文档分析 / 人工补充）" },
 	{ key: "draft", label: "成稿", dir: "gdd", note: "gdd\\<主题>_成稿.md —— 只含纯规则与设计（**不带日期**；日期在历史版本后缀里）" },
-	{ key: "final", label: "定稿", dir: "gdd", note: "gdd\\*_定稿.md —— 供程序使用的那一份" },
+	{ key: "final", label: "定稿", dir: "gdd", note: "gdd\\AI读版策划案_<功能名>_正式版.md —— 供程序使用的那一份（正文内联图片在 gdd\\assets\\images\\）" },
 	{ key: "ue", label: "UE 界面稿", dir: "gdd", note: "gdd\\<主题>_UE.html —— 给 UE/UI 同事看的界面与交互规则（**不带日期**；日期在历史版本后缀里）" },
 	{ key: "speech", label: "宣讲稿", dir: "gdd", note: "gdd\\<主题>_宣讲.html —— 定稿整份的宣讲稿网页，开会 / 评审用（**不带日期**；日期在历史版本后缀里）" },
 	{ key: "config", label: "配置表", dir: "gdd", note: "配置这条线的交付物：运行时表本体（.xlsx / .xlsm / .csv）。变更集与读回验收报告属过程留痕，面板只报数、不列出" },

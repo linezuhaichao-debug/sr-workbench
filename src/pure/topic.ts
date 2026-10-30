@@ -6,13 +6,21 @@
  * 同一功能的不同阶段/版本收敛到同一个键；配置表文件名也走这里。
  */
 
+/**
+ * 已知前缀（文件名里带、但不属于功能名的那一段）。
+ *
+ * ★ `AI读版策划案_` 是 2026-10-28 起定稿的类型前缀：定稿固定叫
+ *   `AI读版策划案_<功能名>_正式版.md`。不剥它，`topicOf` 会把"AI读版策划案_圣物系统"
+ *   当成功能名 —— 卡片、检索、派生落点会集体多出一层前缀。
+ */
 const PREFIXES = [
+	"AI读版策划案_",
 	"sr-gdd-handoff_", "concept-triage_", "feature-concept_", "experience-report_",
 	"issue-cards_", "replication-spec_", "evidence-index_", "calibration_",
 	"smoke_", "readback_", "decision_", "write_CS-"
 ];
 /** 尾部噪音后缀（成对剥，直到剥不动） */
-const TAIL = /[_\-\s]*(定稿_审查|定稿|审查|成稿|宣讲|修订点|UIUE|UE|UI|md版本|人读版|设计稿)$/;
+const TAIL = /[_\-\s]*(定稿_审查|正式版|定稿|审查|成稿|宣讲|修订点|UIUE|UE|UI|md版本|人读版|设计稿)$/;
 
 /**
  * 从文件名派生功能主题。目标：同一功能的不同阶段/版本**收敛到同一个键**。

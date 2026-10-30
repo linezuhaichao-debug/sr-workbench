@@ -90,7 +90,7 @@ node <skill>/resources/am/am.mjs help format     # 草稿格式总览
 | 阶段 / 版本演进 | `timeline [h\|v]` | `时间 \| 标题 \| 说明`，`*` 高亮 |
 | 数值 vs 上限 | `limits` | `标签 \| 13 / 20 \| 单位`、`标签 \| max 20` |
 | **任何表格** | Markdown 表格 | 状态列写 `ok` / `no` / `warn` → ✓ / ✗ / ! 徽章（后面可以跟字，如 `ok 已有`） |
-| 真实界面截图 | 图片 | `![界面名 · 状态](/绝对/路径.png)` **单独一行**；≤5 MB；am 会把它**内嵌进页面**。★ **路径一律用正斜杠 `/`** —— Windows 的反斜杠会被 Markdown 当转义吃掉：`D:\TimeMachine\.tmp\x.png` 里的 `\t`、`\f` 会变成控制字符，渲染器报 `Image not found: "D:\TimeMachine.tmp\x.png"`（实测踩过）。要么写 `D:/TimeMachine/.tmp/x.png`，要么把整条路径包进尖括号 `<D:\...>` |
+| 真实界面截图 | 图片 | `![界面名 · 状态](/绝对/路径.png)` **单独一行**；≤5 MB；am 会把它**内嵌进页面**。★ **定稿里的图是相对路径**（`assets/images/xx.png`，落在 `gdd\assets\images\`）——草稿里**不照抄相对路径**，要换成该文件的**绝对路径**（`D:/…/features/<主题>/gdd/assets/images/xx.png`）。★ **路径一律用正斜杠 `/`** —— Windows 的反斜杠会被 Markdown 当转义吃掉：`D:\TimeMachine\.tmp\x.png` 里的 `\t`、`\f` 会变成控制字符，渲染器报 `Image not found: "D:\TimeMachine.tmp\x.png"`（实测踩过）。要么写 `D:/TimeMachine/.tmp/x.png`，要么把整条路径包进尖括号 `<D:\...>` |
 | ASCII 线框图 / 目录树 / text 图 | ```text 代码块 | 原样贴，等宽显示；**不要**改画成别的样子 |
 | 决策点（要读者拍板） | `ask` | 仅在用户明确要在页面上收决策时用 |
 

@@ -30,6 +30,10 @@ test("gdd\\ 细分：五档 + 认不出来的进 others（一个都不丢）", (
 	const cases: Array<[string, string]> = [
 		["联盟讨伐_20260918.md", "draft"],
 		["联盟讨伐_20260923_定稿.md", "final"],
+		// ★ 2026-10-28 起定稿的正式名：`AI读版策划案_<功能名>_正式版.md`（后缀判据不变，前缀不影响归类）
+		["AI读版策划案_联盟讨伐_正式版.md", "final"],
+		// 改名前的旧名只作历史遗留：仍归「定稿」，不另立一类
+		["AI读版策划案_联盟讨伐_定稿.md", "final"],
 		["联盟讨伐_20260921_定稿_审查.md", "review"],
 		["联盟讨伐_20260921_审查.md", "review"],
 		["联盟讨伐_20260924_修订点.md", "fixpoints"],
@@ -102,6 +106,11 @@ test("历史版本判据：`_<8位日期>_<序号>` 结尾才算（原名里带�
 	assert.equal(outputGroupOf("gdd", "联盟讨伐_宣讲_20260924_20261012_1.html"), "speech", "宣讲稿的旧版跟宣讲稿一类");
 	// 还原成当前版名（分类就靠它）
 	assert.equal(currentNameOf("联盟讨伐_定稿_20261012_1.md"), "联盟讨伐_定稿.md");
+	// ★ 定稿正式名（2026-10-28）：历史版本仍要还原成 `AI读版策划案_<功能名>_正式版.md` 并进「定稿」
+	assert.equal(currentNameOf("AI读版策划案_联盟讨伐_正式版_20261028_1.md"), "AI读版策划案_联盟讨伐_正式版.md");
+	assert.equal(outputGroupOf("gdd", "AI读版策划案_联盟讨伐_正式版_20261028_1.md"), "final",
+		"正式版的历史版本进「定稿」那一类");
+	assert.equal(historyVersionOf("AI读版策划案_联盟讨伐_正式版.md"), false, "当前定稿不是历史版本");
 	assert.equal(currentNameOf("x.content_20261012_1.json"), "x.content.json", "多段扩展名原样保留");
 	assert.equal(currentNameOf("联盟讨伐_定稿.md"), "联盟讨伐_定稿.md", "不是历史版本就原样返回");
 });

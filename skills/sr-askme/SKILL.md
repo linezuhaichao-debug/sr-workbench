@@ -37,7 +37,7 @@ description: sr 系列 skill 的配置与使用教学：首次用 sr-* 时（con
 | --- | --- | --- |
 | `evidence\` | **进来的原件 + 过程证据** | 竞品截图/录屏/PV · 旧文档原件 · 外部交付包 `UE交付_<日期>\` · 抽帧与证据包 · 校准流水 `calibration_<主题>.jsonl` |
 | `analysis\` | **想出来的内容** | 设计核三角报告 · 功能设计稿 · 体验报告 · 问题卡 · 复刻规格 · 各类交接 JSON · 旧文档分析 · 人工补充 |
-| `gdd\` | **写出来的正文与交付物** | 成稿 `<主题>_成稿.md` · 定稿 `<主题>_定稿.md` · 修订点清单 · 审查报告 `<主题>_<日期>_审查.md` · **UE 界面稿 `<主题>_UE.html`（+ `.content.json`）** · 宣讲 HTML `<主题>_宣讲.html`（+ 草稿 `<主题>_宣讲.md`）（**一律不带日期** —— 日期只出现在历史版本后缀里，见 `references/version-history.md`） |
+| `gdd\` | **写出来的正文与交付物** | 成稿 `<主题>_成稿.md` · **定稿 `AI读版策划案_<功能名>_正式版.md`** · 正文内联图片 `assets\images\<文件名>`（`gdd\` 下唯一图片位） · 修订点清单 · 审查报告 `<主题>_<日期>_审查.md` · **UE 界面稿 `<主题>_UE.html`（+ `.content.json`）** · 宣讲 HTML `<主题>_宣讲.html`（+ 草稿 `<主题>_宣讲.md`）（**一律不带日期** —— 日期只出现在历史版本后缀里，见 `references/version-history.md`） |
 | `decisions\` | **定下来的事** | `决策记录.md` —— **一个功能只有一个决策文件**，所有决策按时间追加（见 `references/decision-recording.md`） |
 
 ★ 旧口径里的 `source\` 并入 `evidence\`、`delivery\` 并入 `gdd\`；工作区根下平铺的 `proposals\ analysis\ decisions\ evidence\` 是**历史结构**，新工作一律进功能目录。
