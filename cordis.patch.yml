@@ -42,9 +42,9 @@
         plugins:
           # The `sr-workbench` agent preset: the SavageRise (SR) 策划工作台 agent.
           #
-          # This file is a COPY of the shipped `standard` preset. Exactly THREE deliberate
+          # This file is a COPY of the shipped `standard` preset. Exactly FOUR deliberate
           # deltas separate it from its source, so a `diff` against `standard` is the whole
-          # story — re-apply these three after any DSH upgrade, because a copy is a snapshot
+          # story — re-apply these after any DSH upgrade, because a copy is a snapshot
           # and this layer has no patch semantics:
           #
           #   1. `persona` speaks 策划 / sr 工作流 language instead of "coding agent",
@@ -59,10 +59,18 @@
           #      chain. Verified by A/B on 2026-09-29 — see
           #      `outputs\.scratch\策划工作台\01-channel-verification-report.md`（验证 2）.
           #   3. Five 旁路 rows are gone from the `delegation` group (see that section).
+          #   4. **行集合必须跟新版 `standard` 对齐**（不只是三种"改装"）：副本里的行名会随
+          #      版本失效。2026-11-09 升到 dsh 0.2.2-rc.1 时，旧的
+          #      `@deepseek-ai/dsh-tool-subagent-control/list-agents` 子路径被删掉，整份预设
+          #      被判 broken，UI 直接把「策划模式」从模式列表里滤掉（`agentPresets/list`
+          #      返回 `broken: "…/list-agents: never started"`）。升级后务必：
+          #      `preset.standard.patch.yml` 的 `plugins` 行集合 vs 本文件逐行对照，
+          #      行名过期的（导出路径消失 / 包改名 / 键被删）当场同步，否则不是功能少一点，
+          #      而是整个模式从列表里消失。
           #
           # Everything else — tool set, realms, the plan-mode section, compaction policy —
-          # is `standard` verbatim. The full inventory and rationale live in
-          # `sr工具需求盘点与预设设计.md`; the whole delta list is in
+          # is `standard` verbatim (modulo delta 4's row-list sync). The full inventory and
+          # rationale live in `sr工具需求盘点与预设设计.md`; the whole delta list is in
           # `outputs\.scratch\策划工作台\06-preset-rework-report.md`.
           #
           # This file is an AGENT-PLANE composition. The roster mounts it ONCE under a
@@ -448,27 +456,28 @@
               - id: tool-subagent-control
                 name: '@deepseek-ai/dsh-tool-subagent-control'
 
-              - id: tool-subagent-list-agents
-                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
-
+              # ★ DSH 0.2.2 起的取舍（2026-11-09 升级踩坑，别再抄回来）：
+              #   `@deepseek-ai/dsh-tool-subagent-control/list-agents` 这个子路径在 0.2.2
+              #   已经不存在（`list_agents` 并进了 tool-subagent-control 本体），旧 standard
+              #   快照里的这一行会让整份预设被判 broken，UI 直接把「策划模式」从模式列表里
+              #   滤掉（agentPresets/list 里能看到 broken = "…(…/list-agents): never started"）。
+              #   同理 `modelSelectionSettings` / `backgroundMode` 这两个旧键已不在 schema 里，
+              #   续跑能力改由 provider 决定，不再写在 config 上。
               - id: tool-subagent
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: spawn
                   toolName: subagent
-                  modelSelectionSettings: true
-                  backgroundMode: continuable
 
               # Fork omits model selection so provider/model stay equal to the parent and
-              # the inherited history remains eligible for KV Cache reuse. This preset
-              # keeps fork continuable; parent and child inherit the same messaging tool,
-              # while the parent id and return guidance follow the inherited history.
+              # the inherited history remains eligible for KV Cache reuse. Parent and child
+              # inherit the same messaging tool, while the parent id and return guidance
+              # follow the inherited history.
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: fork
                   toolName: subagent_fork
-                  backgroundMode: continuable
 
           # ── remaining model-facing rows ─────────────────────────────────────────────
 

@@ -13,3 +13,8 @@ dist/
 # Python 工具（skills/sr-config/tools/）跑起来会生成字节码缓存：不入库、也不该进 tgz
 __pycache__/
 *.pyc
+
+# 分发用的打包产物（skills/skills.rar 之类）：是导出物不是源码，别进库、也别跟着 "skills" 进 tgz
+skills/*.rar
+skills/*.zip
+skills/*.7z

@@ -697,9 +697,9 @@ code, pre, kbd { font-family: var(--font-mono); }
 .am-panel-head { padding-inline-start: 14px; }
 .am-toc { max-height: calc(100vh - 48px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .am-panel:has(.am-md > .am-figure ~ *) { overflow: visible; }
-.am-md:has(> .am-figure ~ *) { display: grid; grid-template-columns: minmax(200px, 300px) minmax(0, 1fr); gap: 30px; align-items: start; }
+.am-md:has(> .am-figure ~ *) { display: grid; grid-template-columns: minmax(300px, 450px) minmax(0, 1fr); gap: 30px; align-items: start; }
 .am-md:has(> .am-figure ~ *) > .am-figure { grid-column: 1; position: sticky; top: 20px; margin: 0; }
-.am-md:has(> .am-figure ~ *) > .am-figure img { display: block; width: auto; max-width: 100%; max-height: 46vh; margin: 0 auto; }
+.am-md:has(> .am-figure ~ *) > .am-figure img { display: block; width: auto; max-width: 100%; max-height: 69vh; margin: 0 auto; }
 .am-md:has(> .am-figure ~ *) > :not(.am-figure) { grid-column: 2; }
 @media (max-width: 900px) {
   .am-md:has(> .am-figure ~ *) { display: block; }
@@ -712,6 +712,35 @@ code, pre, kbd { font-family: var(--font-mono); }
 
 .am-toc a.am-toc-current { color: var(--ink); font-weight: 600; border-inline-start-color: var(--accent); }
 .am-toc a.am-toc-current:hover { color: var(--ink); border-inline-start-color: var(--accent); }
+/* ★★ SR 定制（sr-gdd-html）★★ 续 —— ⑤⑥⑦ 的完整说明见 resources/PROVENANCE.md
+   ⑤ 页面铺满视口宽度：宣讲稿是"对着图 + 表"读的，.am-doc 的 1120px 居中上限在宽屏上
+      让两侧各空出几百像素、全部浪费；放开后表格不再挤成窄条。
+   ⑥ 界面图列宽 200/300 → 300/450px、限高 46vh → 69vh（各 ×1.5）。只放宽列宽没用：
+      竖屏界面截图（9:16）的实际尺寸由限高决定，限高必须同步放大，图才真的变大 1.5 倍。
+   ⑦ 点图放大看原图：版式里的界面图受列宽与限高约束，图上的小字要靠原图看——点击正文大图
+      即全屏看原图，可翻页、可切"适应 / 1:1 / 步进缩放"。JS 在 RUNTIME_JS 末尾
+      （锚点「⑦ 点图放大看原图」）。
+      ★ 类名刻意不叫 .am-lightbox：那个名字是**上游 am 自带的图表查看器**
+        （.am-lightbox + .am-diagram-expand 按钮，给 flow / sequence 这些 SVG 图用，
+        CSS 里是 display:flex + [hidden] 控制）。撞名会把上游那套整个压掉。 */
+.am-doc { max-width: none; }
+.am-md img { cursor: zoom-in; }
+.am-imgzoom { position: fixed; inset: 0; z-index: 1500; display: none; overflow: auto; overscroll-behavior: contain; background: rgba(10, 12, 16, 0.93); }
+.am-imgzoom--on { display: flex; }
+.am-imgzoom-img { flex: 0 0 auto; margin: auto; width: auto; height: auto; max-width: 96vw; max-height: 92vh; background: var(--paper); box-shadow: 0 16px 56px rgba(0, 0, 0, 0.55); }
+.am-imgzoom--raw .am-imgzoom-img { max-width: none; max-height: none; }
+.am-imgzoom-close { position: fixed; top: 12px; right: 16px; z-index: 2; width: 40px; height: 40px; padding: 0; border: 1px solid rgba(255, 255, 255, 0.24); border-radius: 50%; font: 22px/1 var(--font-sans, sans-serif); color: #fff; background: rgba(18, 20, 26, 0.74); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); cursor: pointer; }
+.am-imgzoom-close:hover { background: rgba(18, 20, 26, 0.92); }
+/* 底栏与关闭按钮都用深色底：它们会压在**任意一张截图**上，白底白字在浅色图上等于看不见
+   （1:1 看原图时尤其明显）。bottom 让开容器自己的横向滚动条。 */
+.am-imgzoom-bar { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 2; display: flex; align-items: center; gap: 4px; padding: 6px 10px; border-radius: 999px; font: 12px/1.4 var(--font-mono, monospace); color: #fff; background: rgba(18, 20, 26, 0.8); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4); }
+.am-imgzoom-bar button { padding: 4px 8px; border: 0; border-radius: 6px; font: inherit; color: inherit; background: transparent; cursor: pointer; }
+.am-imgzoom-bar button:hover { background: rgba(255, 255, 255, 0.26); }
+.am-imgzoom-bar button.is-on { background: rgba(255, 255, 255, 0.92); color: #14161c; font-weight: 600; }
+.am-imgzoom-count { min-width: 4.5em; text-align: center; opacity: 0.9; }
+.am-imgzoom-pct { min-width: 3.6em; text-align: center; opacity: 0.75; }
+.am-imgzoom-bar .am-imgzoom-sep { width: 1px; height: 16px; margin: 0 4px; background: rgba(255, 255, 255, 0.28); }
+@media print { .am-imgzoom { display: none !important; } }
 
 html[data-theme="blueprint"] .am-frame { border: 1px solid var(--line); padding: 30px; }
 html[data-theme="blueprint"] .am-frame::before {
@@ -747,18 +776,18 @@ html[data-theme="paper"] .am-md table { font-family: var(--font-sans); }
 <button class="am-btn" type="button" data-am="copy" data-done="已复制 ✓">复制源稿</button>
 </div>
 <main class="am-doc">
-<header class="am-head"><h1>每日签到（宣讲稿合成示例）</h1><p class="am-sub">一份功能 GDD 定稿的宣讲稿长什么样 · 结构与文案均属虚构</p><div class="am-head-meta"><span><b>source</b>每日签到_定稿.md（doc_type: final_gdd · status: active）</span></div><div class="am-intro am-md"><div class="am-md"><p>本页是 sr-gdd-html 的<b>合成形态基准</b>，不是任何真实功能的规则。它演示两件事：定稿 §1–§11 怎么落到面板上，以及每一节该用哪个组件。真实页面的内容全部来自源定稿，一个数都不许改。</p>
+<header class="am-head"><h1>每日签到（宣讲稿合成示例）</h1><p class="am-sub">一份功能 GDD 定稿的宣讲稿长什么样 · 结构与文案均属虚构</p><div class="am-head-meta"><span><b>source</b>每日签到_定稿.md（doc_type: final_gdd · status: active）</span></div><div class="am-intro am-md"><div class="am-md"><p>本页是 sr-gdd-html 的<b>合成形态基准</b>，不是任何真实功能的规则。它演示两件事：定稿 §1–§7 怎么落到面板上，以及每一节该用哪个组件。真实页面的内容全部来自源定稿，一个数都不许改。</p>
 </div></div></header>
 <div class="am-doc-layout">
-<nav class="am-toc" aria-label="目录"><a href="#panel-A">§1 功能意图</a><a href="#panel-B">§2 玩家动词</a><a href="#panel-C">§3 核心循环</a><a href="#panel-D">§4.1 R1 签到与累计</a><a href="#panel-E">§4.2 R2 补签</a><a href="#panel-F">§5.0 界面清单</a><a href="#panel-G">§5.1 UI-M1 每日签到面板</a><a href="#panel-H">§5.2 UI-M2 签到成功弹窗</a><a href="#panel-I">§5 界面流程</a><a href="#panel-J">§6 配置契约</a><a href="#panel-K">§7 多语言文本</a><a href="#panel-L">§8 范围门</a><a href="#panel-M">§9 数据埋点信号</a><a href="#panel-N">§10 验收标准</a><a href="#panel-O">§11 交接清单</a></nav><div class="am-doc-body">
+<nav class="am-toc" aria-label="目录"><a href="#panel-A">§1 功能概述</a><a href="#panel-B">§2 本功能不解决什么</a><a href="#panel-C">§3 核心循环</a><a href="#panel-D">§4.1 R1 签到与累计</a><a href="#panel-E">§4.2 R2 补签</a><a href="#panel-F">§5.0 界面清单</a><a href="#panel-G">§5.1 UI-M1 每日签到面板</a><a href="#panel-H">§5.2 UI-M2 签到成功弹窗</a><a href="#panel-I">§5 界面流程</a><a href="#panel-J">§6 配置契约</a><a href="#panel-K">§7 多语言文本</a></nav><div class="am-doc-body">
 <section class="am-panel" id="panel-A">
-<header class="am-panel-head"><h2>§1 功能意图</h2></header>
-<div class="am-panel-body"><div class="am-md"><h3>一句话功能</h3>
-<p>玩家每天进入签到面板领取当日奖励。连续签到累积进度，断签不清空本月累计天数。</p>
-<h3>为什么要做</h3>
-<p>旧的签到入口埋在活动页里，玩家找不到。本次把入口提到主城 HUD，并把&quot;断签不清零&quot;写进界面。</p>
-<h3>本功能不解决什么</h3>
-<div class="am-table-wrap"><table>
+<header class="am-panel-head"><h2>§1 功能概述</h2></header>
+<div class="am-panel-body"><div class="am-md"><p>玩家每天进入签到面板领取当日奖励。连续签到累积进度，断签不清空本月累计天数。</p>
+</div></div>
+</section>
+<section class="am-panel" id="panel-B">
+<header class="am-panel-head"><h2>§2 本功能不解决什么</h2></header>
+<div class="am-panel-body"><div class="am-md"><div class="am-table-wrap"><table>
 <thead>
 <tr>
 <th>不解决项</th>
@@ -780,42 +809,17 @@ html[data-theme="paper"] .am-md table { font-family: var(--font-sans); }
 </tbody></table></div>
 </div></div>
 </section>
-<section class="am-panel" id="panel-B">
-<header class="am-panel-head"><h2>§2 玩家动词</h2></header>
-<div class="am-panel-body"><div class="am-md"><div class="am-table-wrap"><table>
-<thead>
-<tr>
-<th>动词类型</th>
-<th>玩家动作</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>直接动作</td>
-<td>点击签到底部的领取按钮</td>
-</tr>
-<tr>
-<td>养成动作</td>
-<td>用补签卡补领错过的日期</td>
-</tr>
-<tr>
-<td>脑内判断</td>
-<td>判断今天要不要用补签卡</td>
-</tr>
-<tr>
-<td>重复行为</td>
-<td>每天登录后先领签到奖励</td>
-</tr>
-</tbody></table></div>
-</div></div>
-</section>
 <section class="am-panel" id="panel-C">
 <header class="am-panel-head"><h2>§3 核心循环</h2></header>
 <div class="am-panel-body"><div class="am-md"><h3>即时循环</h3>
 </div>
 <figure class="am-diagram am-flow"><svg viewBox="0 0 508 109" width="508" height="109" role="img" aria-label="流程图：User、点击领取、面板刷新" xmlns="http://www.w3.org/2000/svg"><defs><marker id="am1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="am-arrow" d="M0,0 L10,5 L0,10 z"/></marker></defs><g></g><g><g data-step="0"><path class="am-edge" d="M90,61.8 L116,69.6 Q142,77.5 176.9,77.5 L211.8,77.5" marker-end="url(#am1-arrow)"/><g class="am-edge-label"><rect x="114" y="68.5" width="56" height="18" rx="3"/><text x="142" y="77.5" text-anchor="middle" dominant-baseline="central">打开面板</text></g></g><g data-step="1"><path class="am-edge" d="M291.8,77.5 L326.6,77.5 Q361.5,77.5 387.5,69.8 L413.5,62.1" marker-end="url(#am1-arrow)"/><g class="am-edge-label"><rect x="333.5" y="68.5" width="56" height="18" rx="3"/><text x="361.5" y="77.5" text-anchor="middle" dominant-baseline="central">发放成功</text></g></g><g data-step="2"><path class="am-edge" d="M413.5,38.4 L387.5,30.7 Q361.5,23 306.6,23 Q251.8,23 196.9,23 Q142,23 116,30.9 L90,38.7" marker-end="url(#am1-arrow)"/><g class="am-edge-label"><rect x="195" y="14" width="113.5" height="18" rx="3"/><text x="251.8" y="23" text-anchor="middle" dominant-baseline="central">看到已领态与新进度</text></g></g></g><g><g class="am-node am-node--round" data-key="User" data-step="0"><rect class="am-node-shape" x="14" y="32.8" width="76" height="35" rx="17.5"/><text x="52" y="50.3" text-anchor="middle" dominant-baseline="central">User</text></g><g class="am-node am-node--rect" data-key="点击领取" data-step="0"><rect class="am-node-shape" x="211.8" y="60" width="80" height="35" rx="3"/><text x="251.8" y="77.5" text-anchor="middle" dominant-baseline="central">点击领取</text></g><g class="am-node am-node--rect" data-key="面板刷新" data-step="1"><rect class="am-node-shape" x="413.5" y="32.8" width="80" height="35" rx="3"/><text x="453.5" y="50.3" text-anchor="middle" dominant-baseline="central">面板刷新</text></g></g></svg></figure>
+<div class="am-md"><h3>单次会话循环</h3>
+</div>
+<figure class="am-diagram am-flow"><svg viewBox="0 0 660 63" width="660" height="63" role="img" aria-label="流程图：打开面板、点击领取、成功弹窗、关闭面板" xmlns="http://www.w3.org/2000/svg"><defs><marker id="am2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="am-arrow" d="M0,0 L10,5 L0,10 z"/></marker></defs><g></g><g><g data-step="0"><path class="am-edge" d="M94,31.5 L120,31.5 Q146,31.5 172,31.5 L198,31.5" marker-end="url(#am2-arrow)"/><g class="am-edge-label"><rect x="118" y="22.5" width="56" height="18" rx="3"/><text x="146" y="31.5" text-anchor="middle" dominant-baseline="central">当日未领</text></g></g><g data-step="1"><path class="am-edge" d="M278,31.5 L304,31.5 Q330,31.5 356,31.5 L382,31.5" marker-end="url(#am2-arrow)"/><g class="am-edge-label"><rect x="302" y="22.5" width="56" height="18" rx="3"/><text x="330" y="31.5" text-anchor="middle" dominant-baseline="central">发放成功</text></g></g><g data-step="2"><path class="am-edge" d="M462,31.5 L488,31.5 Q514,31.5 540,31.5 L566,31.5" marker-end="url(#am2-arrow)"/><g class="am-edge-label"><rect x="486" y="22.5" width="56" height="18" rx="3"/><text x="514" y="31.5" text-anchor="middle" dominant-baseline="central">玩家确认</text></g></g></g><g><g class="am-node am-node--rect" data-key="打开面板" data-step="0"><rect class="am-node-shape" x="14" y="14" width="80" height="35" rx="3"/><text x="54" y="31.5" text-anchor="middle" dominant-baseline="central">打开面板</text></g><g class="am-node am-node--rect" data-key="点击领取" data-step="0"><rect class="am-node-shape" x="198" y="14" width="80" height="35" rx="3"/><text x="238" y="31.5" text-anchor="middle" dominant-baseline="central">点击领取</text></g><g class="am-node am-node--rect" data-key="成功弹窗" data-step="1"><rect class="am-node-shape" x="382" y="14" width="80" height="35" rx="3"/><text x="422" y="31.5" text-anchor="middle" dominant-baseline="central">成功弹窗</text></g><g class="am-node am-node--rect" data-key="关闭面板" data-step="2"><rect class="am-node-shape" x="566" y="14" width="80" height="35" rx="3"/><text x="606" y="31.5" text-anchor="middle" dominant-baseline="central">关闭面板</text></g></g></svg></figure>
 <div class="am-md"><h3>长期循环</h3>
 </div>
-<figure class="am-diagram am-flow"><svg viewBox="0 0 512 109" width="512" height="109" role="img" aria-label="流程图：每日签到、累计天数、月度宝箱" xmlns="http://www.w3.org/2000/svg"><defs><marker id="am2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="am-arrow" d="M0,0 L10,5 L0,10 z"/></marker></defs><g></g><g><g data-step="0"><path class="am-edge" d="M94,62.1 L120,69.8 Q146,77.5 180.9,77.5 L215.8,77.5" marker-end="url(#am2-arrow)"/><g class="am-edge-label"><rect x="118" y="68.5" width="56" height="18" rx="3"/><text x="146" y="77.5" text-anchor="middle" dominant-baseline="central">逐日累加</text></g></g><g data-step="1"><path class="am-edge" d="M295.8,77.5 L330.6,77.5 Q365.5,77.5 391.5,69.8 L417.5,62.1" marker-end="url(#am2-arrow)"/><g class="am-edge-label"><rect x="337.5" y="68.5" width="56" height="18" rx="3"/><text x="365.5" y="77.5" text-anchor="middle" dominant-baseline="central">达成目标</text></g></g><g data-step="2"><path class="am-edge" d="M417.5,38.4 L391.5,30.7 Q365.5,23 310.6,23 Q255.8,23 200.9,23 Q146,23 120,30.7 L94,38.4" marker-end="url(#am2-arrow)"/><g class="am-edge-label"><rect x="199" y="14" width="113.5" height="18" rx="3"/><text x="255.8" y="23" text-anchor="middle" dominant-baseline="central">新目标驱动次日登录</text></g></g></g><g><g class="am-node am-node--rect" data-key="每日签到" data-step="0"><rect class="am-node-shape" x="14" y="32.8" width="80" height="35" rx="3"/><text x="54" y="50.3" text-anchor="middle" dominant-baseline="central">每日签到</text></g><g class="am-node am-node--rect" data-key="累计天数" data-step="0"><rect class="am-node-shape" x="215.8" y="60" width="80" height="35" rx="3"/><text x="255.8" y="77.5" text-anchor="middle" dominant-baseline="central">累计天数</text></g><g class="am-node am-node--rect" data-key="月度宝箱" data-step="1"><rect class="am-node-shape" x="417.5" y="32.8" width="80" height="35" rx="3"/><text x="457.5" y="50.3" text-anchor="middle" dominant-baseline="central">月度宝箱</text></g></g></svg></figure></div>
+<figure class="am-diagram am-flow"><svg viewBox="0 0 512 109" width="512" height="109" role="img" aria-label="流程图：每日签到、累计天数、月度宝箱" xmlns="http://www.w3.org/2000/svg"><defs><marker id="am3-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="am-arrow" d="M0,0 L10,5 L0,10 z"/></marker></defs><g></g><g><g data-step="0"><path class="am-edge" d="M94,62.1 L120,69.8 Q146,77.5 180.9,77.5 L215.8,77.5" marker-end="url(#am3-arrow)"/><g class="am-edge-label"><rect x="118" y="68.5" width="56" height="18" rx="3"/><text x="146" y="77.5" text-anchor="middle" dominant-baseline="central">逐日累加</text></g></g><g data-step="1"><path class="am-edge" d="M295.8,77.5 L330.6,77.5 Q365.5,77.5 391.5,69.8 L417.5,62.1" marker-end="url(#am3-arrow)"/><g class="am-edge-label"><rect x="337.5" y="68.5" width="56" height="18" rx="3"/><text x="365.5" y="77.5" text-anchor="middle" dominant-baseline="central">达成目标</text></g></g><g data-step="2"><path class="am-edge" d="M417.5,38.4 L391.5,30.7 Q365.5,23 310.6,23 Q255.8,23 200.9,23 Q146,23 120,30.7 L94,38.4" marker-end="url(#am3-arrow)"/><g class="am-edge-label"><rect x="199" y="14" width="113.5" height="18" rx="3"/><text x="255.8" y="23" text-anchor="middle" dominant-baseline="central">新目标驱动次日登录</text></g></g></g><g><g class="am-node am-node--rect" data-key="每日签到" data-step="0"><rect class="am-node-shape" x="14" y="32.8" width="80" height="35" rx="3"/><text x="54" y="50.3" text-anchor="middle" dominant-baseline="central">每日签到</text></g><g class="am-node am-node--rect" data-key="累计天数" data-step="0"><rect class="am-node-shape" x="215.8" y="60" width="80" height="35" rx="3"/><text x="255.8" y="77.5" text-anchor="middle" dominant-baseline="central">累计天数</text></g><g class="am-node am-node--rect" data-key="月度宝箱" data-step="1"><rect class="am-node-shape" x="417.5" y="32.8" width="80" height="35" rx="3"/><text x="457.5" y="50.3" text-anchor="middle" dominant-baseline="central">月度宝箱</text></g></g></svg></figure></div>
 </section>
 <section class="am-panel" id="panel-D">
 <header class="am-panel-head"><h2>§4.1 R1 签到与累计</h2></header>
@@ -1005,7 +1009,7 @@ html[data-theme="paper"] .am-md table { font-family: var(--font-sans); }
 </section>
 <section class="am-panel" id="panel-I">
 <header class="am-panel-head"><h2>§5 界面流程</h2></header>
-<div class="am-panel-body"><figure class="am-diagram am-flow"><svg viewBox="0 0 517 147" width="517" height="147" role="img" aria-label="流程图：主城入口、每日签到面板、签到成功弹窗、返回键" xmlns="http://www.w3.org/2000/svg"><defs><marker id="am3-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="am-arrow" d="M0,0 L10,5 L0,10 z"/></marker></defs><g></g><g><g data-step="0"><path class="am-edge" d="M106,86 L117.5,86 Q129,86 140.5,86 L152,86" marker-end="url(#am3-arrow)"/></g><g data-step="1"><path class="am-edge" d="M258,102.5 L292.6,113.2 Q327.3,124 361.9,118.6 L396.5,113.2" marker-end="url(#am3-arrow)"/><g class="am-edge-label"><rect x="293.5" y="115" width="67.5" height="18" rx="3"/><text x="327.3" y="124" text-anchor="middle" dominant-baseline="central">点击主按钮</text></g></g><g data-step="2"><path class="am-edge" d="M396.5,96.8 L361.9,91.4 Q327.3,86 292.6,86 L258,86" marker-end="url(#am3-arrow)"/><g class="am-edge-label"><rect x="282" y="77" width="90.5" height="18" rx="3"/><text x="327.3" y="86" text-anchor="middle" dominant-baseline="central">确认或点空白处</text></g></g><g data-step="3"><path class="am-edge" d="M244.3,68.5 L285.8,50 Q327.3,31.5 368.6,31.5 L410,31.5" marker-end="url(#am3-arrow)"/><g class="am-edge-label"><rect x="310.8" y="22.5" width="33" height="18" rx="3"/><text x="327.3" y="31.5" text-anchor="middle" dominant-baseline="central">退出</text></g></g></g><g><g class="am-node am-node--round" data-key="主城入口" data-step="0"><rect class="am-node-shape" x="14" y="68.5" width="92" height="35" rx="17.5"/><text x="60" y="86" text-anchor="middle" dominant-baseline="central">主城入口</text></g><g class="am-node am-node--rect" data-key="每日签到面板" data-step="0"><rect class="am-node-shape" x="152" y="68.5" width="106" height="35" rx="3"/><text x="205" y="86" text-anchor="middle" dominant-baseline="central">每日签到面板</text></g><g class="am-node am-node--rect" data-key="签到成功弹窗" data-step="1"><rect class="am-node-shape" x="396.5" y="87.5" width="106" height="35" rx="3"/><text x="449.5" y="105" text-anchor="middle" dominant-baseline="central">签到成功弹窗</text></g><g class="am-node am-node--round" data-key="返回键" data-step="3"><rect class="am-node-shape" x="410" y="14" width="79" height="35" rx="17.5"/><text x="449.5" y="31.5" text-anchor="middle" dominant-baseline="central">返回键</text></g></g></svg></figure></div>
+<div class="am-panel-body"><figure class="am-diagram am-flow"><svg viewBox="0 0 517 147" width="517" height="147" role="img" aria-label="流程图：主城入口、每日签到面板、签到成功弹窗、返回键" xmlns="http://www.w3.org/2000/svg"><defs><marker id="am4-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="am-arrow" d="M0,0 L10,5 L0,10 z"/></marker></defs><g></g><g><g data-step="0"><path class="am-edge" d="M106,86 L117.5,86 Q129,86 140.5,86 L152,86" marker-end="url(#am4-arrow)"/></g><g data-step="1"><path class="am-edge" d="M258,102.5 L292.6,113.2 Q327.3,124 361.9,118.6 L396.5,113.2" marker-end="url(#am4-arrow)"/><g class="am-edge-label"><rect x="293.5" y="115" width="67.5" height="18" rx="3"/><text x="327.3" y="124" text-anchor="middle" dominant-baseline="central">点击主按钮</text></g></g><g data-step="2"><path class="am-edge" d="M396.5,96.8 L361.9,91.4 Q327.3,86 292.6,86 L258,86" marker-end="url(#am4-arrow)"/><g class="am-edge-label"><rect x="282" y="77" width="90.5" height="18" rx="3"/><text x="327.3" y="86" text-anchor="middle" dominant-baseline="central">确认或点空白处</text></g></g><g data-step="3"><path class="am-edge" d="M244.3,68.5 L285.8,50 Q327.3,31.5 368.6,31.5 L410,31.5" marker-end="url(#am4-arrow)"/><g class="am-edge-label"><rect x="310.8" y="22.5" width="33" height="18" rx="3"/><text x="327.3" y="31.5" text-anchor="middle" dominant-baseline="central">退出</text></g></g></g><g><g class="am-node am-node--round" data-key="主城入口" data-step="0"><rect class="am-node-shape" x="14" y="68.5" width="92" height="35" rx="17.5"/><text x="60" y="86" text-anchor="middle" dominant-baseline="central">主城入口</text></g><g class="am-node am-node--rect" data-key="每日签到面板" data-step="0"><rect class="am-node-shape" x="152" y="68.5" width="106" height="35" rx="3"/><text x="205" y="86" text-anchor="middle" dominant-baseline="central">每日签到面板</text></g><g class="am-node am-node--rect" data-key="签到成功弹窗" data-step="1"><rect class="am-node-shape" x="396.5" y="87.5" width="106" height="35" rx="3"/><text x="449.5" y="105" text-anchor="middle" dominant-baseline="central">签到成功弹窗</text></g><g class="am-node am-node--round" data-key="返回键" data-step="3"><rect class="am-node-shape" x="410" y="14" width="79" height="35" rx="17.5"/><text x="449.5" y="31.5" text-anchor="middle" dominant-baseline="central">返回键</text></g></g></svg></figure></div>
 </section>
 <section class="am-panel" id="panel-J">
 <header class="am-panel-head"><h2>§6 配置契约</h2></header>
@@ -1139,124 +1143,6 @@ html[data-theme="paper"] .am-md table { font-family: var(--font-sans); }
 </tbody></table></div>
 </div></div>
 </section>
-<section class="am-panel" id="panel-L">
-<header class="am-panel-head"><h2>§8 范围门</h2></header>
-<div class="am-panel-body"><div class="am-md"><div class="am-table-wrap"><table>
-<thead>
-<tr>
-<th>范围层级</th>
-<th>纳入</th>
-<th>排除</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>最小可行版本</td>
-<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>面板 / 当日领取 / 成功弹窗 / 累计进度</span></td>
-<td>—</td>
-</tr>
-<tr>
-<td>垂直切片</td>
-<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>补签 / 月度宝箱 / 跨月重置</span></td>
-<td>—</td>
-</tr>
-<tr>
-<td>不做</td>
-<td>—</td>
-<td><span class="am-status am-status--no"><span class="am-status-icon" aria-hidden="true">✗</span>付费签到产品 / 社交分享 / 签到历史页</span></td>
-</tr>
-</tbody></table></div>
-</div></div>
-</section>
-<section class="am-panel" id="panel-M">
-<header class="am-panel-head"><h2>§9 数据埋点信号</h2></header>
-<div class="am-panel-body"><div class="am-md"><div class="am-table-wrap"><table>
-<thead>
-<tr>
-<th>信号</th>
-<th>用途</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>sign_in_panel_open</td>
-<td>统计入口曝光与打开率</td>
-</tr>
-<tr>
-<td>sign_in_claim</td>
-<td>统计领取成功率与失败原因</td>
-</tr>
-<tr>
-<td>sign_in_makeup</td>
-<td>统计补签卡消耗</td>
-</tr>
-</tbody></table></div>
-</div></div>
-</section>
-<section class="am-panel" id="panel-N">
-<header class="am-panel-head"><h2>§10 验收标准</h2></header>
-<div class="am-panel-body"><div class="am-md"><div class="am-table-wrap"><table>
-<thead>
-<tr>
-<th>编号</th>
-<th>标准</th>
-<th>优先级</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>AC1</td>
-<td>跨天后可再次领取，同一自然日内重复点击不重复发放</td>
-<td>P0</td>
-</tr>
-<tr>
-<td>AC2</td>
-<td>断签不清空本月累计天数，界面计数与服务器一致</td>
-<td>P0</td>
-</tr>
-<tr>
-<td>AC3</td>
-<td>补签卡不足时入口置灰，点击给出获得途径提示</td>
-<td>P1</td>
-</tr>
-<tr>
-<td>AC4</td>
-<td>全部文案走多语言键，切换语言后界面无残留中文</td>
-<td>P1</td>
-</tr>
-</tbody></table></div>
-</div></div>
-</section>
-<section class="am-panel" id="panel-O">
-<header class="am-panel-head"><h2>§11 交接清单</h2></header>
-<div class="am-panel-body"><div class="am-md"><div class="am-table-wrap"><table>
-<thead>
-<tr>
-<th>角色</th>
-<th>需要内容</th>
-<th>负责人</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>服务端程序</td>
-<td>签到状态、累计天数与补签的接口约定</td>
-<td>待定</td>
-</tr>
-<tr>
-<td>UI 程序</td>
-<td>面板与弹窗的预制体改造</td>
-<td>待定</td>
-</tr>
-<tr>
-<td>UI/UX</td>
-<td>面板与弹窗的最终视觉稿</td>
-<td>待定</td>
-</tr>
-<tr>
-<td>测试</td>
-<td>§10 的验收标准与跨天 / 跨月边界用例</td>
-<td>待定</td>
-</tr>
-</tbody></table></div>
-</div></div>
-</section>
 </div>
 </div>
 </main>
@@ -1275,7 +1161,7 @@ html[data-theme="paper"] .am-md table { font-family: var(--font-sans); }
 <div class="am-lightbox-canvas am-diagram"></div>
 </div>
 </div>
-<footer class="am-colophon">Generated by <a href="https://github.com/QingYunA/answer-me-with-html" target="_blank" rel="noopener">Answer me with HTML</a> 0.4.15 · 2026-10-15 15:21</footer>
+<footer class="am-colophon">Generated by <a href="https://github.com/QingYunA/answer-me-with-html" target="_blank" rel="noopener">Answer me with HTML</a> 0.4.15 · 2026-10-30 17:44</footer>
 <textarea id="am-source" hidden readonly aria-hidden="true">---
 template: doc
 theme: auto
@@ -1284,34 +1170,19 @@ subtitle: 一份功能 GDD 定稿的宣讲稿长什么样 · 结构与文案均�
 source: 每日签到_定稿.md（doc_type: final_gdd · status: active）
 ---
 
-本页是 sr-gdd-html 的&lt;b&gt;合成形态基准&lt;/b&gt;，不是任何真实功能的规则。它演示两件事：定稿 §1–§11 怎么落到面板上，以及每一节该用哪个组件。真实页面的内容全部来自源定稿，一个数都不许改。
+本页是 sr-gdd-html 的&lt;b&gt;合成形态基准&lt;/b&gt;，不是任何真实功能的规则。它演示两件事：定稿 §1–§7 怎么落到面板上，以及每一节该用哪个组件。真实页面的内容全部来自源定稿，一个数都不许改。
 
-## §1 功能意图
-
-### 一句话功能
+## §1 功能概述
 
 玩家每天进入签到面板领取当日奖励。连续签到累积进度，断签不清空本月累计天数。
 
-### 为什么要做
-
-旧的签到入口埋在活动页里，玩家找不到。本次把入口提到主城 HUD，并把&quot;断签不清零&quot;写进界面。
-
-### 本功能不解决什么
+## §2 本功能不解决什么
 
 | 不解决项 | 原因 |
 | --- | --- |
 | no 付费签到产品（月卡 / 周卡） | 属于商业化线，另立功能 |
 | no 签到历史详情页 | 本轮不做，列进&quot;不做&quot; |
 | no 奖励内容的投放渠道调整 | 由运营侧另行发起 |
-
-## §2 玩家动词
-
-| 动词类型 | 玩家动作 |
-| --- | --- |
-| 直接动作 | 点击签到底部的领取按钮 |
-| 养成动作 | 用补签卡补领错过的日期 |
-| 脑内判断 | 判断今天要不要用补签卡 |
-| 重复行为 | 每天登录后先领签到奖励 |
 
 ## §3 核心循环
 
@@ -1321,6 +1192,14 @@ source: 每日签到_定稿.md（doc_type: final_gdd · status: active）
 (User) -&gt; 点击领取: 打开面板
 点击领取 -&gt; 面板刷新: 发放成功
 面板刷新 -&gt; User: 看到已领态与新进度
+```
+
+### 单次会话循环
+
+```flow LR
+打开面板 -&gt; 点击领取: 当日未领
+点击领取 -&gt; 成功弹窗: 发放成功
+成功弹窗 -&gt; 关闭面板: 玩家确认
 ```
 
 ### 长期循环
@@ -1439,40 +1318,6 @@ source: 每日签到_定稿.md（doc_type: final_gdd · status: active）
 | sign_in_btn_claim | 领取第 $0 天奖励 | $0＝本次可领的天序号（来源：服务端签到记录） | warn 新增 | 主按钮 | available | 今日未领取 | 发起领取 |
 | sign_in_btn_done | 今日已领取 | — | ok 已有 | 主按钮 | unavailable | 今日已领取 | 已领状态置灰 |
 | sign_in_makeup_tip | 断签不重置累计天数 | — | warn 新增 | 底部提示 | available | 常驻 | 补签口径说明 |
-
-## §8 范围门
-
-| 范围层级 | 纳入 | 排除 |
-| --- | --- | --- |
-| 最小可行版本 | ok 面板 / 当日领取 / 成功弹窗 / 累计进度 | — |
-| 垂直切片 | ok 补签 / 月度宝箱 / 跨月重置 | — |
-| 不做 | — | no 付费签到产品 / 社交分享 / 签到历史页 |
-
-## §9 数据埋点信号
-
-| 信号 | 用途 |
-| --- | --- |
-| sign_in_panel_open | 统计入口曝光与打开率 |
-| sign_in_claim | 统计领取成功率与失败原因 |
-| sign_in_makeup | 统计补签卡消耗 |
-
-## §10 验收标准
-
-| 编号 | 标准 | 优先级 |
-| --- | --- | --- |
-| AC1 | 跨天后可再次领取，同一自然日内重复点击不重复发放 | P0 |
-| AC2 | 断签不清空本月累计天数，界面计数与服务器一致 | P0 |
-| AC3 | 补签卡不足时入口置灰，点击给出获得途径提示 | P1 |
-| AC4 | 全部文案走多语言键，切换语言后界面无残留中文 | P1 |
-
-## §11 交接清单
-
-| 角色 | 需要内容 | 负责人 |
-| --- | --- | --- |
-| 服务端程序 | 签到状态、累计天数与补签的接口约定 | 待定 |
-| UI 程序 | 面板与弹窗的预制体改造 | 待定 |
-| UI/UX | 面板与弹窗的最终视觉稿 | 待定 |
-| 测试 | §10 的验收标准与跨天 / 跨月边界用例 | 待定 |
 </textarea>
 <script>
 (() => {
@@ -2322,6 +2167,150 @@ if (panels.length > 1) {
   else start();
 })();
 })();
-</script>
+
+// ⑦ 点图放大看原图（版式里的界面图受列宽与视口高度约束，图上的小字要看原图）
+(() => {
+  const MIN = 200; // 原始宽度小于此值的图（图标、徽标）不给放大入口
+  const STEP = 1.25;
+  const big = () => Array.from(document.querySelectorAll('.am-md img')).filter((im) => (im.naturalWidth || 0) >= MIN);
+  let box = null;
+  let view = null;
+  let count = null;
+  let pct = null;
+  let fitBtn = null;
+  let rawBtn = null;
+  let list = [];
+  let at = 0;
+  let zoom = 0; // 0 = 适应窗口；>0 = 相对原始像素的倍率
+  let opener = null;
+
+  const render = () => {
+    const im = list[at];
+    if (!im || !view) return;
+    if (zoom) {
+      view.style.width = Math.round((im.naturalWidth || 1) * zoom) + 'px';
+      box.classList.add('am-imgzoom--raw');
+      pct.textContent = Math.round(zoom * 100) + '%';
+    } else {
+      view.style.width = '';
+      box.classList.remove('am-imgzoom--raw');
+      pct.textContent = '适应';
+    }
+    fitBtn.classList.toggle('is-on', !zoom);
+    rawBtn.classList.toggle('is-on', zoom === 1);
+  };
+  // 缩放前后保持"正在看的那一块"在视野中心，而不是跳回左上角
+  const keepCenter = (fn) => {
+    const rx = box.scrollWidth > box.clientWidth ? (box.scrollLeft + box.clientWidth / 2) / box.scrollWidth : 0.5;
+    const ry = box.scrollHeight > box.clientHeight ? (box.scrollTop + box.clientHeight / 2) / box.scrollHeight : 0.5;
+    fn();
+    box.scrollLeft = Math.max(0, rx * box.scrollWidth - box.clientWidth / 2);
+    box.scrollTop = Math.max(0, ry * box.scrollHeight - box.clientHeight / 2);
+  };
+  const fitRatio = () => {
+    const im = list[at];
+    const w = view ? view.getBoundingClientRect().width : 0;
+    return im && im.naturalWidth && w ? w / im.naturalWidth : 1;
+  };
+  const setZoom = (z) => {
+    zoom = Math.min(8, Math.max(0.1, z));
+    keepCenter(render);
+  };
+  const show = (n) => {
+    if (!list.length || !view) return;
+    at = (n + list.length) % list.length;
+    const im = list[at];
+    view.src = im.currentSrc || im.src;
+    view.alt = im.alt || '';
+    view.style.width = '';
+    count.textContent = at + 1 + ' / ' + list.length;
+    zoom = 0;
+    render();
+    box.scrollTop = 0;
+    box.scrollLeft = 0;
+  };
+  const close = () => {
+    if (!box) return;
+    document.removeEventListener('keydown', onKey);
+    document.documentElement.style.overflow = '';
+    box.remove(); // 整个查看器移出 DOM：页面里不留一个没有 src 的 img（那是"破图"）
+    box = view = count = pct = fitBtn = rawBtn = null;
+    if (opener && opener.focus) opener.focus();
+    opener = null;
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') close();
+    else if (e.key === 'ArrowRight') show(at + 1);
+    else if (e.key === 'ArrowLeft') show(at - 1);
+    else if (e.key === '+' || e.key === '=') setZoom((zoom || fitRatio()) * STEP);
+    else if (e.key === '-') setZoom((zoom || fitRatio()) / STEP);
+    else if (e.key === '0') { zoom = 0; keepCenter(render); }
+  };
+  const onBoxClick = (e) => {
+    const hit = e.target.closest ? e.target.closest('[data-am-zoom]') : null;
+    const act = hit ? hit.getAttribute('data-am-zoom') : '';
+    if (act === 'prev') return show(at - 1);
+    if (act === 'next') return show(at + 1);
+    if (act === 'fit') { zoom = 0; return keepCenter(render); }
+    if (act === 'raw') return setZoom(1);
+    if (act === 'in') return setZoom((zoom || fitRatio()) * STEP);
+    if (act === 'out') return setZoom((zoom || fitRatio()) / STEP);
+    if (e.target === view) { // 点图本身：放大态收回适应窗口，适应态切到 1:1
+      if (zoom) { zoom = 0; keepCenter(render); } else setZoom(1);
+      return;
+    }
+    if (e.target === box || (e.target.classList && e.target.classList.contains('am-imgzoom-close'))) close();
+  };
+  const build = () => {
+    // 懒建：不点图就不往 DOM 里放这个还没 src 的 img（页面上不该有一个天生破图的元素）
+    box = document.createElement('div');
+    box.className = 'am-imgzoom';
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
+    box.setAttribute('aria-label', '图片放大查看');
+    box.innerHTML = '<img class="am-imgzoom-img" alt="">'
+      + '<div class="am-imgzoom-bar">'
+      + '<button type="button" data-am-zoom="prev" aria-label="上一张">&#8249;</button>'
+      + '<span class="am-imgzoom-count"></span>'
+      + '<button type="button" data-am-zoom="next" aria-label="下一张">&#8250;</button>'
+      + '<span class="am-imgzoom-sep"></span>'
+      + '<button type="button" data-am-zoom="fit">适应</button>'
+      + '<button type="button" data-am-zoom="raw">1:1</button>'
+      + '<button type="button" data-am-zoom="out" aria-label="缩小">&#8722;</button>'
+      + '<button type="button" data-am-zoom="in" aria-label="放大">+</button>'
+      + '<span class="am-imgzoom-pct"></span>'
+      + '</div>'
+      + '<button type="button" class="am-imgzoom-close" aria-label="关闭">&#215;</button>';
+    document.body.append(box);
+    view = box.querySelector('.am-imgzoom-img');
+    count = box.querySelector('.am-imgzoom-count');
+    pct = box.querySelector('.am-imgzoom-pct');
+    fitBtn = box.querySelector('[data-am-zoom="fit"]');
+    rawBtn = box.querySelector('[data-am-zoom="raw"]');
+    box.addEventListener('click', onBoxClick);
+  };
+  const open = (im) => {
+    list = big();
+    if (!list.length) return;
+    if (!box) build();
+    opener = im;
+    show(list.indexOf(im));
+    box.classList.add('am-imgzoom--on');
+    document.documentElement.style.overflow = 'hidden';
+    document.addEventListener('keydown', onKey);
+  };
+  document.addEventListener('click', (e) => {
+    const im = e.target.closest ? e.target.closest('.am-md img') : null;
+    if (!im || im === view) return;
+    if ((im.naturalWidth || 0) < MIN) return;
+    open(im);
+  });
+  // 只有真能放大的图才给"可点"提示：小图标点了没反应，会让人以为坏了
+  const decorate = () => {
+    for (const im of big()) if (!im.title) im.title = '点击放大看原图';
+  };
+  if (document.readyState === 'complete') decorate();
+  else addEventListener('load', decorate, { once: true });
+})();</script>
 </body>
 </html>
