@@ -13,7 +13,7 @@ import test from "node:test";
 import {
 	bucketHint, buildScaffoldInstruction, checkTopicName, createDoneNotice, createPartialNotice,
 	featureRootFor, isBareScaffold, manualScaffoldCommand, nameKey, pathKey, planNewFeature,
-	scaffoldDirsOf, sessionTitleFor, TOPIC_MAX
+	scaffoldDirsOf, TOPIC_MAX
 } from "../src/pure/createfeature.ts";
 
 const SR = "D:\\TimeMachine\\GameDesignOS\\workspace";
@@ -103,7 +103,6 @@ test("路径比对：大小写不敏感、分隔符统一、去尾斜杠", () =>
 test("界面话术：建好那一句**只说结果**（用户口径「只要说一下 4 个桶」）", () => {
 	assert.ok(bucketHint("decisions").includes("决策记录"));
 	assert.equal(bucketHint("没这个桶"), "");
-	assert.equal(sessionTitleFor("联盟讨伐"), "策划工作台·工作（联盟讨伐）");
 
 	const done = createDoneNotice("联盟讨伐", "sid-1");
 	assert.ok(done.includes("联盟讨伐") && done.includes("4 个桶"), "要点名功能与桶：" + done);

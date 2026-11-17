@@ -521,9 +521,13 @@ export function indexTitleFor(srWs: unknown): string {
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
- * 工作会话的标题（认领凭据）。
+ * 工作会话的**旧**标题（只剩"认回旧会话"这一个用途）。
+ *
  * ★ 与索引会话（`策划工作台·索引`）**分开**：索引会话的 cwd 是 SR workspace 根、只负责扫描；
  *   工作会话的 cwd 是 `features\<主题>\`、只负责干活（规格「三层会话」）。
+ * ★ 2026-11-17 起**新造的工作会话不再起这个名字**（用户口径：名字要按工作内容自动生成）——
+ *   写进标题会钉住 DSH 的自动标题（见本文件「面板亲手建过的会话」那一节的说明）。
+ *   所以它现在只用来认**旧版本建的**那些会话（`leftovers.ts` 的旧标题凭据），新会话靠 `mineCache*`。
  */
 export const WORK_TITLE = "策划工作台·工作";
 
@@ -537,7 +541,10 @@ export function isWorkTitle(t: unknown): boolean {
 	return typeof t === "string" && t.indexOf(WORK_TITLE) === 0;
 }
 
-/** 工作会话该有的标题：`策划工作台·工作（联盟悬赏）`。 */
+/**
+ * 旧工作会话该有的标题：`策划工作台·工作（联盟悬赏）`。
+ * ★ 2026-11-17 起**只用于认回旧会话**（不给新会话起名，理由见 `WORK_TITLE` 的说明）。
+ */
 export function workTitleFor(root: unknown): string {
 	const topic = featureTopicOf(root);
 	return topic ? WORK_TITLE + "（" + topic + "）" : WORK_TITLE;
@@ -551,7 +558,9 @@ export function workTitleFor(root: unknown): string {
  *      用户看不见它 = 指令发进去了、界面什么也没有（2026-09-30 实测缺陷）。不传 = 旧行为；
  *   ① `opts.cachedId` —— 面板上次给这个功能用的那条，**且 cwd 就是功能根**；
  *   ② 标题认领 —— 标题以 `WORK_TITLE` 开头，**且 cwd 就是功能根**（自己建的会话，清缓存也能认回）；
- *   ③ 没有 → 返回 null（调用方去建；建完一定 `rename` 成 `workTitleFor(root)`，下次就靠 ② 认回来）。
+ *   ③ 没有 → 返回 null（调用方去建。**旧口径**：建完会 `rename` 成 `workTitleFor(root)`，下次靠 ② 认回来；
+ *      2026-11-17 起面板不再给工作会话起名，② 这条对**新**会话不再成立 —— 本函数目前也没有生产调用方，
+ *      见 ADR 0015 的遗留清单）。
  *
  * ★ 为什么**不**像索引会话那样兜一条"cwd 落在功能根里的任意会话"：
  *   工作会话会被面板**发指令**（索引会话只被读）。认一条用户自己的会话 = 往用户的对话里插活，
@@ -650,6 +659,59 @@ export function workCacheDropMany(raw: unknown, featureRoots: unknown): string {
 		if (k !== "") delete t[k];
 	}
 	return JSON.stringify(t);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 「面板亲手建过的会话」—— 残留清理的**认领凭据**（2026-11-17 起标题不再当凭据）
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 这张表最多记多少条（只增不减 ⇒ 给个上限；超了丢最老的，判据只影响"清得太老的那几条"）。 */
+const MINE_MAX = 400;
+
+/**
+ * localStorage 里记"面板亲手建过哪些会话"的键（`leftovers.ts` 靠它认领）。
+ *
+ * ★ 为什么不看标题了（用户口径 2026-11-17：「从策划工作台新建会话的会话名字能不能不要生成固定的名字，
+ *   我希望还是让你帮我自动根据工作内容生成会话名字」）：
+ *   DSH 的标题有三个来源（内置回退 / 自动生成提供方 / 显式 `rename`），而**用户来源的标题会钉住会话**
+ *   —— `dsh-session-title` 的 `scheduleForUserMessage`：`if (this.get(session)?.source.kind === 'user') return;`
+ *   （后续用户消息不再安排自动修订，只有显式 `refresh()` 是解钉手段）。
+ *   面板每次 `rename` 成「策划工作台·工作（X）」，就等于把名字**永久钉死**在那一句上。
+ *   ⇒ 想让名字跟着活干，面板**不能再给工作会话起名**；认领凭据改成这张表（"面板亲手建的"）。
+ * ★ 它只用于**收拾自己的痕迹**（功能目录被手工删掉时归档那几条会话），**不用于决定指令发给谁** ——
+ *   后者是一派活一条新会话（ADR 0015），不依赖任何认领。
+ */
+export function mineCacheKey(): string {
+	return "sr-wb.mine.v1";
+}
+
+/** 缓存原文（坏 JSON / 空 / 形状不对）→ id 表（保序、去重、丢弃非字符串）。坏值一律当空表，绝不抛。 */
+export function mineCacheParse(raw: unknown): string[] {
+	if (typeof raw !== "string" || raw === "") return [];
+	let v: unknown = null;
+	try {
+		v = JSON.parse(raw);
+	} catch (e) {
+		return [];
+	}
+	if (!Array.isArray(v)) return [];
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const one of v) {
+		if (typeof one !== "string" || one === "" || seen.has(one)) continue;
+		seen.add(one);
+		out.push(one);
+	}
+	return out;
+}
+
+/** 记一条（返回**新的**缓存原文；组合根负责 `setItem`）。空 id / 坏形状都不抛。 */
+export function mineCacheAdd(raw: unknown, sid: unknown, cap?: number): string {
+	const keep = typeof cap === "number" && cap > 0 ? cap : MINE_MAX;
+	const list = mineCacheParse(raw);
+	if (typeof sid !== "string" || sid === "") return JSON.stringify(list);
+	if (list.indexOf(sid) === -1) list.push(sid);
+	return JSON.stringify(list.slice(Math.max(0, list.length - keep)));
 }
 
 // ════════════════════════════════════════════════════════════════════════════

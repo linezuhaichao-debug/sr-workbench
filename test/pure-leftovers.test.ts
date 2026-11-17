@@ -126,3 +126,51 @@ test("workCacheDropMany：按「确认已经不在」的根丢条目；坏值归
 	assert.deepEqual(JSON.parse(workCacheDropMany(raw, [])), JSON.parse(raw), "没有要丢的，内容不变");
 	assert.deepEqual(JSON.parse(workCacheDropMany("{坏 JSON", [])), {}, "坏值归一成空表（否则会被原样写回去，等于没清）");
 });
+
+test("残留认领（2026-11-17 起）：新会话没有固定标题 ⇒ 认「面板亲手建过」的 id 表；别人的会话照旧不碰", () => {
+	/**
+	 * ★ 用户口径 2026-11-17：「从策划工作台新建会话的会话名字能不能不要生成固定的名字，我希望还是让你
+	 *   帮我自动根据工作内容生成会话名字」。面板因此**不再**给工作会话 `rename`（那会钉住 DSH 的自动标题）
+	 *   —— 于是"这条是不是我造的"不能再靠标题前缀，改看这张本地账本（`sessionpick.mineCache*`）。
+	 *   判据的两半都没变：**只清自己造的**（id 在表里）**且** cwd 落在 `features\<主题>` 这一层。
+	 */
+	const r = leftoversOf({
+		srWs: SR, archived: [],
+		mine: ["s-new-a", "s-new-b"],
+		sessions: [
+			{ id: "s-new-a", title: "联盟讨伐数值梳理", cwd: FEATURES + "\\联盟讨伐" },
+			{ id: "s-new-b", title: "联盟讨伐竞品分析", cwd: FEATURES + "\\联盟基础" },
+			{ id: "s-user", title: "我自己建的会话", cwd: FEATURES + "\\联盟基础" },          // cwd 对、但不是面板造的
+			{ id: "s-new-a", title: "联盟讨伐数值梳理（列表里的第二条同 id）", cwd: FEATURES + "\\联盟讨伐" },
+			{ id: "s-elsewhere", title: "联盟讨伐的会", cwd: "D:\\X\\别的功能" }                // id 在表里、cwd 不对
+		],
+		workspaces: [],
+		gone: () => true
+	});
+	assert.deepEqual(r.sessions.map((s) => s.id), ["s-new-a", "s-new-b"], "只清面板自己造的（按 id 认，同 id 去重）");
+	assert.deepEqual(r.sessions.map((s) => s.topic), ["联盟讨伐", "联盟基础"], "主题按 cwd 取");
+});
+
+test("主题按 cwd 取：标题与 cwd 打架时以 cwd 为准（标题可以手抄，路径不会）", () => {
+	const r = leftoversOf({
+		srWs: SR, archived: [],
+		sessions: [{ id: "s-mix", title: WORK_SESSION_TITLE + "联盟讨伐）", cwd: FEATURES + "\\联盟基础" }],
+		workspaces: [],
+		gone: () => true
+	});
+	assert.equal(r.sessions[0].topic, "联盟基础", "cwd 是硬事实");
+});
+
+test("mine 表拿不到（旧版本 / 存储被清）⇒ 只剩旧标题那一份凭据：新会话一条都不判", () => {
+	const r = leftoversOf({
+		srWs: SR, archived: [],
+		// 不给 `mine`
+		sessions: [
+			{ id: "s-new", title: "联盟讨伐数值梳理", cwd: FEATURES + "\\联盟讨伐" },   // 新形状：没有凭据 ⇒ 不判
+			ORPHAN                                                                     // 旧形状：标题前缀仍在 ⇒ 照旧判
+		],
+		workspaces: [],
+		gone: () => true
+	});
+	assert.deepEqual(r.sessions.map((s) => s.id), ["s-gone"], "宁可少清，也不要认错人的对话");
+});

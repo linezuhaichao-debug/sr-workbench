@@ -207,7 +207,7 @@ function agentCreatedDirs(remote, topic) {
 
 const WAIT = { tries: 3, delayMs: 5 };   // 用例里把轮询压到毫秒级
 
-test("新建功能：顺序 = 目录 → 4 桶 → 工作区 → 会话（策划模式）→ 改名 → 并入 store", async () => {
+test("新建功能：顺序 = 目录 → 4 桶 → 工作区 → 会话（策划模式）→ 并入 store（**不**写死标题）", async () => {
 	const { remote, log } = makeRemote();
 	const uw = makeUiWorkspace();
 	const { panelProps } = loadPlugin(remote, { services: { uiWorkspace: uw.service } });
@@ -242,9 +242,17 @@ test("新建功能：顺序 = 目录 → 4 桶 → 工作区 → 会话（策划
 	assert.equal(sCall.req.agentPreset, "sr-workbench");
 	assert.equal("cwd" in sCall.req, false, "workspaceId 与 cwd 互斥 —— 不许同时给");
 
-	// ④ 改名成可认领的标题（下次靠它认回来）
-	const rn = log.filter((x) => x.m === "session.rename" && x.req.title === "策划工作台·工作（新功能）")[0];
-	assert.ok(rn, "工作会话要改成可认领的标题：" + JSON.stringify(log.filter((x) => x.m === "session.rename")));
+	// ④ **不给工作会话起名**（用户口径 2026-11-17：「会话名字能不能不要生成固定的名字，我希望还是让你
+	//   帮我自动根据工作内容生成会话名字」）。★ 这不是"少做一步"：DSH 的自动标题一旦被 `rename`
+	//   （用户来源）就**钉住**，之后的消息不再修订 —— 想让它按内容起名，就一次都不能改。
+	assert.deepEqual(
+		log.filter((x) => x.m === "session.rename" && String(x.req.title).indexOf("工作（") >= 0).map((x) => x.req.title),
+		[],
+		"工作会话不该被写死标题：" + JSON.stringify(log.filter((x) => x.m === "session.rename"))
+	);
+	// ★ 索引会话照旧有名字（它是面板的读通道，固定名反而好认）—— 这条顺带盯住"没把索引会话也一起改掉"
+	assert.ok(log.some((x) => x.m === "session.rename" && String(x.req.title).indexOf("策划工作台·索引") === 0),
+		"索引会话要有固定标题：" + JSON.stringify(log.filter((x) => x.m === "session.rename")));
 
 	// ⑤ 全程**没有发过任何指令**（v5 的新建是本地动作）
 	assert.deepEqual(log.filter((x) => x.m === "session.prompt"), [], "新建功能不该发指令");
@@ -337,7 +345,8 @@ test("建目录·路②：本机只有 native（没有 createDirectory）⇒ 让
 	// 目录齐了之后，工作区与会话照常建
 	const wsCall = log.filter((x) => x.m === "workspace.create" && x.path === FEATURES + "\\新功能")[0];
 	assert.ok(wsCall, "目录齐了要接着建专属工作区");
-	assert.ok(log.some((x) => x.m === "session.rename" && String(x.req.title).includes("工作（新功能）")), "并给策划模式工作会话命名（认领凭据）");
+	assert.equal(log.filter((x) => x.m === "session.rename" && String(x.req.title).includes("工作（")).length, 0,
+		"但不给工作会话起名（名字交给 DSH 按内容自动生成）");
 });
 
 test("建目录·路②：createDirectory 抛 directory-picker/unavailable ⇒ 同样退到会话", async () => {
@@ -406,7 +415,7 @@ test("建目录·不续做：目录已在但**里面有文件** ⇒ 照旧按重
 	assert.ok(String(r.message).includes("已经有这个目录"), r.message);
 });
 
-test("头脑风暴：四入口的指令发给**本功能的工作会话**（新建一条、带上标题）", async () => {
+test("头脑风暴：四入口的指令发给**本功能的工作会话**（新建一条；名字交给 DSH 按内容起）", async () => {
 	const { remote, log } = makeRemote();
 	uniqueSessionIds(remote);
 	const uw = makeUiWorkspace();
@@ -510,17 +519,18 @@ test("新建会话：按功能根建一条**策划模式**会话（这次派活�
 
 	const r = await panelProps.__newWorkSession(root);
 	assert.equal(r.ok, true, JSON.stringify(r));
-	assert.equal(r.title, "策划工作台·工作（新功能）");
+	assert.equal(r.title, "", "名字留给 DSH 按工作内容自动生成（面板不写死）");
 	assert.equal(r.previous, "", "第一次建：没有「被换下去的那条」");
 
 	// ① 工作区按**功能根**登记（会话落在它里面 ⇒ 会话的 cwd 就是功能目录）
 	assert.ok(log.some((x) => x.m === "workspace.create" && x.path === root), "要按功能根登记工作区");
-	// ② 预设是「策划模式」（`cordis.patch.yml` 里那一行），③ 改名成可认领的标题
+	// ② 预设是「策划模式」（`cordis.patch.yml` 里那一行），③ **不改名**
 	const made = log.filter((x) => x.m === "session.create").pop();
 	assert.equal(made.req.agentPreset, "sr-workbench", "预设必须是策划模式");
 	assert.equal(made.req.workspaceId, "ws-1", "要建在功能的工作区里");
 	assert.equal("cwd" in made.req, false, "workspaceId 与 cwd 互斥 —— 不许同时给");
-	assert.ok(log.some((x) => x.m === "session.rename" && x.req.title === "策划工作台·工作（新功能）"), "要改名成认领凭据");
+	assert.equal(log.filter((x) => x.m === "session.rename" && String(x.req.title).includes("工作（")).length, 0,
+		"不该给它起固定名字（那会钉住 DSH 的自动标题）");
 
 	// ④ 四入口**不复用**这一条（口径：一次派活一条会话）—— 它另起一条，各进各的
 	const sent = await panelProps.__sendBrainstorm(root, "【头脑风暴 · 竞品分析】…");

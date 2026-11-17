@@ -31,6 +31,9 @@ import {
 	isIndexTitle,
 	isWorkTitle,
 	mergeRows,
+	mineCacheAdd,
+	mineCacheKey,
+	mineCacheParse,
 	needsFullAccess,
 	normPath,
 	permissionCommandLine,
@@ -542,4 +545,22 @@ test("归档的两句话就在纯层：拿不到要说「无法确认可见」�
 	assert.ok(NO_ARCHIVE_INFO_NOTE.includes("取消归档"), "要给用户可执行的动作");
 	assert.ok(ARCHIVED_CACHED_NOTE.includes("归档 ≠ 删除"));
 	assert.ok(ARCHIVED_CACHED_NOTE.includes("不算可用"));
+});
+
+test("mineCache：面板亲手建过的会话账本（坏值不抛、去重、有上限）", () => {
+	assert.equal(mineCacheKey(), "sr-wb.mine.v1");
+	assert.deepEqual(mineCacheParse(null), [], "拿不到 = 空表（旧版本 / 存储被清）");
+	assert.deepEqual(mineCacheParse("{坏 JSON"), [], "坏 JSON 不抛");
+	assert.deepEqual(mineCacheParse('{"a":"b"}'), [], "形状不对当空表（不是抛）");
+	assert.deepEqual(mineCacheParse('["s1","s1","","s2"]'), ["s1", "s2"], "去重、丢空串、保序");
+
+	const one = mineCacheAdd(null, "s1");
+	assert.deepEqual(JSON.parse(one), ["s1"]);
+	const again = mineCacheAdd(one, "s1");
+	assert.deepEqual(JSON.parse(again), ["s1"], "同一条不重复记");
+	assert.deepEqual(JSON.parse(mineCacheAdd(again, "s2")), ["s1", "s2"]);
+	assert.deepEqual(JSON.parse(mineCacheAdd(again, "")), ["s1"], "空 id 不进表");
+	// 上限：只留最新的那几条（判据只需要"近处那批"）
+	const capped = JSON.parse(mineCacheAdd('["a","b","c"]', "d", 2));
+	assert.deepEqual(capped, ["c", "d"]);
 });

@@ -43,7 +43,7 @@ import * as React from "react";
 import { decisionEntryTemplate, stampOf } from "./pure/decisions.ts";
 import {
 	bucketHint, buildScaffoldInstruction, checkTopicName, createDoneNotice, createPartialNotice,
-	createPendingNotice, featureRootFor, manualScaffoldCommand, planNewFeature, sessionTitleFor
+	createPendingNotice, featureRootFor, manualScaffoldCommand, planNewFeature
 } from "./pure/createfeature.ts";
 import { INTAKE } from "./pure/intake.ts";
 import { ENTRANCES } from "./pure/analysisdoc.ts";
@@ -67,9 +67,10 @@ import {
 	ARCHIVED_CACHED_NOTE, FOREIGN_CACHE_NOTE, NO_ARCHIVE_INFO_NOTE,
 	archivedFromSnapshot, configPathCandidates, indexCacheKey, indexCacheOwned, indexCacheParse,
 	indexCacheSerialize, indexTitleFor, isArchivedId, mergeRows,
+	mineCacheAdd, mineCacheKey, mineCacheParse,
 	normPath, permissionCommandLine, permissionPlanOf, permissionResultNote,
 	pickIndexSession, rowsFromList, rowsFromStore, titleOf,
-	workCacheDrop, workCacheDropMany, workCacheGet, workCacheKey, workCachePut, workTitleFor
+	workCacheDrop, workCacheDropMany, workCacheGet, workCacheKey, workCachePut
 } from "./pure/sessionpick.ts";
 // ★ 手工删掉的功能留下的痕迹（工作区登记 / 工作会话 / 面板自己的映射）—— 判据见 pure/leftovers.ts
 import { leftoverCandidates, leftoversOf } from "./pure/leftovers.ts";
@@ -1797,12 +1798,19 @@ function Panel(props) {
 				 * ★ 这一行**不用 markdown 记号**（`Notice` 是纯文本 + `pre-wrap`，`**x**` 会原样露出星号）——
 				 *   强调靠措辞：「没动」两个字本身就够。
 				 */
-				if (r.previous) lines.push("原来那条工作会话没动（还在侧边栏），面板以后只往新的这条发指令。");
+				if (r.previous) lines.push("原来那条工作会话没动（还在侧边栏）。");
 				setNotice({
 					kind: warn.length ? "warn" : "ok",
-					text: "新建了一条工作会话：〈" + String(r.title || "") + "〉 —— 它建在本功能的工作区里、预设是「策划模式」，" +
-						"四入口的指令以后发给它。",
-					next: lines.join("　")
+					text: "新建了一条工作会话 —— 它建在本功能的工作区里、预设是「策划模式」。",
+					next: lines.concat([
+						/**
+						 * ★ 为什么当场说清"名字先空着"（用户口径 2026-11-17）：面板**不再**给它起
+						 *   「策划工作台·工作（X）」那种固定名字了 —— 名字交给 DSH 按工作内容自动生成。
+						 *   而自动起名要**有内容**才动（第一条用户消息之后），所以刚建出来是没名字的：
+						 *   不提前说一句，用户会以为这是"漏了起名"。
+						 */
+						"名字先空着：你在这条会话里说的第一件事（或下一次派活）会让 DSH 按内容自动起名；想改就自己重命名。"
+					]).filter(Boolean).join("　")
 				});
 				refresh();
 				if (warn.length === 0 && r.sid) props.__openSession(r.sid);
@@ -1876,7 +1884,11 @@ function Panel(props) {
 		 *   所以这里分两步：① 按形状挑候选（同步、纯）；② 去磁盘确认目录确实没了，才动手。
 		 */
 		const wsItems = (wsSnap && wsSnap.items) || [];
-		const shape = { srWs: dash.srWs, archived: archived, sessions: sessionRows, workspaces: wsItems };
+		// ★ `mine` 是"面板亲手建过的会话"账本（工作会话不再有固定标题 ⇒ 认领改看它，见 pure/leftovers.ts）
+		const shape = {
+			srWs: dash.srWs, archived: archived, sessions: sessionRows, workspaces: wsItems,
+			mine: typeof props.__mine === "function" ? props.__mine() : []
+		};
 		if (!leftoverCandidates(shape).cleanable) return;
 		cleanRef.current.running = true;
 		props.__allSessions().then((rows) => {
@@ -2117,6 +2129,28 @@ export function apply(ctx, config) {
 		} catch (e) { /* 无缓存也能用 */ }
 	};
 	/**
+	 * 「面板亲手建过的会话」账本（`localStorage['sr-wb.mine.v1']`）。
+	 *
+	 * ★ 为什么要它（2026-11-17）：工作会话**不再写死标题**了 —— 名字交给 DSH 按工作内容自动生成。
+	 *   而 DSH 的自动标题一旦被 `rename` 过（用户来源）就**钉死**，所以面板不能再给它起名。
+	 *   原来"靠标题前缀认回自己造的会话"那条判据（残留清理）因此换成这张表。
+	 * ★ 只用于**清理自己的痕迹**，不用来决定指令发给谁（那是一条新会话，ADR 0015）。
+	 */
+	const mineRaw = () => {
+		try {
+			if (typeof localStorage === "undefined" || !localStorage) return null;
+			return localStorage.getItem(mineCacheKey());
+		} catch (e) { return null; }
+	};
+	const mineIds = () => mineCacheParse(mineRaw());
+	const mineRemember = (sid) => {
+		if (!sid) return;
+		try {
+			if (typeof localStorage === "undefined" || !localStorage) return;
+			localStorage.setItem(mineCacheKey(), mineCacheAdd(mineRaw(), sid));
+		} catch (e) { /* 无缓存也能用 */ }
+	};
+	/**
 	 * 把"功能目录**已经不在磁盘上**"的本地痕迹清掉（`localStorage` 那张表 + 内存里的映射）。
 	 *
 	 * ★ 为什么要有它（2026-10-13 用户实测「我手动删了功能，这个没有清理吗」）：
@@ -2228,9 +2262,15 @@ export function apply(ctx, config) {
 	};
 
 	/**
-	 * 按 `root` 建一条带可识别标题的会话（**唯一的建会话出口**）。
+	 * 在 `root` 这个工作区里建一条会话（**唯一的建会话出口**）。
 	 * 坑只留一处：`session.create` 的 `workspaceId` 与 `cwd` **互斥** ——
 	 * 拿不到 workspaceId 时才退回给 cwd（会话落进「未分组」，但可用）。
+	 *
+	 * `title` 现在**只有索引会话**会给（`策划工作台·索引（<工作区名>）`）：它是面板的读通道，
+	 * 名字固定住了才好认。**工作会话一律传空** —— 名字交给 DSH 按工作内容自动生成
+	 * （用户口径 2026-11-17）；传了标题就等于 `rename`，那会**钉住**自动标题
+	 * （`dsh-session-title`：用户来源的标题之后不再随消息修订）。
+	 * 于是"这条是面板造的"改由 `mineRemember` 记账（残留清理据此认领，见 `pure/leftovers.ts`）。
 	 */
 	const createSessionAt = async (root, title, preset, opts) => {
 		const o = opts || {};
@@ -2276,6 +2316,8 @@ export function apply(ctx, config) {
 		if (!cr.ok) return { sid: "", error: humanError(cr), note: note, warn: warn, wsId: wsId };
 		const sid = idText(cr.value && (cr.value.sessionId || cr.value));
 		if (!sid) return { sid: "", error: "会话已创建，但拿不到 sessionId。", note: note, warn: warn, wsId: wsId };
+		// ★ 先记账再改名：改名失败也不影响"这条是我造的"（清理时按 id 认，不按标题认）
+		if (o.mine) mineRemember(sid);
 		if (title) {
 			const rn = await port.renameSession(sid, title);
 			if (!rn.ok) {
@@ -2671,8 +2713,8 @@ export function apply(ctx, config) {
 			for (const d of scaffold.done) done.push(d);
 		}
 
-		// ④ 专属工作区 + ⑤ 工作会话（策划模式）
-		const made = await createSessionAt(plan.root, sessionTitleFor(plan.topic), PLAN_PRESET, { fullAccess: true, signal: opts.signal });
+		// ④ 专属工作区 + ⑤ 工作会话（策划模式，**名字留给 DSH 按内容自动生成**）
+		const made = await createSessionAt(plan.root, "", PLAN_PRESET, { fullAccess: true, mine: true, signal: opts.signal });
 		for (const n of made.note) notes.push(n);
 		for (const n of (made.warn || [])) warns.push(n);
 		if (made.error) {
@@ -2725,8 +2767,7 @@ export function apply(ctx, config) {
 		if (key === "") return { ok: false, error: "算不出这个功能的工作目录。" };
 		return singleFlight("new-work:" + key, async () => {
 			const previous = WORK_SESSION.get(key) || workCacheGet(workCacheRaw(), root) || "";
-			const title = workTitleFor(root);
-			const made = await createSessionAt(root, title, PLAN_PRESET, { fullAccess: true, signal: opts.signal });
+			const made = await createSessionAt(root, "", PLAN_PRESET, { fullAccess: true, mine: true, signal: opts.signal });
 			const note = made.note || [];
 			const warn = made.warn || [];
 			if (made.error || !made.sid) {
@@ -2735,7 +2776,7 @@ export function apply(ctx, config) {
 			WORK_SESSION.set(key, made.sid);
 			workCacheSet(root, made.sid);
 			return {
-				ok: true, sid: made.sid, title: title, note: note, warn: warn,
+				ok: true, sid: made.sid, title: "", note: note, warn: warn,
 				previous: previous && previous !== made.sid ? previous : ""
 			};
 		});
@@ -2761,7 +2802,8 @@ export function apply(ctx, config) {
 	 *      新开的一条会话」那段：先读 `decisions\决策记录.md` 与 `analysis\` 既有产出）。
 	 *
 	 * ★ 认领仍然做（`newWorkSession` 会把面板的指向改到新这条），但它的作用不再是"复用"，
-	 *   而是"面板知道最近一条是哪条"（工作会话的指针 + 清理判据都靠标题与 cwd，见 `pure/leftovers.ts`）。
+	 *   而是"面板知道最近一条是哪条"（清理判据靠 `mine` 账本 + cwd，见 `pure/leftovers.ts`；
+	 *   2026-11-17 起**不再**靠标题 —— 名字交给 DSH 按内容自动生成）。
 	 */
 	const sendToWorkSession = async (root, text, signal) => {
 		const made = await newWorkSession(root, { signal: signal });
@@ -2849,6 +2891,8 @@ export function apply(ctx, config) {
 				 *   （宿主口径："without deleting its directory or Sessions"）、清本地那条映射。
 				 */
 				__allSessions: (signal) => listSessions(signal).then((L) => (L && L.ok ? rowsFromList(L.value) : [])),
+				/** 面板**亲手建过**的会话 id（工作会话不再有固定标题 ⇒ 残留认领改看这张表）。 */
+				__mine: () => mineIds(),
 				/** 这些主题的功能目录还在不在（`null` = 探测不可用，调用方一律不判）。 */
 				__missingTopics: (sid, srWs, topics) => missingFeatureTopics(sid, srWs, topics),
 				__archiveSession: (sid) => safeCall("workspace.archiveSession", () => ctx.remote.workspace.archiveSession({ sessionId: sid })),

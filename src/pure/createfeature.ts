@@ -182,11 +182,6 @@ export function bucketHint(b: unknown): string {
 	return BUCKET_MEANING[String(b == null ? "" : b)] || "";
 }
 
-/** 会话标题（工作会话的**认领凭据**，与 `sessionpick.workTitleFor` 同口径）。 */
-export function sessionTitleFor(topic: unknown): string {
-	return "策划工作台·工作（" + (String(topic == null ? "" : topic).trim() || "?") + "）";
-}
-
 // ════════════════════════════════════════════════════════════════════════════
 // 建目录：三条路（2026-10-09 实测缺陷换来的）
 // ════════════════════════════════════════════════════════════════════════════

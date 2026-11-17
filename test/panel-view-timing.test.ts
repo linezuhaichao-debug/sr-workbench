@@ -789,11 +789,12 @@ test("右上角〔新建会话〕：在功能的工作区里建一条策划模�
 
 	const root = FEATURES + "\\" + EXISTING;
 	const sid = ids[ids.length - 1];
-	// ① 工作区 = 这个功能目录；② 预设 =「策划模式」；③ 标题 = 认领凭据
+	// ① 工作区 = 这个功能目录；② 预设 =「策划模式」；③ **不起名**（名字交给 DSH 按内容自动生成）
 	assert.ok(p.host.log.some((x) => x.m === "workspace.create" && x.path === root), "要按功能根登记工作区");
 	const made = p.host.log.filter((x) => x.m === "session.create").pop();
 	assert.equal(made.req.agentPreset, "sr-workbench", "预设必须是策划模式");
-	assert.ok(p.host.log.some((x) => x.m === "session.rename" && x.req.title === "策划工作台·工作（" + EXISTING + "）"));
+	assert.equal(p.host.log.filter((x) => x.m === "session.rename" && String(x.req.title).includes("工作（")).length, 0,
+		"工作会话不该被写死标题：" + JSON.stringify(p.host.log.filter((x) => x.m === "session.rename")));
 	// ④ 没有任何降级 ⇒ 当场把用户切到这条会话
 	const jumps = p.host.log.filter((x) => x.m === "uiWorkspace.openSession").map((x) => x.sid);
 	assert.deepEqual(jumps, [sid], "建完应当切到新会话，实际：" + JSON.stringify(p.host.log.map((x) => x.m)));
@@ -812,14 +813,18 @@ test("右上角〔新建会话〕：在功能的工作区里建一条策划模�
 	p.rt.unmount();
 });
 
-test("右上角〔新建会话〕：有降级（改名没成）⇒ 留在面板把话说清，**不**擅自切过去", async () => {
+test("右上角〔新建会话〕：有降级（工作区没登记上）⇒ 留在面板把话说清，**不**擅自切过去", async () => {
 	/**
 	 * 为什么这条要单独测：切走 = 面板**重挂载**，`notice` 是组件 state ⇒ 那句话会跟着一起没。
-	 * 所以"有降级就别切"是**判据**，不是美观问题：用户必须看得到"预设没挂上 / 权限没切上"这类后果。
+	 * 所以"有降级就别切"是**判据**，不是美观问题：用户必须看得到"工作区没登记上 / 预设没挂上 / 权限没切上"这类后果。
+	 *
+	 * ★ 2026-11-17 换了个降级源：原来用的是"改名失败"，可面板现在**不再给工作会话起名**了
+	 *   （名字交给 DSH 按内容自动生成，见 ADR 0038）。换成"工作区登记被拒" —— 同样是**有后果**的那种
+	 *   （会话会落进「未分组」，侧边栏看不到它挂在功能下面）。
 	 */
 	const p = boot();
 	uniqueSessionIds(p.host);
-	p.host.remote.session.rename = async () => ({ ok: false, error: { message: "rename 被拒（用例）" } });
+	p.host.remote.workspace.create = async () => ({ ok: false, error: { message: "工作区登记被拒（用例）" } });
 	await p.rt.pump(8);
 	p.open(EXISTING);
 	await p.rt.pump(8);
@@ -830,7 +835,7 @@ test("右上角〔新建会话〕：有降级（改名没成）⇒ 留在面板�
 	assert.deepEqual(p.host.log.filter((x) => x.m === "uiWorkspace.openSession"), [], "有降级就不该切走");
 	const t = p.text();
 	assert.ok(t.includes("新建了一条工作会话"), "会话确实建出来了，不能装失败：" + t.slice(-400));
-	assert.ok(t.includes("改名失败"), "降级要如实说（这条正是有后果的那种）：" + t.slice(-400));
+	assert.ok(t.includes("按路径登记工作区失败"), "降级要如实说（这条正是有后果的那种）：" + t.slice(-400));
 	assert.equal(t.includes("新建中…"), false, "建完要回到常态（不许卡在「新建中…」）");
 	p.rt.unmount();
 });
@@ -858,7 +863,8 @@ test("四入口派活：另起一条会话发出去，并当场切到那条（�
 	// ① 建在功能根上、开策划模式（与〔新建会话〕同一条创建路）
 	const made = p.host.log.filter((x) => x.m === "session.create").pop();
 	assert.equal(made.req.agentPreset, "sr-workbench", "预设必须是策划模式");
-	assert.ok(p.host.log.some((x) => x.m === "session.rename" && x.req.title === "策划工作台·工作（" + EXISTING + "）"));
+	assert.equal(p.host.log.filter((x) => x.m === "session.rename" && String(x.req.title).includes("工作（")).length, 0,
+		"工作会话不写死标题（名字交给 DSH 按内容生成）");
 	assert.ok(p.host.log.some((x) => x.m === "workspace.create" && x.path === root), "要按功能根登记工作区");
 	// ② 指令进那条新会话
 	const sid = ids[ids.length - 1];

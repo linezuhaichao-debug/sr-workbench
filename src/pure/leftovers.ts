@@ -24,9 +24,11 @@
  *   · 改成"目录确实不在磁盘上"之后，这个窗口**天然不存在**：目录就在那儿，谁都判不出残留。
  *
  * ── 边界（这一块只算"该清哪些"，不碰任何东西）──────────────────────────────
- *   · **只认面板自己造的**：工作会话要有「策划工作台·工作（…）」这个标题**并且** cwd 落在
- *     `<SR 工作区>\features\` 下；工作区要**路径**落在同一个 `features\` 下。
- *     别人的会话 / 别处的工作区一律不判（哪怕它们也"看起来没用"）。
+ *   · **只认面板自己造的**：工作会话要**是面板亲手建的**（`mine` 那张表里的 id，或旧版本的
+ *     「策划工作台·工作（…）」标题）**并且** cwd 落在 `<SR 工作区>\features\` 下；工作区要**路径**
+ *     落在同一个 `features\` 下。别人的会话 / 别处的工作区一律不判（哪怕它们也"看起来没用"）。
+ *     ★ 2026-11-17 起"亲手建的"不再看标题（新会话的名字交给 DSH 按内容自动生成，见
+ *       `sessionpick.ts` 的 `mineCacheKey`）——标题那一份留着，只为认**旧版本**建的会话。
  *   · 两种动作都**不碰文件**：`workspace.archiveSession` 是侧边栏归档（可取消归档），
  *     `workspace.delete` 的宿主口径是
  *     "Delete one Workspace registration **without deleting its directory or Sessions**"。
@@ -36,7 +38,10 @@
 
 import { archivedIdSet } from "./sessionpick.ts";
 
-/** 工作会话的标题前缀（**认领凭据**，与 `createfeature.sessionTitleFor` 同一口径）。 */
+/**
+ * 工作会话的**旧**标题前缀（只在认回旧版本建的会话时用；新会话没有固定标题）。
+ * 与 `createfeature.sessionTitleFor` 曾经同一口径 —— 那个函数已随 2026-11-17 的口径删掉。
+ */
 export const WORK_SESSION_TITLE = "策划工作台·工作（";
 /** 功能目录所在的层级：`<SR 工作区>\features\<主题>`。 */
 const FEATURES_SEG = "features";
@@ -101,6 +106,14 @@ export interface LeftoversInput {
 	archived: unknown;
 	/** 会话行（`remote.session.list` 或客户端 store，字段名见 `SessionRow`）。 */
 	sessions: unknown;
+	/**
+	 * **面板亲手建过的会话 id**（`localStorage['sr-wb.mine.v1']`，见 `sessionpick.mineCacheParse`）。
+	 *
+	 * ★ 2026-11-17 起这是**主凭据**：工作会话不再有固定标题（名字交给 DSH 按内容自动生成），
+	 *   所以"这是不是我造的"改看这张表。给空表 / 不给 ⇒ 只剩旧标题那一份凭据（旧版本建的会话照旧认得出），
+	 *   新会话则一条都不判 —— 宁可少清，也不要认错人的对话。
+	 */
+	mine?: unknown;
 	/** 侧边栏的工作区行（官方 workspaces 快照的 `items`）。 */
 	workspaces: unknown;
 	/**
@@ -108,6 +121,23 @@ export interface LeftoversInput {
 	 * **不给 / 拿不准 ⇒ 一律当"还在"**（宁可这轮不干活，也不要删错）。
 	 */
 	gone?: (topic: string) => boolean;
+}
+
+/** 「面板亲手建过的会话」表归一成查找用的 Set（拿不到 / 坏形状 ⇒ 空表：只剩旧标题那一份凭据）。 */
+function mineIdSet(mine: unknown): Set<string> {
+	const out = new Set<string>();
+	if (mine instanceof Set) {
+		for (const one of mine as ReadonlySet<unknown>) {
+			const s = one === null || one === undefined ? "" : String(one);
+			if (s !== "") out.add(s);
+		}
+		return out;
+	}
+	for (const one of (Array.isArray(mine) ? mine : [])) {
+		const s = one === null || one === undefined ? "" : String(one);
+		if (s !== "") out.add(s);
+	}
+	return out;
 }
 
 /** 形状筛选（判据本体）：只认面板自己造的那些痕迹。 */
@@ -120,6 +150,7 @@ function shapePick(o: LeftoversInput, onlyMissing: boolean): Leftovers {
 	if (archived === null) {
 		return none("拿不到侧边栏的「已归档」集（官方 workspaces 快照里没有 archivedSessionIds），这轮不判残留 —— 否则已经归档过的会被反复再归档。");
 	}
+	const mine = mineIdSet(o.mine);
 	const gone = typeof o.gone === "function" ? o.gone : () => false;
 	const keep = (topic: string) => !onlyMissing || gone(topic) === true;
 
@@ -129,9 +160,14 @@ function shapePick(o: LeftoversInput, onlyMissing: boolean): Leftovers {
 		const id = String((r && r.id) || "");
 		if (id === "" || seenSession.has(id)) continue;
 		if (archived.has(id)) continue;                              // 已经归档过的：它在列表里照样出现，但不是残留了
-		const topic = workTopicOfTitle(r && r.title);
-		if (topic === "") continue;
-		if (featureTopicOfPath(srWs, r && r.cwd) === "") continue;   // ★ cwd 也要落在 features\ 下：标题可以手抄，路径不会
+		/**
+		 * ★ 主题**按 cwd 取**（硬事实），凭据才看标题/id（`标题可以手抄，路径不会`）。
+		 *   旧版本把主题从标题里反推 —— 标题和 cwd 打架时那会判错功能。
+		 */
+		const topic = featureTopicOfPath(srWs, r && r.cwd);
+		if (topic === "") continue;                                   // cwd 必须落在 features\<主题> 这一层
+		const byTitle = workTopicOfTitle(r && r.title) !== "";        // 旧版本建的（标题前缀）
+		if (!byTitle && !mine.has(id)) continue;                      // 新版本建的：认 id 表
 		if (!keep(topic)) continue;
 		seenSession.add(id);
 		sessions.push({ id: id, topic: topic, title: String((r && (r.title || r.display)) || "") });
