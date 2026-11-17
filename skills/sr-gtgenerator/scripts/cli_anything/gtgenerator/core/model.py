@@ -68,7 +68,7 @@ SUB_CATEGORIES: dict[str, list[tuple[str, int]]] = {
     "Tech": [("Age", 0), ("Alliance", 1), ("Lord", 2)],
     "Skill": [("SoilderSpecial", 1), ("HeroFixedSkill", 2), ("HeroAlterableSkill", 3),
               ("PolicySkill", 4), ("XGameSkill", 5), ("TaiTanSkill", 6), ("DungeonSkill", 7),
-              ("EquipSkill", 8), ("MineSkill", 9)],
+              ("EquipSkill", 8), ("MineSkill", 9), ("RelicSkill", 10)],
     "Task": [("Productive", 1), ("Chapter", 2), ("Page", 3), ("Requiretype", 4),
              ("Daily", 5), ("NewRequiretype", 6), ("MinimapRequiretype", 7)],
     "Leader": [("Military", 1), ("Strategy", 2), ("Internal", 3), ("King", 4)],

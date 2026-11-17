@@ -101,6 +101,7 @@ normaltxt.xml，通常即 GTGenerator.exe 所在目录）。检查
 | 英雄装备 | Property | HeroEquip |
 | 英雄 | Leader | Military |
 | 英雄技能 | Skill | HeroFixedSkill |
+| 圣物技能 | Skill | RelicSkill |
 | 支付 id | Payment | —（无 Sub） |
 | 飞船装置 | Equip | —（无 Sub） |
 
