@@ -6,6 +6,7 @@
 node "<SKILL_DIR>/scripts/build-check-page.mjs" --data check.json --out 页面.html
 node "<SKILL_DIR>/scripts/build-check-page.mjs" --data check.json --check   # 只自检
 node "<SKILL_DIR>/scripts/build-check-page.mjs" --print-schema              # 打印本格式
+node "<SKILL_DIR>/scripts/extract-check-data.mjs" --from 页面.html --out check.json   # 从页面取回数据
 ```
 
 ## 顶层
@@ -63,6 +64,6 @@ node "<SKILL_DIR>/scripts/build-check-page.mjs" --print-schema              # �
 
 ## 重新渲染与增量维护
 
-1. 页面数据已内嵌在 HTML 里（`window.__CHECK_DATA__`）；要续写就把 JSON 另存一份（建议放需求库 `.process/check/` 或与页面同目录）。
+1. 页面数据已内嵌在 HTML 里（`window.__CHECK_DATA__`）。只拿到页面、没有 JSON 时，用 `extract-check-data.mjs --from 页面 --out check.json` 取回（建议放需求库 `.process/check/` 或与页面同目录）。
 2. 改完 JSON 重跑渲染，**slug 不变**，用户此前的勾选与备注继续有效。
 3. 只改一条时不必重写全文：改 JSON 里对应条目，重跑一次即可（渲染 < 1 秒）。

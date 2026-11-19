@@ -114,6 +114,14 @@ node "<SKILL_DIR>/scripts/build-check-page.mjs" \
 - `spec` 按 A/B/C/D/E 分节，每节 `["节标题", "编号|一句话\n编号|一句话"]`；编号必须和报告一致。
 - `sev` 用 高/中/低，帮用户排处理顺序。
 
+把已有的页面改一条（或只想重新渲染）时，先从页面把数据取回来，别手抄：
+
+```bash
+node "<SKILL_DIR>/scripts/extract-check-data.mjs" --from "D:\...\圣物系统_核查对照_v1.0.html" --out check.json
+```
+
+数据内嵌在页面的 `window.__CHECK_DATA__` 里；取回 → 改 → 重渲染，**slug 不变**则用户的勾选与备注照旧有效。
+
 渲染后自检（有浏览器就截图，没有就至少跑 `--check`）：
 
 ```bash

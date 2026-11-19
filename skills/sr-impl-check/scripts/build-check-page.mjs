@@ -20,13 +20,14 @@ const CATS = ['missing', 'wrong', 'bug', 'unknown', 'pass'];
 const CAT_LABEL = { missing: '未实现', wrong: '实现错误', bug: 'Bug', unknown: '不确定', pass: '已通过' };
 
 function parseArgs(argv) {
-  const out = { data: null, out: null, check: false, schema: false, help: false };
+  const out = { data: null, out: null, check: false, schema: false, help: false, embed: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--data') out.data = argv[++i];
     else if (a === '--out' || a === '-o') out.out = argv[++i];
     else if (a === '--check') out.check = true;
     else if (a === '--print-schema') out.schema = true;
+    else if (a === '--no-embed') out.embed = false;
     else if (a === '--help' || a === '-h') out.help = true;
     else if (!out.data && !a.startsWith('-')) out.data = a;
     else if (!out.out && !a.startsWith('-')) out.out = a;
@@ -72,6 +73,34 @@ const SCHEMA = `
 function fail(msg) {
   console.error('✗ ' + msg);
   process.exit(1);
+}
+
+const MIME = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  webp: 'image/webp', gif: 'image/gif', svg: 'image/svg+xml',
+};
+
+/** 把 issue.shots 里的本地图片读成 data URI，保证页面仍是单文件离线可开。 */
+function normalizeShots(data, opts) {
+  let embedded = 0, bytes = 0;
+  const missing = [];
+  (data.issues || []).forEach(it => {
+    if (!it || !Array.isArray(it.shots) || it.shots.length === 0) return;
+    it.shots = it.shots.map(s => (typeof s === 'string' ? { src: s, caption: '' } : { ...s }));
+    it.shots.forEach(s => {
+      if (!s || !s.src) return;
+      if (/^(data:|https?:|blob:)/i.test(s.src)) return;
+      const p = resolve(s.src);
+      let buf;
+      try { buf = readFileSync(p); }
+      catch (e) { missing.push(s.src); return; }
+      if (!opts.embed) { s.src = p; return; }
+      const ext = (p.split('.').pop() || 'png').toLowerCase();
+      s.src = `data:${MIME[ext] || 'image/png'};base64,` + buf.toString('base64');
+      embedded++; bytes += buf.length;
+    });
+  });
+  return { embedded, bytes, missing };
 }
 
 function validate(data) {
@@ -164,7 +193,8 @@ function main() {
   if (!tpl.includes('__DATA__')) fail('模板里没有 __DATA__ 占位符，模板被改坏了');
 
   const json = JSON.stringify(data).replace(/<\//g, '<\\/');
-  const html = tpl.replace('__DATA__', () => json);
+  // 统一 LF：模板被不同编辑器改过行尾时，同一份数据也要产出同样的字节（回归可对哈希）
+  const html = tpl.replace('__DATA__', () => json).replace(/\r\n/g, '\n');
 
   const outPath = resolve(args.out);
   try {
