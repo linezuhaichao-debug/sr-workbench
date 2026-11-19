@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>圣物系统 v1.0 · 核查对照台账</title>
+<style>
+  :root{
+    --paper:#f7f5ef;
+    --paper-2:#fffefb;
+    --ink:#1b1a16;
+    --ink-2:#4a463d;
+    --muted:#7b7466;
+    --line:#ddd7c9;
+    --line-2:#ebe6da;
+    --rust:#8c4a2f;
+    --rust-soft:#f0e3d9;
+    --missing:#a5331d;
+    --wrong:#8d6410;
+    --bug:#a81f24;
+    --unknown:#3c5a78;
+    --pass:#2c6850;
+    --mark:#fff2b8;
+    --shadow:0 1px 0 rgba(27,26,22,.04);
+    --mono:ui-monospace,"Cascadia Mono","SF Mono",Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,"Microsoft YaHei","PingFang SC","Hiragino Sans GB",sans-serif;
+    --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"Songti SC","SimSun",serif;
+  }
+  html[data-theme="dark"]{
+    --paper:#15161a;
+    --paper-2:#1c1e23;
+    --ink:#e9e4d8;
+    --ink-2:#bdb6a7;
+    --muted:#8b8578;
+    --line:#31333a;
+    --line-2:#262830;
+    --rust:#d0855f;
+    --rust-soft:#2c2119;
+    --missing:#e5795c;
+    --wrong:#d9ac4a;
+    --bug:#ef6b6f;
+    --unknown:#8fb4d9;
+    --pass:#6fc09b;
+    --mark:#4a3f18;
+    --shadow:none;
+  }
+  *{box-sizing:border-box}
+  [hidden]{display:none!important}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:var(--sans);
+    font-size:15px;
+    line-height:1.62;
+    -webkit-font-smoothing:antialiased;
+  }
+  ::selection{background:var(--mark);color:var(--ink)}
+  a{color:var(--rust);text-decoration:none}
+  a:hover{text-decoration:underline}
+  :focus-visible{outline:2px solid var(--rust);outline-offset:2px;border-radius:2px}
+
+  .wrap{max-width:1320px;margin:0 auto;padding:0 28px}
+
+  /* ---------- masthead ---------- */
+  header.masthead{
+    border-bottom:2px solid var(--ink);
+    padding:30px 0 18px;
+    background:
+      linear-gradient(var(--paper),var(--paper)) padding-box;
+  }
+  .eyebrow{
+    font-family:var(--mono);
+    font-size:11px;
+    letter-spacing:.22em;
+    text-transform:uppercase;
+    color:var(--muted);
+    display:flex;gap:14px;flex-wrap:wrap;align-items:center;
+  }
+  .eyebrow .dot{width:5px;height:5px;background:var(--rust);border-radius:50%;display:inline-block}
+  #pageMeta span{letter-spacing:.02em;text-transform:none;font-size:11.5px;color:var(--ink-2)}
+  #pageMeta span:not(.dot):first-of-type{color:var(--muted)}
+  #pageMeta .themebtn{letter-spacing:.04em}
+  h1{
+    font-family:var(--serif);
+    font-weight:600;
+    font-size:clamp(26px,3.4vw,40px);
+    line-height:1.18;
+    letter-spacing:-.01em;
+    margin:14px 0 6px;
+  }
+  h1 em{font-style:normal;color:var(--rust);margin-left:.28em}
+  .lede{
+    font-size:15px;color:var(--ink-2);max-width:74ch;margin:0 0 20px;
+  }
+  .counters{
+    display:flex;flex-wrap:wrap;
+    border:1px solid var(--line);
+    margin:0 0 18px;background:var(--paper-2);
+  }
+  .counter{flex:1 1 0;min-width:104px;padding:12px 14px;border-right:1px solid var(--line)}
+  .counter:last-child{border-right:0}
+  .counter b{
+    display:block;font-family:var(--mono);font-size:26px;line-height:1.1;
+    font-weight:600;letter-spacing:-.02em;
+  }
+  .counter span{font-size:11.5px;color:var(--muted);letter-spacing:.06em}
+  .counter[data-cat="missing"] b{color:var(--missing)}
+  .counter[data-cat="wrong"] b{color:var(--wrong)}
+  .counter[data-cat="bug"] b{color:var(--bug)}
+  .counter[data-cat="unknown"] b{color:var(--unknown)}
+  .counter[data-cat="pass"] b{color:var(--pass)}
+
+  /* ---------- tabs ---------- */
+  .tabs{display:flex;gap:2px;align-items:flex-end;margin-top:4px}
+  .tab{
+    appearance:none;border:1px solid var(--line);border-bottom:none;
+    background:transparent;color:var(--ink-2);
+    font-family:var(--sans);font-size:13.5px;letter-spacing:.02em;
+    padding:9px 18px;cursor:pointer;border-radius:3px 3px 0 0;
+    position:relative;top:1px;
+  }
+  .tab[aria-selected="true"]{
+    background:var(--paper-2);color:var(--ink);font-weight:600;
+    border-color:var(--ink);border-bottom:1px solid var(--paper-2);
+  }
+  .tab .n{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:7px}
+
+  /* ---------- toolbar ---------- */
+  .toolbar{
+    position:sticky;top:0;z-index:20;
+    display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+    padding:11px 0;margin:0 0 4px;
+    background:var(--paper);
+    border-bottom:1px solid var(--line);
+    box-shadow:0 6px 10px -10px rgba(0,0,0,.45);
+  }
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{
+    appearance:none;cursor:pointer;
+    background:transparent;border:1px solid var(--line);
+    color:var(--ink-2);font-size:12.5px;padding:4px 11px;border-radius:999px;
+    font-family:var(--sans);
+  }
+  .chip[aria-pressed="true"]{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+  .chip .c{font-family:var(--mono);font-size:10.5px;opacity:.72;margin-left:5px}
+  .search{
+    flex:1 1 200px;min-width:150px;display:flex;align-items:center;gap:8px;
+    border-bottom:1px solid var(--line);padding:2px 0;
+  }
+  .search input{
+    border:0;background:transparent;color:var(--ink);font:inherit;font-size:13.5px;
+    width:100%;padding:3px 0;
+  }
+  .search input::placeholder{color:var(--muted)}
+  .search svg{flex:none;opacity:.5}
+  .toggle{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--ink-2);cursor:pointer;user-select:none}
+  .toggle input{accent-color:var(--rust);width:14px;height:14px}
+  .progress{display:flex;align-items:center;gap:9px;margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .bar{width:96px;height:4px;background:var(--line-2);position:relative;overflow:hidden}
+  .bar i{position:absolute;inset:0 auto 0 0;width:0;background:var(--pass);transition:width .25s ease}
+  .linkbtn{appearance:none;background:none;border:0;color:var(--muted);font:inherit;font-size:12px;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+
+  /* ---------- ledger ---------- */
+  .ledger{padding:8px 0 70px}
+  .pair{
+    display:grid;
+    grid-template-columns:84px minmax(0,1.08fr) minmax(0,1fr);
+    border-bottom:1px solid var(--line);
+    background:var(--paper);
+    position:relative;
+  }
+  .pair:hover{background:var(--paper-2)}
+  .pair[data-cat="missing"]{--c:var(--missing)}
+  .pair[data-cat="wrong"]{--c:var(--wrong)}
+  .pair[data-cat="bug"]{--c:var(--bug)}
+  .pair[data-cat="unknown"]{--c:var(--unknown)}
+  .pair[data-cat="pass"]{--c:var(--pass)}
+  .pair::before{
+    content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--c);
+    opacity:.55;
+  }
+
+  .rail{padding:18px 10px 22px 14px;border-right:1px solid var(--line-2)}
+  .rail .no{
+    font-family:var(--mono);font-size:15px;font-weight:600;letter-spacing:-.02em;color:var(--c);
+    display:block;
+  }
+  .rail .cat{
+    display:block;font-size:10px;letter-spacing:.04em;color:var(--c);
+    border:1px solid currentColor;border-radius:2px;
+    padding:1px 3px;margin:7px 0 10px;text-align:center;opacity:.9;
+  }
+  .tick{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);cursor:pointer;user-select:none}
+  .tick span{white-space:nowrap}
+  .tick input{accent-color:var(--pass);width:14px;height:14px;margin:0}
+  .sev{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:8px;display:block}
+
+  .issue{padding:18px 22px 22px 18px;border-right:1px dashed var(--line)}
+  .issue h3{
+    font-family:var(--serif);font-weight:600;font-size:17.5px;line-height:1.4;
+    margin:0 0 8px;letter-spacing:-.005em;
+  }
+  .issue p{margin:0 0 9px;font-size:13.6px;color:var(--ink-2)}
+  .issue .where{
+    font-family:var(--mono);font-size:11.8px;color:var(--muted);
+    background:var(--line-2);padding:5px 8px;display:inline-block;
+    border-left:2px solid var(--c);word-break:break-word;line-height:1.5;
+  }
+  .issue dl{margin:10px 0 0;display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:13.2px}
+  .issue dt{color:var(--muted);font-size:11.5px;letter-spacing:.06em;padding-top:2px}
+  .issue dd{margin:0;color:var(--ink)}
+
+  .reqside{padding:18px 22px 22px 20px;background:var(--paper-2)}
+  .reqside > .lbl{
+    font-size:10px;letter-spacing:.18em;color:var(--muted);text-transform:uppercase;
+    display:flex;align-items:center;gap:8px;margin-bottom:9px;
+  }
+  .reqside > .lbl::after{content:"";flex:1;height:1px;background:var(--line)}
+  .req{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;margin-bottom:9px}
+  .req .id{
+    font-family:var(--mono);font-size:11px;font-weight:600;color:var(--rust);
+    border:1px solid var(--line);border-radius:2px;padding:0 5px;height:19px;line-height:17px;
+    background:var(--rust-soft);white-space:nowrap;cursor:pointer;align-self:start;margin-top:1px;
+  }
+  .req .id:hover{border-color:var(--rust)}
+  .req q{
+    quotes:none;font-size:12.9px;color:var(--ink-2);line-height:1.58;display:block;
+  }
+  .checkline{
+    margin-top:12px;padding-top:10px;border-top:1px dotted var(--line);
+    font-size:12.6px;color:var(--ink);display:grid;grid-template-columns:auto 1fr;gap:8px;
+  }
+  .checkline b{
+    font-family:var(--mono);font-size:10.5px;font-weight:600;color:var(--pass);
+    letter-spacing:.06em;white-space:nowrap;align-self:start;padding-top:2px;
+  }
+  .note{margin-top:10px}
+  .note > summary{
+    cursor:pointer;font-size:11.5px;color:var(--muted);list-style:none;
+    display:inline-flex;align-items:center;gap:5px;
+  }
+  .note > summary::-webkit-details-marker{display:none}
+  .note > summary::before{content:"＋";font-size:11px}
+  .note[open] > summary::before{content:"－"}
+  .note textarea{
+    width:100%;margin-top:6px;border:1px solid var(--line);background:var(--paper);
+    color:var(--ink);font:inherit;font-size:12.5px;padding:6px 8px;resize:vertical;min-height:46px;
+    border-radius:2px;
+  }
+
+  .pair[data-done="1"] .issue h3,
+  .pair[data-done="1"] .rail .no{opacity:.5}
+  .pair[data-done="1"] .reqside{opacity:.72}
+  .pair[data-done="1"] .rail::after{
+    content:"已核验";
+    display:block;margin-top:10px;
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;
+    color:var(--pass);border:1px solid var(--pass);border-radius:2px;
+    padding:1px 0;text-align:center;transform:rotate(-3deg);
+  }
+
+  .empty{
+    padding:60px 20px;text-align:center;color:var(--muted);font-size:13.5px;
+  }
+
+  /* ---------- spec tab ---------- */
+  .spec{padding:12px 0 70px}
+  .specbar{
+    position:sticky;top:0;z-index:19;background:var(--paper);
+    display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+    padding:11px 0;border-bottom:1px solid var(--line);
+  }
+  .specnav{display:flex;gap:6px;flex-wrap:wrap}
+  .specnav a{
+    font-family:var(--mono);font-size:11.5px;color:var(--ink-2);
+    border:1px solid var(--line);border-radius:2px;padding:3px 9px;text-decoration:none;
+  }
+  .specnav a:hover{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+  .sect{margin:0 0 34px}
+  .sect > h2{
+    font-family:var(--serif);font-weight:600;font-size:20px;margin:26px 0 2px;
+    display:flex;align-items:baseline;gap:12px;
+  }
+  .sect > h2 span{
+    font-family:var(--mono);font-size:11px;font-weight:600;color:var(--rust);
+    letter-spacing:.08em;
+  }
+  .sect > p.desc{color:var(--muted);font-size:12.6px;margin:0 0 12px}
+  .specrow{
+    display:grid;grid-template-columns:96px minmax(0,1fr) auto;gap:14px;
+    padding:7px 8px;border-top:1px solid var(--line-2);
+    align-items:baseline;
+  }
+  .specrow:last-child{border-bottom:1px solid var(--line-2)}
+  .specrow .sid{font-family:var(--mono);font-size:11.5px;color:var(--rust);white-space:nowrap}
+  .specrow .st{font-size:13.4px;color:var(--ink-2)}
+  .specrow .badges{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
+  .badge-issue{
+    font-family:var(--mono);font-size:10px;padding:0 5px;border-radius:2px;
+    border:1px solid currentColor;color:var(--bug);cursor:pointer;background:transparent;
+    line-height:16px;
+  }
+  .badge-issue[data-cat="unknown"]{color:var(--unknown)}
+  .badge-issue[data-cat="missing"]{color:var(--missing)}
+  .badge-issue[data-cat="wrong"]{color:var(--wrong)}
+  .badge-issue:hover{background:currentColor}
+  .badge-issue:hover span{color:var(--paper)}
+  .specrow.hl{background:var(--mark);outline:1px solid var(--rust);outline-offset:-1px}
+  .specrow .none{font-size:10.5px;color:var(--line);letter-spacing:.1em}
+
+  /* ---------- foot ---------- */
+  footer{
+    border-top:2px solid var(--ink);padding:20px 0 46px;
+    color:var(--muted);font-size:12.3px;
+  }
+  footer b{color:var(--ink);font-weight:600}
+  footer ul{margin:8px 0 0;padding-left:18px}
+  footer li{margin:2px 0}
+
+  .themebtn{
+    margin-left:8px;appearance:none;border:1px solid var(--line);background:transparent;
+    color:var(--ink-2);font-size:11.5px;padding:3px 9px;border-radius:2px;cursor:pointer;
+    font-family:var(--mono);
+  }
+
+  @media (max-width:680px){
+    .pair{grid-template-columns:minmax(0,1fr)}
+    .rail{
+      grid-column:1 / -1;display:flex;flex-wrap:wrap;align-items:center;gap:10px;
+      padding:10px 14px;border-right:0;border-bottom:1px solid var(--line-2);
+    }
+    .rail .no{font-size:13.5px}
+    .rail .cat{margin:0;font-size:9.5px;padding:1px 5px}
+    .rail .tick{margin-left:auto}
+    .rail .sev{display:none}
+    .issue{border-right:0;padding-left:14px}
+    .reqside{padding-left:14px}
+  }
+  @media (min-width:681px) and (max-width:940px){
+    .wrap{padding:0 16px}
+    .counter{flex:1 1 40%;border-bottom:1px solid var(--line)}
+    .counter:nth-child(2n){border-right:0}
+    .pair{grid-template-columns:56px minmax(0,1fr)}
+    .issue{border-right:0;padding-right:18px}
+    .reqside{grid-column:1 / -1;border-top:1px dashed var(--line);padding-left:18px}
+    .rail{padding-left:8px;padding-right:6px}
+    .rail .cat{font-size:9.5px;letter-spacing:0;padding:1px 2px}
+    .rail .tick{gap:3px;font-size:10px}
+    .rail .sev{font-size:9px}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+  @media print{
+    .toolbar,.tabs,.themebtn,.note{display:none!important}
+    body{font-size:11pt;background:#fff;color:#000}
+    .pair{break-inside:avoid;page-break-inside:avoid}
+    .reqside{background:#fff}
+  }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wrap">
+        <div class="eyebrow" id="pageMeta"></div>
+    <h1><span id="pageTitle"></span><em id="pageTitleEm"></em></h1>
+    <p class="lede" id="pageLede"></p>
+
+        <div class="counters" id="counters"></div>
+
+    <div class="tabs" role="tablist" aria-label="视图">
+      <button class="tab" role="tab" id="tab-check" aria-controls="panel-check" aria-selected="true">核查对照<span class="n" id="nCheck">44</span></button>
+      <button class="tab" role="tab" id="tab-spec" aria-controls="panel-spec" aria-selected="false">需求清单<span class="n" id="specCount"></span></button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section id="panel-check" role="tabpanel" aria-labelledby="tab-check">
+    <div class="toolbar">
+      <div class="wrap" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;width:100%">
+        <div class="chips" id="chips"></div>
+        <label class="search">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 14 14"/></svg>
+          <input id="q" type="search" placeholder="搜问题、文件、行号或需求编号（如 M3-3）" aria-label="搜索">
+        </label>
+        <label class="toggle"><input type="checkbox" id="onlyUndone"> 只看未核验</label>
+        <div class="progress">
+          <span id="progText">0 / 44</span>
+          <span class="bar"><i id="progBar"></i></span>
+          <button class="linkbtn" id="resetBtn" type="button">清空</button>
+        </div>
+      </div>
+    </div>
+    <div class="wrap">
+      <div class="ledger" id="ledger"></div>
+      <div class="empty" id="emptyHint" hidden>没有匹配的条目。换个关键词，或切回「全部」。</div>
+    </div>
+  </section>
+
+  <section id="panel-spec" role="tabpanel" aria-labelledby="tab-spec" hidden>
+    <div class="specbar">
+      <div class="wrap" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;width:100%">
+        <nav class="specnav" id="specnav" aria-label="需求分节"></nav>
+        <label class="search" style="max-width:320px">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 14 14"/></svg>
+          <input id="q2" type="search" placeholder="筛需求条目" aria-label="筛需求条目">
+        </label>
+      </div>
+    </div>
+    <div class="wrap">
+      <div class="spec" id="specBody"></div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <b>口径说明</b>
+    <ul id="footNotes"></ul>
+  </div>
+</footer>
+
+<script>window.__CHECK_DATA__ = __DATA__;</script>
+<script>
+const D = window.__CHECK_DATA__;
+const CAT = {
+  missing: {label:'未实现', order:1},
+  wrong:   {label:'实现错误', order:2},
+  bug:     {label:'Bug', order:3},
+  unknown: {label:'不确定', order:4},
+  pass:    {label:'已通过', order:5}
+};
+const CAT_KEYS = ['missing','wrong','bug','unknown','pass'];
+const ISSUES = (D.issues || []).map(it => ({...it}));
+const STORE = (D.slug || 'check') + '-v1';
+let state = load();
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const inline = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
+
+function load(){
+  try { return JSON.parse(localStorage.getItem(STORE)) || {done:{}, notes:{}}; }
+  catch(e){ return {done:{}, notes:{}}; }
+}
+function save(){ try { localStorage.setItem(STORE, JSON.stringify(state)); } catch(e){} }
+
+/* ---------- masthead ---------- */
+(function hydrateHead(){
+  const t = document.getElementById('pageTitle');
+  if (t) t.textContent = D.title || '实现核查';
+  const te = document.getElementById('pageTitleEm');
+  if (te) te.textContent = D.titleEm || '';
+
+  const lede = document.getElementById('pageLede');
+  if (lede) lede.innerHTML = inline(D.lede || '');
+
+  const meta = document.getElementById('pageMeta');
+  if (meta){
+    const parts = ['<span class="dot"></span>'];
+    Object.entries(D.meta || {}).forEach(([k, v]) => parts.push('<span>' + esc(k) + ' · ' + esc(v) + '</span>'));
+    parts.push('<button class="themebtn" id="themeBtn" type="button" aria-label="切换明暗主题">◑ 主题</button>');
+    meta.innerHTML = parts.join('');
+  }
+
+  const foot = document.getElementById('footNotes');
+  if (foot) foot.innerHTML = (D.footer || []).map(x => '<li>' + inline(x) + '</li>').join('');
+})();
+
+/* ---------- counters ---------- */
+(function renderCounters(){
+  const host = document.getElementById('counters');
+  if (!host) return;
+  host.innerHTML = CAT_KEYS.map(k => {
+    const n = ISSUES.filter(i => i.cat === k).length;
+    return `<div class="counter" data-cat="${k}"><b>${n}</b><span>${CAT[k].label}</span></div>`;
+  }).join('');
+})();
+
+/* ---------- chips ---------- */
+function renderChips(){
+  const host = document.getElementById('chips');
+  if (!host) return;
+  const items = [['all', '全部', ISSUES.length]].concat(
+    CAT_KEYS.map(k => [k, CAT[k].label, ISSUES.filter(i => i.cat === k).length])
+  );
+  host.innerHTML = items.map(([key, label, n], i) =>
+    `<button class="chip" data-filter="${key}" aria-pressed="${i === 0}">${label}<span class="c"${key === 'all' ? ' id="cAll"' : ''}>${n}</span></button>`
+  ).join('');
+  host.addEventListener('click', e => {
+    const b = e.target.closest('.chip');
+    if (!b) return;
+    filterCat = b.dataset.filter;
+    host.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', String(c === b)));
+    applyFilter();
+  });
+}
+
+/* ---------- ledger ---------- */
+const ledger = document.getElementById('ledger');
+const emptyHint = document.getElementById('emptyHint');
+const issueByReq = {};
+ISSUES.forEach(it => (it.reqs || []).forEach(([rid]) => {
+  (issueByReq[rid] = issueByReq[rid] || []).push(it.id);
+}));
+
+function render(){
+  ledger.innerHTML = ISSUES.map(it => {
+    const done = state.done[it.id] === 1;
+    const cat = CAT[it.cat] ? it.cat : 'unknown';
+    const reqHtml = (it.reqs || []).map(([rid, text]) =>
+      `<div class="req"><button class="id" type="button" data-goto="${esc(rid)}" title="在需求清单里定位 ${esc(rid)}">${esc(rid)}</button><q>${esc(text)}</q></div>`
+    ).join('');
+    const note = state.notes[it.id] || '';
+    const isPass = cat === 'pass';
+    return `
+      <article class="pair" data-cat="${cat}" data-id="${it.id}" data-done="${done?1:0}" data-sev="${esc(it.sev || '—')}">
+        <div class="rail">
+          <span class="no">${esc(it.id)}</span>
+          <span class="cat">${CAT[cat].label}</span>
+          <label class="tick"><input type="checkbox" data-tick="${esc(it.id)}" ${done?'checked':''} aria-label="标记 ${esc(it.id)} 已核验"><span>核验</span></label>
+          <span class="sev">严重度 ${esc(it.sev || '—')}</span>
+        </div>
+        <div class="issue">
+          <h3>${esc(it.title)}</h3>
+          <p>${esc(it.now)}</p>
+          <div class="where">${esc(it.where)}</div>
+          <dl>
+            <dt>${isPass ? '结论' : '影响'}</dt><dd>${esc(it.why || (isPass ? '口径一致，未见偏差。' : ''))}</dd>
+          </dl>
+          <details class="note" ${note?'open':''}>
+            <summary>备注</summary>
+            <textarea data-note="${esc(it.id)}" placeholder="核验结论 / 待确认问题，自动保存在本机">${esc(note)}</textarea>
+          </details>
+        </div>
+        <div class="reqside">
+          <div class="lbl">对应需求</div>
+          ${reqHtml || '<q style="color:var(--muted)">（本条未绑定需求编号）</q>'}
+          <div class="checkline"><b>${isPass ? '复核点' : '怎么算通过'}</b><span>${esc(it.check || '')}</span></div>
+        </div>
+      </article>`;
+  }).join('');
+  bindLedger();
+  applyFilter();
+  updateProgress();
+}
+
+function bindLedger(){
+  ledger.querySelectorAll('[data-tick]').forEach(el => {
+    el.addEventListener('change', () => {
+      const id = el.dataset.tick;
+      state.done[id] = el.checked ? 1 : 0;
+      save();
+      const pair = ledger.querySelector(`.pair[data-id="${CSS.escape(id)}"]`);
+      if (pair) pair.dataset.done = el.checked ? '1' : '0';
+      updateProgress();
+      applyFilter();
+    });
+  });
+  ledger.querySelectorAll('[data-note]').forEach(el => {
+    el.addEventListener('input', () => { state.notes[el.dataset.note] = el.value; save(); });
+  });
+  ledger.querySelectorAll('[data-goto]').forEach(el => {
+    el.addEventListener('click', () => gotoSpec(el.dataset.goto));
+  });
+}
+
+/* ---------- filter ---------- */
+let filterCat = 'all';
+const q = document.getElementById('q');
+const onlyUndone = document.getElementById('onlyUndone');
+q.addEventListener('input', applyFilter);
+onlyUndone.addEventListener('change', applyFilter);
+
+function applyFilter(){
+  const kw = q.value.trim().toLowerCase();
+  let shown = 0;
+  ledger.querySelectorAll('.pair').forEach(pair => {
+    const it = ISSUES.find(x => x.id === pair.dataset.id);
+    if (!it) return;
+    let ok = filterCat === 'all' || it.cat === filterCat;
+    if (ok && onlyUndone.checked) ok = state.done[it.id] !== 1;
+    if (ok && kw){
+      const hay = [
+        it.id, it.title, it.where, it.now, it.check || '', it.why || '',
+        ...(it.reqs || []).map(([r, t]) => r + ' ' + t)
+      ].join(' ').toLowerCase();
+      ok = hay.includes(kw);
+    }
+    pair.hidden = !ok;
+    if (ok) shown++;
+  });
+  emptyHint.hidden = shown !== 0;
+}
+
+/* ---------- progress ---------- */
+function updateProgress(){
+  const total = ISSUES.length;
+  const done = ISSUES.filter(i => state.done[i.id] === 1).length;
+  const pt = document.getElementById('progText');
+  if (pt) pt.textContent = done + ' / ' + total;
+  const pb = document.getElementById('progBar');
+  if (pb) pb.style.width = (total ? done / total * 100 : 0) + '%';
+  const nc = document.getElementById('nCheck');
+  if (nc) nc.textContent = total;
+}
+document.getElementById('resetBtn').addEventListener('click', () => {
+  if (!confirm('清空全部核验勾选与备注？')) return;
+  state = {done:{}, notes:{}}; save(); render();
+});
+
+/* ---------- spec ---------- */
+const spec = document.getElementById('specBody');
+const specnav = document.getElementById('specnav');
+const sections = Object.entries(D.spec || {}).map(([key, val]) => {
+  const title = Array.isArray(val) ? val[0] : (val.title || key);
+  const raw = Array.isArray(val) ? val[1] : (val.rows || '');
+  const rows = String(raw).trim().split('\n').filter(Boolean).map(line => {
+    const i = line.indexOf('|');
+    return i < 0 ? {id: line.trim(), text: ''} : {id: line.slice(0, i).trim(), text: line.slice(i + 1).trim()};
+  });
+  return { key, title, rows };
+});
+const totalSpec = sections.reduce((n, s) => n + s.rows.length, 0);
+document.getElementById('specCount').textContent = totalSpec;
+
+const SEC_LABEL = {A:'规则', B:'界面', C:'配置', D:'文本', E:'答复'};
+specnav.innerHTML = sections.map(s =>
+  `<a href="#spec-${esc(s.key)}" data-sec="${esc(s.key)}">${esc(s.key)} · ${SEC_LABEL[s.key] || '条目'} ${s.rows.length}</a>`
+).join('');
+
+spec.innerHTML = sections.map(s => `
+  <section class="sect" id="spec-${esc(s.key)}">
+    <h2><span>${esc(s.key)}</span>${esc(s.title)}</h2>
+    <p class="desc">共 ${s.rows.length} 条。右侧徽标指向引用该条目的问题。</p>
+    ${s.rows.map(r => {
+      const refs = issueByReq[r.id] || [];
+      const badges = refs.length
+        ? refs.map(rid => {
+            const it = ISSUES.find(x => x.id === rid);
+            return `<button class="badge-issue" type="button" data-jump="${esc(rid)}" data-cat="${it ? it.cat : 'unknown'}" title="跳到问题 ${esc(rid)}"><span>${esc(rid)}</span></button>`;
+          }).join('')
+        : '<span class="none">—</span>';
+      return `<div class="specrow" data-req="${esc(r.id)}">
+        <span class="sid">${esc(r.id)}</span>
+        <span class="st">${esc(r.text)}</span>
+        <span class="badges">${badges}</span>
+      </div>`;
+    }).join('')}
+  </section>`
+).join('');
+
+spec.addEventListener('click', e => {
+  const b = e.target.closest('[data-jump]');
+  if (!b) return;
+  switchTab('check');
+  const pair = ledger.querySelector(`.pair[data-id="${CSS.escape(b.dataset.jump)}"]`);
+  if (!pair) return;
+  pair.scrollIntoView({behavior:'smooth', block:'center'});
+  pair.animate?.([{background:'var(--mark)'},{background:'transparent'}], {duration:1400});
+});
+
+specnav.addEventListener('click', e => {
+  const a = e.target.closest('a[data-sec]');
+  if (!a) return;
+  e.preventDefault();
+  document.getElementById('spec-' + a.dataset.sec)?.scrollIntoView({behavior:'smooth', block:'start'});
+});
+
+const q2 = document.getElementById('q2');
+q2.addEventListener('input', () => {
+  const kw = q2.value.trim().toLowerCase();
+  spec.querySelectorAll('.specrow').forEach(row => {
+    row.hidden = kw !== '' && !(row.dataset.req + ' ' + row.querySelector('.st').textContent).toLowerCase().includes(kw);
+  });
+});
+
+function gotoSpec(rid){
+  switchTab('spec');
+  const row = spec.querySelector(`.specrow[data-req="${CSS.escape(rid)}"]`);
+  if (!row) return;
+  spec.querySelectorAll('.specrow.hl').forEach(r => r.classList.remove('hl'));
+  row.hidden = false;
+  row.classList.add('hl');
+  row.scrollIntoView({behavior:'smooth', block:'center'});
+  setTimeout(() => row.classList.remove('hl'), 2600);
+}
+
+/* ---------- tabs ---------- */
+const tabCheck = document.getElementById('tab-check');
+const tabSpec = document.getElementById('tab-spec');
+const panelCheck = document.getElementById('panel-check');
+const panelSpec = document.getElementById('panel-spec');
+
+function switchTab(which){
+  const isCheck = which === 'check';
+  tabCheck.setAttribute('aria-selected', String(isCheck));
+  tabSpec.setAttribute('aria-selected', String(!isCheck));
+  panelCheck.hidden = !isCheck;
+  panelSpec.hidden = isCheck;
+  try { history.replaceState(null, '', '#' + which); } catch(e) {}
+  requestAnimationFrame(() => window.scrollTo(0, 0));
+}
+tabCheck.addEventListener('click', () => switchTab('check'));
+tabSpec.addEventListener('click', () => switchTab('spec'));
+[tabCheck, tabSpec].forEach(t => t.addEventListener('keydown', e => {
+  if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+  e.preventDefault();
+  switchTab(t === tabCheck ? 'spec' : 'check');
+  (t === tabCheck ? tabSpec : tabCheck).focus();
+}));
+
+/* ---------- theme ---------- */
+function setTheme(t){
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem(STORE + '-theme', t); } catch(e){}
+}
+(function(){
+  let t = null;
+  try { t = localStorage.getItem(STORE + '-theme'); } catch(e){}
+  if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  setTheme(t);
+  const btn = document.getElementById('themeBtn');
+  if (btn) btn.addEventListener('click', () => {
+    setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+  });
+})();
+
+/* ---------- init ---------- */
+renderChips();
+render();
+switchTab(location.hash === '#spec' ? 'spec' : 'check');
+</script>
+</body>
+</html>

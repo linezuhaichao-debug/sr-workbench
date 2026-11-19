@@ -26,7 +26,7 @@ import { apply, loadBundledSkills, packageRootOf, skillsRootOf } from "../src/in
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..");
 const ROOT = skillsRootOf(REPO);
-const EXPECTED = 11;   // sr-config-heroskill 已改名 skill-hero-config 并搬出插件（不算 sr 系列）；2026-10-13 起 sr-gdd-html 拆成 sr-gdd-ue + sr-gdd-html 两个
+const EXPECTED = 12;   // sr-config-heroskill 已改名 skill-hero-config 并搬出插件（不算 sr 系列）；2026-10-13 起 sr-gdd-html 拆成 sr-gdd-ue + sr-gdd-html 两个；2026-11-19 增 sr-impl-check（实现核查，非主线）
 /**
  * **纯文本技能**：本来就只有 SKILL.md，没有 references / scripts。
  * （以前它们靠随包的 `CONTRIBUTORS` 署名文件凑够 2 个文件；用户 2026-10-09 把署名文件删了。）
