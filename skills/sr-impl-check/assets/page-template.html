@@ -211,6 +211,25 @@
   .issue dt{color:var(--muted);font-size:11.5px;letter-spacing:.06em;padding-top:2px}
   .issue dd{margin:0;color:var(--ink)}
 
+  .shots{margin:12px 0 0;display:grid;gap:10px}
+  .shots > .lbl{font-size:10px;letter-spacing:.18em;color:var(--muted);text-transform:uppercase}
+  .shots figure{margin:0;border:1px solid var(--line);background:var(--paper-2);overflow:hidden}
+  .shots img{display:block;width:100%;height:auto;cursor:zoom-in}
+  .shots figcaption{
+    font-size:11.5px;color:var(--muted);padding:7px 9px;line-height:1.55;
+    border-top:1px solid var(--line-2);background:var(--paper);
+  }
+  #lightbox{
+    position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.88);
+    display:none;overflow:auto;padding:24px;
+  }
+  #lightbox.on{display:block}
+  #lightbox img{display:block;margin:0 auto;max-width:none;background:#fff}
+  #lightbox .close{
+    position:fixed;top:14px;right:18px;border:0;background:rgba(255,255,255,.14);
+    color:#fff;font-size:15px;padding:8px 14px;cursor:pointer;font-family:var(--sans);
+  }
+
   .reqside{padding:18px 22px 22px 20px;background:var(--paper-2)}
   .reqside > .lbl{
     font-size:10px;letter-spacing:.18em;color:var(--muted);text-transform:uppercase;
@@ -421,6 +440,11 @@
   </div>
 </footer>
 
+<div id="lightbox" role="dialog" aria-modal="true" aria-label="查看标注图">
+  <button class="close" type="button" id="lightboxClose">关闭 ✕</button>
+  <img id="lightboxImg" alt="">
+</div>
+
 <script>window.__CHECK_DATA__ = __DATA__;</script>
 <script>
 const D = window.__CHECK_DATA__;
@@ -512,6 +536,12 @@ function render(){
     ).join('');
     const note = state.notes[it.id] || '';
     const isPass = cat === 'pass';
+    const shots = Array.isArray(it.shots) ? it.shots.filter(s => s && s.src) : [];
+    const shotsHtml = shots.length ? `
+          <div class="shots">
+            <span class="lbl">标注图 · ${shots.length} 张</span>
+            ${shots.map((s, i) => `<figure><img src="${esc(s.src)}" alt="${esc(s.caption || ('标注图 ' + (i + 1)))}" loading="lazy" data-zoom><figcaption>${esc(s.caption || ('标注图 ' + (i + 1)))}</figcaption></figure>`).join('')}
+          </div>` : '';
     return `
       <article class="pair" data-cat="${cat}" data-id="${it.id}" data-done="${done?1:0}" data-sev="${esc(it.sev || '—')}">
         <div class="rail">
@@ -524,6 +554,7 @@ function render(){
           <h3>${esc(it.title)}</h3>
           <p>${esc(it.now)}</p>
           <div class="where">${esc(it.where)}</div>
+          ${shotsHtml}
           <dl>
             <dt>${isPass ? '结论' : '影响'}</dt><dd>${esc(it.why || (isPass ? '口径一致，未见偏差。' : ''))}</dd>
           </dl>
@@ -544,7 +575,33 @@ function render(){
   updateProgress();
 }
 
+function openLightbox(src, alt){
+  const box = document.getElementById('lightbox');
+  const img = document.getElementById('lightboxImg');
+  if (!box || !img || !src) return;
+  img.setAttribute('src', src);
+  img.setAttribute('alt', alt || '');
+  img.style.width = 'auto';
+  img.onload = () => {
+    const max = Math.min(window.innerWidth - 60, img.naturalWidth * 1.6);
+    if (img.naturalWidth < 1400) img.style.width = Math.min(max, 1400) + 'px';
+  };
+  box.classList.add('on');
+}
+(function bindLightbox(){
+  const box = document.getElementById('lightbox');
+  const close = document.getElementById('lightboxClose');
+  if (!box) return;
+  const shut = () => { box.classList.remove('on'); document.getElementById('lightboxImg').removeAttribute('src'); };
+  close.addEventListener('click', shut);
+  box.addEventListener('click', e => { if (e.target === box) shut(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') shut(); });
+})();
+
 function bindLedger(){
+  ledger.querySelectorAll('[data-zoom]').forEach(el => {
+    el.addEventListener('click', () => openLightbox(el.getAttribute('src'), el.getAttribute('alt') || ''));
+  });
   ledger.querySelectorAll('[data-tick]').forEach(el => {
     el.addEventListener('change', () => {
       const id = el.dataset.tick;

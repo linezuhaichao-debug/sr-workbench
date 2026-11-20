@@ -54,7 +54,10 @@ const SCHEMA = `
       "now": "代码现在怎么做的",
       "why": "影响 / 违反了什么",
       "reqs": [ ["M3-3", "定稿原文（可截取关键句）"] ],   // 必填，1 条以上
-      "check": "怎么算通过（可执行、可观察）"             // 必填
+      "check": "怎么算通过（可执行、可观察）",            // 必填
+      "shots": [                                // 可选：UI 效果图对照的标注图，渲染时内嵌成单文件
+        { "src": "D:/.../A1_圣物装配_多余元素_顶部资源栏.png", "caption": "顶部多出资源栏" }
+      ]
     }
   ],
   "spec": {
@@ -68,6 +71,8 @@ const SCHEMA = `
 - issues 的 reqs 里每个编号都应能在 spec 里找到；找不到会给出 warning（通常说明清单漏了条目）。
 - pass 类条目同样带 reqs，用于说明"这条需求已核对通过"。
 - spec 的每节是 [节标题, 行文本]，行文本一行一条 "编号|标题"，用 \\n 分隔。
+- shots 里的本地路径会被读成 data URI 内嵌，页面仍是单文件、离线可开；
+  加 --no-embed 则保留路径（需要图片与页面一起交付）。图片先压到宽 1000px 左右。
 `;
 
 function fail(msg) {
@@ -175,11 +180,21 @@ function main() {
   catch (e) { fail('JSON 解析失败：' + e.message); }
 
   const { errors, warnings, issueCats = {}, specCount = 0, referencedCount = 0, unusedCount = 0 } = validate(data);
+  const shotStat = normalizeShots(data, args);
+  if (shotStat.missing.length) {
+    shotStat.missing.forEach(p => errors.push(`标注图读不到：${p}`));
+  }
 
   console.log('— 数据自检 —');
   console.log('  问题条目：' + (data.issues || []).length + '（' +
     CATS.filter(c => issueCats[c]).map(c => `${CAT_LABEL[c]} ${issueCats[c]}`).join(' / ') + '）');
   console.log('  需求条目：' + specCount + ' 条，被引用 ' + referencedCount + ' 条，未被引用 ' + unusedCount + ' 条');
+  if (shotStat.embedded) {
+    console.log('  标注图：' + shotStat.embedded + ' 张，已内嵌 ' + (shotStat.bytes / 1048576).toFixed(2) + ' MB');
+    if (shotStat.bytes > 16 * 1048576) {
+      warnings.push('标注图合计超过 16 MB，页面会很大：先压到宽 1000px 左右再渲染');
+    }
+  }
   warnings.forEach(w => console.log('  ! ' + w));
   errors.forEach(e => console.log('  ✗ ' + e));
   if (errors.length) fail(`数据有 ${errors.length} 处硬错误，未生成页面`);
